@@ -11,10 +11,17 @@ VoiceType records audio with a global shortcut, transcribes it locally on your M
 
 ## Quick Install
 
+Clone the repo and run the installer:
+
 ```bash
-git clone https://github.com/<your-user>/VoiceType.git
+git clone https://github.com/Informat1on/VoiceType.git
 cd VoiceType
 ./install-app.sh
+```
+
+Then launch `VoiceType.app` from `~/Applications`, or run:
+
+```bash
 open "$HOME/Applications/VoiceType.app"
 ```
 
@@ -73,7 +80,7 @@ xcode-select --install
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-user>/VoiceType.git
+git clone https://github.com/Informat1on/VoiceType.git
 cd VoiceType
 ```
 
