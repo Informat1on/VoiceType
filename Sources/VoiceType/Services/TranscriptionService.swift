@@ -93,8 +93,10 @@ final class TranscriptionService: ObservableObject {
 
     func loadModel(at url: URL, language: String? = nil) async throws {
         print("[TranscriptionService] Loading model from \(url.lastPathComponent)")
+        AppLog.models.notice("Loading model \(url.lastPathComponent, privacy: .public)")
         guard FileManager.default.fileExists(atPath: url.path) else {
             print("[TranscriptionService] Model file not found: \(url.lastPathComponent)")
+            AppLog.models.error("Model file is missing: \(url.lastPathComponent, privacy: .public)")
             throw TranscriptionError.modelLoadFailed(nil)
         }
 
@@ -136,6 +138,7 @@ final class TranscriptionService: ObservableObject {
         let loadTime = CFAbsoluteTimeGetCurrent() - startTime
         print("[TranscriptionService] Model \(currentModelName ?? "unknown") loaded in \(String(format: "%.2f", loadTime))s")
         print("[TranscriptionService] GPU acceleration: \(hasCoreML ? "CoreML ENABLED" : "CPU only")")
+        AppLog.models.notice("Model load finished")
 
         whisper = newWhisper
         applyRuntimeConfiguration(language: normalizedLanguage)
@@ -144,11 +147,13 @@ final class TranscriptionService: ObservableObject {
     func transcribe(audio: [Float], language: String?) async throws -> String {
         guard let whisper else {
             print("[TranscriptionService] ERROR: Model not loaded")
+            AppLog.transcription.error("Transcription requested without a loaded model")
             throw TranscriptionError.modelNotLoaded
         }
 
         guard !audio.isEmpty else {
             print("[TranscriptionService] ERROR: Empty audio data")
+            AppLog.transcription.error("Transcription requested with empty audio")
             throw TranscriptionError.invalidAudioData
         }
 
@@ -172,6 +177,7 @@ final class TranscriptionService: ObservableObject {
             // Final check - if still busy, throw descriptive error
             if whisper.inProgress {
                 print("[TranscriptionService] ERROR: Whisper still busy after retries")
+                AppLog.transcription.error("Transcription skipped because previous job is still running")
                 throw TranscriptionError.transcriptionFailed(NSError(domain: "Whisper", code: -1, userInfo: [NSLocalizedDescriptionKey: "Previous transcription still completing"]))
             }
         }
@@ -204,10 +210,12 @@ final class TranscriptionService: ObservableObject {
             lastResult = trimmed
 
             print("[TranscriptionService] Result ready (characters: \(trimmed.count))")
+            AppLog.transcription.notice("Transcription result is ready")
             return trimmed
         } catch {
             progress = 0.0
             print("[TranscriptionService] Transcription error: \(error)")
+            AppLog.transcription.error("Transcription failed inside Whisper pipeline")
             throw TranscriptionError.transcriptionFailed(error)
         }
     }

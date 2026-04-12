@@ -25,6 +25,7 @@ final class PermissionManager: ObservableObject {
     func refreshPermissions() {
         refreshTask?.cancel()
         checkAllPermissions()
+        AppLog.permissions.notice("Refreshing permission state")
 
         refreshTask = Task { @MainActor [weak self] in
             let delays: [UInt64] = [250_000_000, 750_000_000, 1_500_000_000]
@@ -40,12 +41,14 @@ final class PermissionManager: ObservableObject {
 
     func requestInitialPermissionsIfNeeded() {
         if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+            AppLog.permissions.notice("Requesting initial microphone access")
             requestMicrophonePermission()
         } else {
             refreshPermissions()
         }
 
         if !hasAccessibilityPermission {
+            AppLog.permissions.notice("Requesting initial accessibility access")
             requestAccessibilityPermission(prompt: true)
         }
     }
@@ -70,18 +73,21 @@ final class PermissionManager: ObservableObject {
         switch status {
         case .authorized:
             hasMicrophonePermission = true
+            AppLog.permissions.notice("Microphone permission is granted")
             refreshPermissions()
             
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 Task { @MainActor [weak self] in
                     self?.hasMicrophonePermission = granted
+                    AppLog.permissions.notice("Microphone permission updated: \(granted, privacy: .public)")
                     self?.refreshPermissions()
                 }
             }
             
         case .denied, .restricted:
             hasMicrophonePermission = false
+            AppLog.permissions.error("Microphone permission is unavailable")
             openMicrophoneSettings()
             
         @unknown default:
@@ -96,7 +102,8 @@ final class PermissionManager: ObservableObject {
 
     func requestAccessibilityPermission(prompt: Bool = true) {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
-        hasAccessibilityPermission = AXIsProcessTrustedWithOptions(options)
+        self.hasAccessibilityPermission = AXIsProcessTrustedWithOptions(options)
+        AppLog.permissions.notice("Accessibility permission updated: \(self.hasAccessibilityPermission, privacy: .public)")
         refreshPermissions()
     }
     
@@ -106,6 +113,7 @@ final class PermissionManager: ObservableObject {
         }
         
         NSWorkspace.shared.open(url)
+        AppLog.permissions.notice("Opened Accessibility settings")
         refreshPermissions()
     }
     
@@ -115,6 +123,7 @@ final class PermissionManager: ObservableObject {
         }
         
         NSWorkspace.shared.open(url)
+        AppLog.permissions.notice("Opened Microphone settings")
         refreshPermissions()
     }
 }

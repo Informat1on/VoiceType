@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("[AppDelegate] === Launching VoiceType ===")
+        AppLog.app.notice("Application launching")
         NSApp.setActivationPolicy(.accessory)
 
         voiceTypeWindow = VoiceTypeWindow(audioService: audioCaptureService)
@@ -56,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         preloadModelIfNeeded()
 
         print("[AppDelegate] === Ready. Hotkey: \(modifiersToString(AppSettings.shared.hotkeyModifiers))\(keyCodeToString(AppSettings.shared.hotkeyKey)) ===")
+        AppLog.app.notice("Application ready")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -169,15 +171,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func reloadModel(_ model: TranscriptionModel) {
         let language = AppSettings.shared.preferredLanguage
         print("[AppDelegate] Reloading model: \(model.rawValue) with language: \(language)")
+        AppLog.models.notice("Reloading model \(model.rawValue, privacy: .public)")
         
         Task {
             if !modelManager.isModelDownloaded(model: model) {
                 print("[AppDelegate] Model not downloaded, downloading...")
+                AppLog.models.notice("Downloading model \(model.rawValue, privacy: .public)")
                 do {
                     try await modelManager.downloadModel(model: model)
                     print("[AppDelegate] Model downloaded successfully")
+                    AppLog.models.notice("Model download finished for \(model.rawValue, privacy: .public)")
                 } catch {
                     print("[AppDelegate] Download failed: \(error)")
+                    AppLog.models.error("Model download failed for \(model.rawValue, privacy: .public)")
                     showError("Failed to download model: \(error.localizedDescription)")
                     return
                 }
@@ -189,8 +195,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             do {
                 try await transcriptionService.loadModel(at: modelURL, language: language)
                 print("[AppDelegate] Model reloaded successfully: \(model.rawValue)")
+                AppLog.models.notice("Model reloaded: \(model.rawValue, privacy: .public)")
             } catch {
                 print("[AppDelegate] Failed to reload model: \(error)")
+                AppLog.models.error("Model reload failed for \(model.rawValue, privacy: .public)")
                 showError("Failed to load model: \(error.localizedDescription)")
             }
         }
@@ -206,21 +214,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         Task {
             if !modelManager.isModelDownloaded(model: model) {
                 print("[AppDelegate] Model not downloaded, auto-downloading...")
+                AppLog.models.notice("Auto-downloading model \(model.rawValue, privacy: .public)")
                 do {
                     try await modelManager.downloadModel(model: model)
                     print("[AppDelegate] Models downloaded successfully")
+                    AppLog.models.notice("Model assets ready for \(model.rawValue, privacy: .public)")
                 } catch {
                     print("[AppDelegate] Auto-download failed: \(error)")
+                    AppLog.models.error("Initial model download failed for \(model.rawValue, privacy: .public)")
                     showError("Failed to download model: \(error.localizedDescription)\n\nPlease go to Settings → Model → Download")
                     return
                 }
             } else if model.hasCoreMLSupport && !modelManager.isCoreMLModelDownloaded(model: model) {
                 print("[AppDelegate] CoreML not downloaded, downloading for GPU acceleration...")
+                AppLog.models.notice("Downloading CoreML assets for \(model.rawValue, privacy: .public)")
                 do {
                     try await modelManager.downloadModel(model: model)
                     print("[AppDelegate] CoreML downloaded successfully")
+                    AppLog.models.notice("CoreML assets ready for \(model.rawValue, privacy: .public)")
                 } catch {
                     print("[AppDelegate] CoreML download failed (non-critical): \(error)")
+                    AppLog.models.error("CoreML download failed for \(model.rawValue, privacy: .public)")
                 }
             }
 
@@ -229,8 +243,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 print("[AppDelegate] Loading model from \(modelURL.lastPathComponent) with language: \(language)")
                 try await transcriptionService.loadModel(at: modelURL, language: language)
                 print("[AppDelegate] Model loaded successfully")
+                AppLog.models.notice("Initial model load completed")
             } catch {
                 print("[AppDelegate] Failed to load model: \(error)")
+                AppLog.models.error("Initial model load failed")
                 showError("Failed to load model: \(error.localizedDescription)")
             }
         }
@@ -251,8 +267,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             appState = .recording
             voiceTypeWindow?.show(state: .recording)
             print("[AppDelegate] Recording started")
+            AppLog.app.notice("Recording started")
         } catch {
             print("[AppDelegate] Failed to start recording: \(error)")
+            AppLog.app.error("Recording failed to start")
             showError("Failed to start recording: \(error.localizedDescription)")
             appState = .idle
         }
@@ -275,12 +293,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             print("[AppDelegate] Got \(samples.count) audio samples")
             guard !samples.isEmpty else {
                 print("[AppDelegate] No audio samples")
+                AppLog.app.notice("Recording stopped with no audio")
                 appState = .idle
                 return
             }
 
             appState = .transcribing
             voiceTypeWindow?.show(state: .processing)
+            AppLog.transcription.notice("Transcription started")
 
             print("[AppDelegate] About to create transcription Task")
             Task(priority: .userInitiated) { [weak self] in
@@ -292,6 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             print("[AppDelegate] Transcription Task created")
         } catch {
             print("[AppDelegate] Failed to stop recording: \(error)")
+            AppLog.app.error("Recording failed to stop cleanly")
             showError("Failed to stop recording: \(error.localizedDescription)")
             appState = .idle
         }
@@ -330,8 +351,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
             transcriptionText = text
             print("[AppDelegate] Transcription finished successfully")
+            AppLog.transcription.notice("Transcription completed")
         } catch {
             print("[AppDelegate] Transcription error: \(error)")
+            AppLog.transcription.error("Transcription failed")
             voiceTypeWindow?.hide()
             appState = .idle
             print("[AppDelegate] State reset to idle (error)")
@@ -344,6 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         guard let text = transcriptionText,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             print("[AppDelegate] Empty transcription result")
+            AppLog.transcription.notice("Transcription produced no text")
             appState = .idle
             print("[AppDelegate] State reset to idle (empty result)")
             return
@@ -388,8 +412,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 pressEnterAfter: AppSettings.shared.autoEnterAfterInsert
             )
             print("[AppDelegate] Text injected successfully")
+            AppLog.insertion.notice("Text insertion completed")
         } catch {
             print("[AppDelegate] Text injection failed: \(error)")
+            AppLog.insertion.error("Text insertion failed")
 
             if case TextInjectionService.TextInjectionError.missingAccessibilityPermission = error {
                 permissionManager.openAccessibilitySettings()
@@ -403,6 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func showError(_ message: String) {
         print("[AppDelegate] ERROR: \(message)")
+        AppLog.app.error("User-facing error presented")
         let alert = NSAlert()
         alert.messageText = "VoiceType Error"
         alert.informativeText = message

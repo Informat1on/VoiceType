@@ -26,6 +26,7 @@ final class TextInjectionService {
         guard !text.isEmpty else { return }
 
         guard Self.hasAccessibilityPermissions() else {
+            AppLog.insertion.error("Blocked text insertion because Accessibility is missing")
             throw TextInjectionError.missingAccessibilityPermission
         }
 
