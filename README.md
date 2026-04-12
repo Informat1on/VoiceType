@@ -178,6 +178,29 @@ Available model presets:
 
 Approximate model storage sizes are shown directly in the app.
 
+## Updating
+
+If you installed VoiceType from source, update it like this:
+
+```bash
+git pull
+./install-app.sh
+open "$HOME/Applications/VoiceType.app"
+```
+
+This will rebuild the app, reinstall it into `~/Applications`, and refresh the registered app bundle used by macOS.
+
+Notes:
+
+- macOS may ask you to re-grant Microphone or Accessibility permission after reinstalling an updated local build.
+- If insertion stops working after an update, re-check Accessibility for `VoiceType` in `System Settings -> Privacy & Security -> Accessibility`.
+- If needed, reset stale permissions and grant them again:
+
+```bash
+tccutil reset Microphone com.voicetype.app
+tccutil reset Accessibility com.voicetype.app
+```
+
 ## Troubleshooting
 
 ### The app appears without an icon in System Settings
