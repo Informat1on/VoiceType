@@ -119,7 +119,14 @@ final class ModelManager: ObservableObject {
                         let process = Process()
                         process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
                         process.arguments = ["-q", "-o", zipPath.path, "-d", unzipDestination.path]
-                        
+
+                        // Remove existing .mlmodelc bundle before unzipping to prevent
+                        // stale files from previous versions causing CoreML issues
+                        if fm.fileExists(atPath: destination.path) {
+                            try fm.removeItem(at: destination)
+                            print("[ModelManager] Removed existing CoreML bundle before unzip")
+                        }
+
                         try process.run()
                         process.waitUntilExit()
                         

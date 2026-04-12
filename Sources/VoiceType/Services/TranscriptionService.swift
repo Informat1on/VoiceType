@@ -91,7 +91,7 @@ final class TranscriptionService: ObservableObject {
         )
     }
 
-    func loadModel(at url: URL, language: String? = nil) async throws {
+    func loadModel(at url: URL, language: String? = nil, model: TranscriptionModel? = nil) async throws {
         print("[TranscriptionService] Loading model from \(url.lastPathComponent)")
         AppLog.models.notice("Loading model \(url.lastPathComponent, privacy: .public)")
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -111,11 +111,10 @@ final class TranscriptionService: ObservableObject {
         currentLanguage = normalizedLanguage
         currentModelName = url.lastPathComponent.replacingOccurrences(of: "ggml-", with: "").replacingOccurrences(of: ".bin", with: "")
 
-        let coreMLURL = url.deletingLastPathComponent().appendingPathComponent(
-            url.lastPathComponent.replacingOccurrences(of: ".bin", with: "-encoder.mlmodelc")
-        )
-        let hasCoreML = FileManager.default.fileExists(atPath: coreMLURL.path)
-        print("[TranscriptionService] CoreML encoder available: \(hasCoreML) at \(coreMLURL.lastPathComponent)")
+        // Use ModelManager's authoritative CoreML URL instead of fragile string replacement
+        let coreMLURL: URL? = model.map { ModelManager.shared.coreMLModelURL(for: $0) }
+        let hasCoreML = coreMLURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        print("[TranscriptionService] CoreML encoder available: \(hasCoreML) at \(coreMLURL?.lastPathComponent ?? "N/A")")
 
         print(
             "[TranscriptionService] Loading model: \(currentModelName ?? "unknown") (lang: \(whisperLanguage.rawValue), detectLanguage: \(shouldDetectLanguage), threads: \(threadCount))"

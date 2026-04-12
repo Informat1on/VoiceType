@@ -27,7 +27,8 @@ public final class AudioCaptureService: ObservableObject {
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
-        audioBuffer.removeAll()
+        // Clear buffer on the queue to avoid race with pending async appends
+        bufferQueue.sync { audioBuffer.removeAll() }
         audioConverter = createConverter(from: inputFormat)
 
         let recordingFormat = AVAudioFormat(
@@ -68,7 +69,14 @@ public final class AudioCaptureService: ObservableObject {
             self.processBuffer(buffer, into: recordingBuffer)
         }
 
-        try audioEngine.start()
+        do {
+            try audioEngine.start()
+        } catch {
+            // Clean up the tap if the engine fails to start, preventing a dangling tap
+            // that would block future startRecording calls
+            inputNode.removeTap(onBus: 0)
+            throw AudioCaptureError.engineStartFailed(error)
+        }
         stateQueue.sync { isRecording = true }
         print("[AudioCapture] Engine started, tap installed. Input format: \(inputFormat.sampleRate)Hz, \(inputFormat.channelCount)ch")
     }
@@ -90,9 +98,9 @@ public final class AudioCaptureService: ObservableObject {
         var samples: [Float] = []
         bufferQueue.sync {
             samples = audioBuffer
-            // Clear audioBuffer immediately after extraction to prevent
-            // data accumulation and ensure clean state for next recording
-            audioBuffer.removeAll()
+            // Do NOT clear audioBuffer here — pending async append blocks from
+            // the tap callback may still add samples. Clearing happens at the
+            // start of the next startRecording() call.
         }
 
         return samples

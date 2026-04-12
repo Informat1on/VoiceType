@@ -38,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: - Windows
 
     private var voiceTypeWindow: VoiceTypeWindow?
+    private var preloadTask: Task<Void, Never>?
+    private var isReloadingModel = false
     private var settingsWindow: NSWindow?
     private var aboutWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
@@ -169,11 +171,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
     
     private func reloadModel(_ model: TranscriptionModel) {
+        guard !isReloadingModel else {
+            print("[AppDelegate] Model reload already in progress, skipping")
+            return
+        }
+
+        // Cancel any in-flight preload task to prevent concurrent model loading
+        preloadTask?.cancel()
+        preloadTask = nil
+
         let language = AppSettings.shared.preferredLanguage
         print("[AppDelegate] Reloading model: \(model.rawValue) with language: \(language)")
         AppLog.models.notice("Reloading model \(model.rawValue, privacy: .public)")
-        
+
+        isReloadingModel = true
         Task {
+            defer { isReloadingModel = false }
+
+            if Task.isCancelled { return }
+
             if !modelManager.isModelDownloaded(model: model) {
                 print("[AppDelegate] Model not downloaded, downloading...")
                 AppLog.models.notice("Downloading model \(model.rawValue, privacy: .public)")
@@ -191,9 +207,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             
             let modelURL = modelManager.modelURL(for: model)
             transcriptionService.unloadModel()
-            
+
             do {
-                try await transcriptionService.loadModel(at: modelURL, language: language)
+                try await transcriptionService.loadModel(at: modelURL, language: language, model: model)
                 print("[AppDelegate] Model reloaded successfully: \(model.rawValue)")
                 AppLog.models.notice("Model reloaded: \(model.rawValue, privacy: .public)")
             } catch {
@@ -211,7 +227,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         print("[AppDelegate] Main model downloaded: \(modelManager.isModelDownloaded(model: model))")
         print("[AppDelegate] CoreML support: \(model.hasCoreMLSupport), downloaded: \(modelManager.isCoreMLModelDownloaded(model: model))")
 
-        Task {
+        preloadTask = Task {
+            if Task.isCancelled { return }
+
             if !modelManager.isModelDownloaded(model: model) {
                 print("[AppDelegate] Model not downloaded, auto-downloading...")
                 AppLog.models.notice("Auto-downloading model \(model.rawValue, privacy: .public)")
@@ -241,7 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             let modelURL = modelManager.modelURL(for: model)
             do {
                 print("[AppDelegate] Loading model from \(modelURL.lastPathComponent) with language: \(language)")
-                try await transcriptionService.loadModel(at: modelURL, language: language)
+                try await transcriptionService.loadModel(at: modelURL, language: language, model: model)
                 print("[AppDelegate] Model loaded successfully")
                 AppLog.models.notice("Initial model load completed")
             } catch {
@@ -398,7 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         let modelURL = modelManager.modelURL(for: model)
         print("[AppDelegate] Loading model on-demand: \(modelURL.lastPathComponent) with language: \(language)")
-        try await transcriptionService.loadModel(at: modelURL, language: language)
+        try await transcriptionService.loadModel(at: modelURL, language: language, model: model)
     }
 
     private func injectText(_ text: String, mode: TextInjectionMode) {

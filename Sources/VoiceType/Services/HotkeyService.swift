@@ -221,25 +221,27 @@ final class HotkeyService: ObservableObject {
                 self.pendingAction = .stop
                 startRecordingInternal()
                 return
-                
+
             case (.stop, .toggle):
                 // stop followed by toggle = stop then start
                 print("HotkeyService: stop+toggle -> execute stop now, queue start")
                 self.pendingAction = .start
                 stopRecordingInternal()
                 return
-                
+
             case (.toggle, .start):
-                // toggle followed by start = treat as start
-                print("HotkeyService: toggle+start -> start")
-                self.pendingAction = .start
-                // fall through to process
-                
+                // toggle followed by start = execute toggle first, then start is redundant
+                print("HotkeyService: toggle+start -> execute toggle, start redundant")
+                toggleRecordingInternal()
+                self.pendingAction = nil
+                return
+
             case (.toggle, .stop):
-                // toggle followed by stop = treat as stop
-                print("HotkeyService: toggle+stop -> stop")
-                self.pendingAction = .stop
-                // fall through to process
+                // toggle followed by stop = execute toggle first, then stop
+                print("HotkeyService: toggle+stop -> execute toggle then stop")
+                toggleRecordingInternal()
+                stopRecordingInternal()
+                return
             }
         }
         

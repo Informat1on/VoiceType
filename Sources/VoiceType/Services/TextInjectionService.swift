@@ -40,7 +40,10 @@ final class TextInjectionService {
 
     private func injectViaPaste(_ text: String, pressEnterAfter: Bool) throws {
         let pasteboard = NSPasteboard.general
-        let savedItems = pasteboard.pasteboardItems
+        // Save only the string content — NSPasteboardItem objects are proxies
+        // to the pasteboard's internal state and become invalid after clearContents().
+        // Complex types (files, images, rich text) cannot be reliably restored.
+        let savedString = pasteboard.string(forType: .string)
 
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
@@ -52,11 +55,10 @@ final class TextInjectionService {
             pressEnter(eventSource: eventSource)
         }
 
-        if let savedItems, !savedItems.isEmpty {
+        // Restore saved string content only
+        if let savedString {
             pasteboard.clearContents()
-            for item in savedItems {
-                pasteboard.writeObjects([item])
-            }
+            pasteboard.setString(savedString, forType: .string)
         } else {
             pasteboard.clearContents()
         }
