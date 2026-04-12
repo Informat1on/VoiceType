@@ -4,11 +4,14 @@ final class TextInjectionService {
 
     enum TextInjectionError: Error, LocalizedError {
         case pasteFailed
+        case missingAccessibilityPermission
 
         var errorDescription: String? {
             switch self {
             case .pasteFailed:
                 return "Failed to paste text. Ensure Accessibility permissions are granted."
+            case .missingAccessibilityPermission:
+                return "Accessibility permission is required to insert text. If you just enabled it in System Settings, relaunch VoiceType from ~/Applications and try again."
             }
         }
     }
@@ -21,6 +24,10 @@ final class TextInjectionService {
 
     func injectText(_ text: String, mode: TextInjectionMode, pressEnterAfter: Bool = true) throws {
         guard !text.isEmpty else { return }
+
+        guard Self.hasAccessibilityPermissions() else {
+            throw TextInjectionError.missingAccessibilityPermission
+        }
 
         switch mode {
         case .paste:

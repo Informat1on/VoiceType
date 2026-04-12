@@ -65,6 +65,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        permissionManager.checkAllPermissions()
+    }
+
     // MARK: - Settings Window
 
     func openSettings() {
@@ -113,7 +117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: - Setup
 
     private func setupServices() {
-        permissionManager.checkAllPermissions()
+        permissionManager.refreshPermissions()
+        permissionManager.requestInitialPermissionsIfNeeded()
     }
 
     private func setupHotkeyCallbacks() {
@@ -373,6 +378,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func injectText(_ text: String, mode: TextInjectionMode) {
+        permissionManager.checkAllPermissions()
+
         print("[AppDelegate] Injecting text (mode: \(mode.rawValue), characters: \(text.count))")
         do {
             try textInjectionService.injectText(
@@ -383,6 +390,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             print("[AppDelegate] Text injected successfully")
         } catch {
             print("[AppDelegate] Text injection failed: \(error)")
+
+            if case TextInjectionService.TextInjectionError.missingAccessibilityPermission = error {
+                permissionManager.openAccessibilitySettings()
+            }
+
             showError("Failed to insert text: \(error.localizedDescription)")
         }
     }

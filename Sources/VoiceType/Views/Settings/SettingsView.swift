@@ -235,13 +235,18 @@ struct SettingsView: View {
                 }
 
                 HStack {
-                    Button("Open Microphone Settings") {
-                        permissionManager.openMicrophoneSettings()
+                    Button("Request Microphone Access") {
+                        permissionManager.requestMicrophonePermission()
                     }
                     .buttonStyle(.bordered)
 
-                    Button("Open Accessibility Settings") {
-                        permissionManager.openAccessibilitySettings()
+                    Button("Request Accessibility Access") {
+                        permissionManager.requestAccessibilityPermission()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Refresh") {
+                        permissionManager.refreshPermissions()
                     }
                     .buttonStyle(.bordered)
 
