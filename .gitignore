@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+.swiftpm/
+dist/
+
+# Local Xcode metadata
+**/xcuserdata/
+**/*.xcuserstate
+
+# Derived artwork generated during local packaging
+artwork/derived/

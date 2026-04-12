@@ -1,0 +1,224 @@
+import Foundation
+import Combine
+import SwiftWhisper
+
+enum TranscriptionError: LocalizedError {
+    case modelNotLoaded
+    case modelLoadFailed(Error?)
+    case transcriptionFailed(Error)
+    case invalidAudioData
+    case unsupportedFormat
+    case transcriptionTimeout
+
+    var errorDescription: String? {
+        switch self {
+        case .modelNotLoaded:
+            return "Whisper model has not been loaded."
+        case .modelLoadFailed(let underlyingError):
+            if let error = underlyingError {
+                return "Failed to load whisper model: \(error.localizedDescription)"
+            }
+            return "Failed to load whisper model from the specified URL."
+        case .transcriptionFailed(let error):
+            return "Audio transcription failed: \(error.localizedDescription)"
+        case .invalidAudioData:
+            return "Invalid audio data provided. Audio buffer cannot be empty."
+        case .unsupportedFormat:
+            return "Unsupported audio format. Expected 16kHz mono PCM float samples."
+        case .transcriptionTimeout:
+            return "Transcription timed out. The model may be too large for your device."
+        }
+    }
+}
+
+@MainActor
+final class TranscriptionService: ObservableObject {
+    @Published var isTranscribing: Bool = false
+    @Published var progress: Double = 0.0
+    @Published var lastResult: String?
+
+    private var whisper: Whisper?
+    private var modelURL: URL?
+    private var currentLanguage: String?
+    private var currentModelName: String?
+
+    private var recommendedThreadCount: Int32 {
+        let availableCores = max(1, ProcessInfo.processInfo.activeProcessorCount)
+        let tunedCores = availableCores <= 4
+            ? availableCores
+            : min(8, max(4, availableCores - 2))
+        return Int32(tunedCores)
+    }
+    
+    var isModelLoaded: Bool {
+        whisper != nil
+    }
+    
+    var loadedModelName: String? {
+        currentModelName
+    }
+
+    private func normalizedLanguage(_ language: String?) -> String? {
+        guard let language, language != "auto" else {
+            return nil
+        }
+
+        return language
+    }
+
+    private func whisperLanguage(for language: String?) -> WhisperLanguage {
+        guard let language = normalizedLanguage(language) else {
+            return .auto
+        }
+
+        return WhisperLanguage(rawValue: language) ?? .auto
+    }
+
+    private func applyRuntimeConfiguration(language: String?) {
+        guard let whisper else { return }
+
+        let normalizedLanguage = normalizedLanguage(language)
+        let whisperLanguage = whisperLanguage(for: normalizedLanguage)
+
+        whisper.params.language = whisperLanguage
+        whisper.params.detect_language = normalizedLanguage == nil
+        whisper.params.n_threads = recommendedThreadCount
+
+        currentLanguage = normalizedLanguage
+
+        print(
+            "[TranscriptionService] Runtime config: language=\(whisperLanguage.rawValue), detectLanguage=\(normalizedLanguage == nil), threads=\(recommendedThreadCount)"
+        )
+    }
+
+    func loadModel(at url: URL, language: String? = nil) async throws {
+        print("[TranscriptionService] Loading model from \(url.lastPathComponent)")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            print("[TranscriptionService] Model file not found: \(url.lastPathComponent)")
+            throw TranscriptionError.modelLoadFailed(nil)
+        }
+
+        let normalizedLanguage = normalizedLanguage(language)
+        let whisperLanguage = whisperLanguage(for: normalizedLanguage)
+
+        let shouldDetectLanguage = normalizedLanguage == nil
+        let threadCount = recommendedThreadCount
+        let whisperLanguageRawValue = whisperLanguage.rawValue
+
+        modelURL = url
+        currentLanguage = normalizedLanguage
+        currentModelName = url.lastPathComponent.replacingOccurrences(of: "ggml-", with: "").replacingOccurrences(of: ".bin", with: "")
+
+        let coreMLURL = url.deletingLastPathComponent().appendingPathComponent(
+            url.lastPathComponent.replacingOccurrences(of: ".bin", with: "-encoder.mlmodelc")
+        )
+        let hasCoreML = FileManager.default.fileExists(atPath: coreMLURL.path)
+        print("[TranscriptionService] CoreML encoder available: \(hasCoreML) at \(coreMLURL.lastPathComponent)")
+
+        print(
+            "[TranscriptionService] Loading model: \(currentModelName ?? "unknown") (lang: \(whisperLanguage.rawValue), detectLanguage: \(shouldDetectLanguage), threads: \(threadCount))"
+        )
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let newWhisper: Whisper = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let params = WhisperParams(strategy: .greedy)
+                params.language = WhisperLanguage(rawValue: whisperLanguageRawValue) ?? .auto
+                params.detect_language = shouldDetectLanguage
+                params.n_threads = threadCount
+                params.print_progress = false
+                params.print_timestamps = false
+                params.print_special = false
+                params.print_realtime = false
+
+                continuation.resume(returning: Whisper(fromFileURL: url, withParams: params))
+            }
+        }
+        let loadTime = CFAbsoluteTimeGetCurrent() - startTime
+        print("[TranscriptionService] Model \(currentModelName ?? "unknown") loaded in \(String(format: "%.2f", loadTime))s")
+        print("[TranscriptionService] GPU acceleration: \(hasCoreML ? "CoreML ENABLED" : "CPU only")")
+
+        whisper = newWhisper
+        applyRuntimeConfiguration(language: normalizedLanguage)
+    }
+
+    func transcribe(audio: [Float], language: String?) async throws -> String {
+        guard let whisper else {
+            print("[TranscriptionService] ERROR: Model not loaded")
+            throw TranscriptionError.modelNotLoaded
+        }
+
+        guard !audio.isEmpty else {
+            print("[TranscriptionService] ERROR: Empty audio data")
+            throw TranscriptionError.invalidAudioData
+        }
+
+        print("[TranscriptionService] Starting transcription with model: \(currentModelName ?? "unknown")")
+        print("[TranscriptionService] Audio samples: \(audio.count), duration: \(String(format: "%.2f", Double(audio.count) / 16000.0))s, language: \(language ?? "auto")")
+
+        applyRuntimeConfiguration(language: language)
+
+        // Pre-flight check: Handle instanceBusy with retry for rapid sequential transcriptions
+        if whisper.inProgress {
+            print("[TranscriptionService] Whisper busy, waiting with backoff...")
+            // Wait up to 1.5s total with linear backoff (100ms, 200ms, 300ms, 400ms, 500ms)
+            for attempt in 1...5 {
+                try await Task.sleep(nanoseconds: UInt64(100_000_000 * attempt))
+                if !whisper.inProgress {
+                    print("[TranscriptionService] Whisper ready after \(attempt) retry(s)")
+                    break
+                }
+            }
+
+            // Final check - if still busy, throw descriptive error
+            if whisper.inProgress {
+                print("[TranscriptionService] ERROR: Whisper still busy after retries")
+                throw TranscriptionError.transcriptionFailed(NSError(domain: "Whisper", code: -1, userInfo: [NSLocalizedDescriptionKey: "Previous transcription still completing"]))
+            }
+        }
+
+        isTranscribing = true
+        progress = 0.0
+        lastResult = nil
+
+        defer {
+            isTranscribing = false
+        }
+
+        do {
+            let transcribeStart = CFAbsoluteTimeGetCurrent()
+
+            // transcribe returns [Segment]
+            let segments = try await whisper.transcribe(audioFrames: audio)
+            let text = segments.map { $0.text }.joined()
+
+            let transcribeTime = CFAbsoluteTimeGetCurrent() - transcribeStart
+            let audioDuration = Double(audio.count) / 16000.0
+            let realtimeFactor = transcribeTime > 0 ? audioDuration / transcribeTime : 0
+            print(
+                "[TranscriptionService] Transcription completed in \(String(format: "%.2f", transcribeTime))s (\(String(format: "%.2fx", realtimeFactor)) realtime)"
+            )
+
+            let trimmed = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+
+            progress = 1.0
+            lastResult = trimmed
+
+            print("[TranscriptionService] Result ready (characters: \(trimmed.count))")
+            return trimmed
+        } catch {
+            progress = 0.0
+            print("[TranscriptionService] Transcription error: \(error)")
+            throw TranscriptionError.transcriptionFailed(error)
+        }
+    }
+
+    func unloadModel() {
+        print("[TranscriptionService] Unloading model")
+        whisper = nil
+        modelURL = nil
+        currentLanguage = nil
+        currentModelName = nil
+        lastResult = nil
+        progress = 0.0
+    }
+}

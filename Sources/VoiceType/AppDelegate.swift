@@ -1,0 +1,425 @@
+import SwiftUI
+import Combine
+
+enum AppState: String {
+    case idle
+    case recording
+    case transcribing
+    case injecting
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+
+    // MARK: - Services
+
+    let hotkeyService = HotkeyService()
+    let audioCaptureService = AudioCaptureService()
+    let transcriptionService = TranscriptionService()
+    let textInjectionService = TextInjectionService()
+    let permissionManager = PermissionManager()
+    let modelManager = ModelManager.shared
+
+    // MARK: - State
+
+    @Published var appState: AppState = .idle {
+        didSet {
+            print("[AppDelegate] State: \(oldValue.rawValue) → \(appState.rawValue)")
+        }
+    }
+
+    var isSettingsOpen = false {
+        didSet {
+            hotkeyService.isEnabled = !isSettingsOpen
+            print("[AppDelegate] Settings open: \(isSettingsOpen), hotkey enabled: \(hotkeyService.isEnabled)")
+        }
+    }
+
+    // MARK: - Windows
+
+    private var voiceTypeWindow: VoiceTypeWindow?
+    private var settingsWindow: NSWindow?
+    private var aboutWindow: NSWindow?
+    private var cancellables = Set<AnyCancellable>()
+
+    // MARK: - NSApplicationDelegate
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        print("[AppDelegate] === Launching VoiceType ===")
+        NSApp.setActivationPolicy(.accessory)
+
+        voiceTypeWindow = VoiceTypeWindow(audioService: audioCaptureService)
+        
+        setupServices()
+        setupHotkeyCallbacks()
+        setupBindings()
+        preloadModelIfNeeded()
+
+        print("[AppDelegate] === Ready. Hotkey: \(modifiersToString(AppSettings.shared.hotkeyModifiers))\(keyCodeToString(AppSettings.shared.hotkeyKey)) ===")
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        hotkeyService.stopListening()
+        if appState == .recording {
+            _ = try? audioCaptureService.stopRecording()
+        }
+    }
+
+    // MARK: - Settings Window
+
+    func openSettings() {
+        print("[AppDelegate] openSettings() called")
+        permissionManager.checkAllPermissions()
+
+        if settingsWindow == nil {
+            settingsWindow = makeWindow(
+                title: "VoiceType Settings",
+                size: NSSize(width: 620, height: 520),
+                content: SettingsView(permissionManager: permissionManager)
+            )
+            settingsWindow?.delegate = self
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.deminiaturize(nil)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        settingsWindow?.orderFrontRegardless()
+        isSettingsOpen = true
+        print("[AppDelegate] Settings window opened")
+    }
+
+    func closeSettings() {
+        settingsWindow?.close()
+        isSettingsOpen = false
+    }
+
+    func openAbout() {
+        print("[AppDelegate] openAbout() called")
+        permissionManager.checkAllPermissions()
+
+        if aboutWindow == nil {
+            aboutWindow = makeWindow(
+                title: "About VoiceType",
+                size: NSSize(width: 460, height: 560),
+                content: AboutView(permissionManager: permissionManager)
+            )
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        aboutWindow?.deminiaturize(nil)
+        aboutWindow?.makeKeyAndOrderFront(nil)
+        aboutWindow?.orderFrontRegardless()
+    }
+
+    // MARK: - Setup
+
+    private func setupServices() {
+        permissionManager.checkAllPermissions()
+    }
+
+    private func setupHotkeyCallbacks() {
+        hotkeyService.canStartRecording = { [weak self] in
+            guard let self else { return false }
+            return self.appState == .idle
+        }
+        
+        hotkeyService.onRecordingStarted = { [weak self] in
+            self?.handleRecordingStarted()
+        }
+
+        hotkeyService.onRecordingStopped = { [weak self] in
+            self?.handleRecordingStopped()
+        }
+
+        registerHotkey()
+    }
+
+    private func setupBindings() {
+        AppSettings.shared.$hotkeyModifiers
+            .combineLatest(AppSettings.shared.$hotkeyKey)
+            .combineLatest(AppSettings.shared.$activationMode)
+            .dropFirst()
+            .removeDuplicates { $0.0 == $1.0 && $0.1 == $1.1 }
+            .sink { [weak self] _ in
+                self?.registerHotkey()
+            }
+            .store(in: &cancellables)
+        
+        AppSettings.shared.$selectedModel
+            .dropFirst()
+            .sink { [weak self] newModel in
+                print("[AppDelegate] Model changed to: \(newModel.rawValue)")
+                self?.reloadModel(newModel)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func registerHotkey() {
+        hotkeyService.startListening(
+            modifiers: AppSettings.shared.hotkeyModifiers,
+            keyCode: AppSettings.shared.hotkeyKey,
+            mode: AppSettings.shared.activationMode
+        )
+    }
+    
+    private func reloadModel(_ model: TranscriptionModel) {
+        let language = AppSettings.shared.preferredLanguage
+        print("[AppDelegate] Reloading model: \(model.rawValue) with language: \(language)")
+        
+        Task {
+            if !modelManager.isModelDownloaded(model: model) {
+                print("[AppDelegate] Model not downloaded, downloading...")
+                do {
+                    try await modelManager.downloadModel(model: model)
+                    print("[AppDelegate] Model downloaded successfully")
+                } catch {
+                    print("[AppDelegate] Download failed: \(error)")
+                    showError("Failed to download model: \(error.localizedDescription)")
+                    return
+                }
+            }
+            
+            let modelURL = modelManager.modelURL(for: model)
+            transcriptionService.unloadModel()
+            
+            do {
+                try await transcriptionService.loadModel(at: modelURL, language: language)
+                print("[AppDelegate] Model reloaded successfully: \(model.rawValue)")
+            } catch {
+                print("[AppDelegate] Failed to reload model: \(error)")
+                showError("Failed to load model: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func preloadModelIfNeeded() {
+        let model = AppSettings.shared.selectedModel
+        let language = AppSettings.shared.preferredLanguage
+        print("[AppDelegate] Preload model: \(model.rawValue), language: \(language)")
+        print("[AppDelegate] Main model downloaded: \(modelManager.isModelDownloaded(model: model))")
+        print("[AppDelegate] CoreML support: \(model.hasCoreMLSupport), downloaded: \(modelManager.isCoreMLModelDownloaded(model: model))")
+
+        Task {
+            if !modelManager.isModelDownloaded(model: model) {
+                print("[AppDelegate] Model not downloaded, auto-downloading...")
+                do {
+                    try await modelManager.downloadModel(model: model)
+                    print("[AppDelegate] Models downloaded successfully")
+                } catch {
+                    print("[AppDelegate] Auto-download failed: \(error)")
+                    showError("Failed to download model: \(error.localizedDescription)\n\nPlease go to Settings → Model → Download")
+                    return
+                }
+            } else if model.hasCoreMLSupport && !modelManager.isCoreMLModelDownloaded(model: model) {
+                print("[AppDelegate] CoreML not downloaded, downloading for GPU acceleration...")
+                do {
+                    try await modelManager.downloadModel(model: model)
+                    print("[AppDelegate] CoreML downloaded successfully")
+                } catch {
+                    print("[AppDelegate] CoreML download failed (non-critical): \(error)")
+                }
+            }
+
+            let modelURL = modelManager.modelURL(for: model)
+            do {
+                print("[AppDelegate] Loading model from \(modelURL.lastPathComponent) with language: \(language)")
+                try await transcriptionService.loadModel(at: modelURL, language: language)
+                print("[AppDelegate] Model loaded successfully")
+            } catch {
+                print("[AppDelegate] Failed to load model: \(error)")
+                showError("Failed to load model: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Recording Lifecycle
+
+    private func handleRecordingStarted() {
+        print("[AppDelegate] handleRecordingStarted, currentState: \(appState.rawValue)")
+        
+        guard appState == .idle else {
+            print("[AppDelegate] Ignoring start, not idle")
+            return
+        }
+
+        do {
+            try audioCaptureService.startRecording()
+            appState = .recording
+            voiceTypeWindow?.show(state: .recording)
+            print("[AppDelegate] Recording started")
+        } catch {
+            print("[AppDelegate] Failed to start recording: \(error)")
+            showError("Failed to start recording: \(error.localizedDescription)")
+            appState = .idle
+        }
+    }
+
+    private func handleRecordingStopped() {
+        print("[AppDelegate] handleRecordingStopped, currentState: \(appState.rawValue)")
+        voiceTypeWindow?.hide()
+
+        guard appState == .recording else {
+            print("[AppDelegate] Ignoring stop, not recording (state: \(appState.rawValue))")
+            // Defensive: if we're not recording but got a stop, reset audio service just in case
+            _ = try? audioCaptureService.stopRecording()
+            appState = .idle
+            return
+        }
+
+        do {
+            let samples = try audioCaptureService.stopRecording()
+            print("[AppDelegate] Got \(samples.count) audio samples")
+            guard !samples.isEmpty else {
+                print("[AppDelegate] No audio samples")
+                appState = .idle
+                return
+            }
+
+            appState = .transcribing
+            voiceTypeWindow?.show(state: .processing)
+
+            print("[AppDelegate] About to create transcription Task")
+            Task(priority: .userInitiated) { [weak self] in
+                guard let self else { return }
+                print("[AppDelegate] Transcription Task started, calling transcribeAndInject")
+                await self.transcribeAndInject(samples: samples)
+                print("[AppDelegate] Transcription Task completed")
+            }
+            print("[AppDelegate] Transcription Task created")
+        } catch {
+            print("[AppDelegate] Failed to stop recording: \(error)")
+            showError("Failed to stop recording: \(error.localizedDescription)")
+            appState = .idle
+        }
+    }
+
+    /// Force-reset state to idle. Called when hotkey service detects a press but AppDelegate is out of sync.
+    func forceResetToIdle() {
+        print("[AppDelegate] forceResetToIdle called, was: \(appState.rawValue)")
+        voiceTypeWindow?.hide()
+        if appState == .recording {
+            _ = try? audioCaptureService.stopRecording()
+        }
+        appState = .idle
+        print("[AppDelegate] State forced to idle")
+    }
+
+    // MARK: - Transcription Pipeline
+
+    private func transcribeAndInject(samples: [Float]) async {
+        print("[AppDelegate] transcribeAndInject: \(samples.count) samples")
+
+        var transcriptionText: String?
+
+        do {
+            try await ensureModelLoaded()
+            print("[AppDelegate] Model ready, starting transcription")
+
+            let language = AppSettings.shared.preferredLanguage == "auto"
+                ? nil
+                : AppSettings.shared.preferredLanguage
+
+            let text = try await transcriptionService.transcribe(
+                audio: samples,
+                language: language
+            )
+
+            transcriptionText = text
+            print("[AppDelegate] Transcription finished successfully")
+        } catch {
+            print("[AppDelegate] Transcription error: \(error)")
+            voiceTypeWindow?.hide()
+            appState = .idle
+            print("[AppDelegate] State reset to idle (error)")
+            showError("Transcription failed: \(error.localizedDescription)")
+            return
+        }
+
+        voiceTypeWindow?.hide()
+
+        guard let text = transcriptionText,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            print("[AppDelegate] Empty transcription result")
+            appState = .idle
+            print("[AppDelegate] State reset to idle (empty result)")
+            return
+        }
+
+        appState = .injecting
+        print("[AppDelegate] State: transcribing → injecting")
+
+        // Keep the app busy until the text is fully inserted, so the next hotkey
+        // press cannot race with the paste/typing sequence.
+        injectText(text, mode: AppSettings.shared.textInjectionMode)
+        appState = .idle
+        print("[AppDelegate] State reset to idle (success)")
+    }
+
+    private func ensureModelLoaded() async throws {
+        guard !transcriptionService.isModelLoaded else {
+            print("[AppDelegate] Model already loaded")
+            return
+        }
+
+        let model = AppSettings.shared.selectedModel
+        let language = AppSettings.shared.preferredLanguage
+        guard modelManager.isModelDownloaded(model: model) else {
+            print("[AppDelegate] Model not downloaded: \(model.rawValue)")
+            throw TranscriptionError.modelNotLoaded
+        }
+
+        let modelURL = modelManager.modelURL(for: model)
+        print("[AppDelegate] Loading model on-demand: \(modelURL.lastPathComponent) with language: \(language)")
+        try await transcriptionService.loadModel(at: modelURL, language: language)
+    }
+
+    private func injectText(_ text: String, mode: TextInjectionMode) {
+        print("[AppDelegate] Injecting text (mode: \(mode.rawValue), characters: \(text.count))")
+        do {
+            try textInjectionService.injectText(
+                text,
+                mode: mode,
+                pressEnterAfter: AppSettings.shared.autoEnterAfterInsert
+            )
+            print("[AppDelegate] Text injected successfully")
+        } catch {
+            print("[AppDelegate] Text injection failed: \(error)")
+            showError("Failed to insert text: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Error Handling
+
+    private func showError(_ message: String) {
+        print("[AppDelegate] ERROR: \(message)")
+        let alert = NSAlert()
+        alert.messageText = "VoiceType Error"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func makeWindow<Content: View>(title: String, size: NSSize, content: Content) -> NSWindow {
+        let hostingView = NSHostingView(rootView: content)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = title
+        window.contentView = hostingView
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.setContentSize(size)
+        return window
+    }
+}
+
+// MARK: - NSWindowDelegate
+
+extension AppDelegate: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        isSettingsOpen = false
+    }
+}
