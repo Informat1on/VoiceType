@@ -103,8 +103,26 @@ cat > "$BUILD_TEMP_DIR/entitlements.plist" << 'EOF'
 </plist>
 EOF
 
-# Ad-hoc sign the app
-codesign --force --deep --entitlements "$BUILD_TEMP_DIR/entitlements.plist" --sign - "$APP_DIR"
+# Sign the app
+# For open-source: default is ad-hoc signing (no secrets in repo)
+# For personal/dev: create a .signing-env file in the project root with:
+#   SIGN_IDENTITY="Apple Development: your@email.com (TEAMID)"
+# This file is .gitignored and will not appear in the repository.
+# For release builds: the CI or maintainer sets SIGN_IDENTITY before building
+
+# Load local signing config if present
+if [ -f ".signing-env" ]; then
+    # shellcheck source=/dev/null
+    source ".signing-env"
+fi
+
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+    echo "🔏 Signing with developer identity: $SIGN_IDENTITY"
+    codesign --force --deep --entitlements "$BUILD_TEMP_DIR/entitlements.plist" --sign "$SIGN_IDENTITY" --options runtime "$APP_DIR"
+else
+    echo "🔏 Signing with ad-hoc identity (set SIGN_IDENTITY for dev signing)"
+    codesign --force --deep --entitlements "$BUILD_TEMP_DIR/entitlements.plist" --sign - "$APP_DIR"
+fi
 
 echo "✅ App bundle created at: $APP_DIR"
 echo "🚀 Run with: open $APP_DIR"

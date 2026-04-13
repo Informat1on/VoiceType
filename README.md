@@ -9,7 +9,15 @@ Lightweight macOS menu bar voice typing app powered by `whisper.cpp` and optimiz
 
 VoiceType records audio with a global shortcut, transcribes it locally on your Mac, and inserts the resulting text into the currently focused app.
 
-## Quick Install
+## Installation
+
+### Option 1: Download a release (recommended)
+
+Go to the [Releases page](https://github.com/Informat1on/VoiceType/releases), download `VoiceType.dmg`, open it, and drag `VoiceType.app` to your `Applications` folder.
+
+This build is developer-signed — TCC permissions (Microphone, Accessibility) will persist across app updates. You only grant them once.
+
+### Option 2: Build from source
 
 Clone the repo and run the installer:
 
@@ -110,7 +118,7 @@ This does three things:
 
 Installing the app into a stable location is important. It helps macOS associate permissions and icons with the app correctly.
 
-Note: local source builds are ad-hoc signed. After rebuilding and reinstalling a new bundle, macOS may ask for Microphone or Accessibility permission again.
+Note: local source builds are ad-hoc signed by default. After rebuilding and reinstalling a new bundle, macOS may ask for Microphone or Accessibility permission again. The installer automatically handles this by resetting stale TCC entries before installing.
 
 If you only want one command for local setup, use `./install-app.sh`.
 
@@ -190,16 +198,10 @@ open "$HOME/Applications/VoiceType.app"
 
 This will rebuild the app, reinstall it into `~/Applications`, and refresh the registered app bundle used by macOS.
 
-Notes:
+The installer automatically detects the signing type and handles permissions:
 
-- macOS may ask you to re-grant Microphone or Accessibility permission after reinstalling an updated local build.
-- If insertion stops working after an update, re-check Accessibility for `VoiceType` in `System Settings -> Privacy & Security -> Accessibility`.
-- If needed, reset stale permissions and grant them again:
-
-```bash
-tccutil reset Microphone com.voicetype.app
-tccutil reset Accessibility com.voicetype.app
-```
+- **Developer-signed** (release builds): permissions persist, no reset needed
+- **Ad-hoc signed** (local builds from source): stale TCC entries are reset automatically, and macOS will re-prompt on next launch
 
 ## Troubleshooting
 
@@ -214,11 +216,10 @@ Use this flow:
 open "$HOME/Applications/VoiceType.app"
 ```
 
-If you previously granted permissions to an older build inside `.build/`, reset them once:
+If you previously granted permissions to an older build inside `.build/`, you can manually reset them:
 
 ```bash
-tccutil reset Microphone com.voicetype.app
-tccutil reset Accessibility com.voicetype.app
+./reset-permissions.sh
 ```
 
 Then relaunch the installed app and grant permissions again.
@@ -295,6 +296,26 @@ Sources/VoiceType/
     ├── Recording/
     ├── Settings/
     └── Shared/
+```
+
+## Code Signing & Permissions
+
+macOS TCC (Transparency, Consent, Control) binds permissions to the app's code signature.
+
+| Scenario | Signing | Permission behavior |
+|----------|---------|-------------------|
+| **Download from Releases** | Developer-signed | Permissions persist across updates — grant once |
+| **Build from source** | Ad-hoc (default) | Installer auto-resets stale entries, re-prompts on launch |
+| **Developer with certificate** | Developer-signed | Create `.signing-env` with `SIGN_IDENTITY="..."` to persist permissions |
+
+To use your own developer certificate for local builds:
+
+```bash
+# Find your signing identity
+security find-identity -v -p codesigning
+
+# Create a local config file (gitignored, never committed)
+echo 'SIGN_IDENTITY="Apple Development: your@email.com (TEAMID)"' > .signing-env
 ```
 
 ## License

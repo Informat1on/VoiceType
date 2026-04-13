@@ -15,16 +15,21 @@ LEGACY_APP_DIRS=(
 
 ./build-app.sh
 
+# Detect signing identity to determine if TCC reset is needed
+SIGNING_TEAM_ID=$(codesign -dv "$SOURCE_APP" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
+
+if [ -z "$SIGNING_TEAM_ID" ]; then
+    # Ad-hoc signed: TCC permissions are bound to binary hash, which changes on every rebuild
+    echo "♻️  Ad-hoc signed build detected — resetting stale TCC entries..."
+    tccutil reset Accessibility "$BUNDLE_ID" 2>/dev/null || true
+    tccutil reset Microphone "$BUNDLE_ID" 2>/dev/null || true
+    echo ""
+else
+    # Developer signed: TCC permissions are bound to Team ID, which persists across rebuilds
+    echo "🔏 Developer signed (Team ID: $SIGNING_TEAM_ID) — permissions will persist across rebuilds"
+fi
+
 echo "📥 Installing $APP_NAME to $INSTALL_DIR..."
-
-# Reset stale TCC entries before copying the new binary.
-# macOS TCC (Transparency, Consent, Control) binds Accessibility permissions
-# to the code signature hash. Since we use ad-hoc signing (--sign -), the
-# hash changes on every rebuild, orphaning the old permission entry.
-# Resetting ensures the app will re-prompt on next launch.
-tccutil reset Accessibility "$BUNDLE_ID" 2>/dev/null || true
-tccutil reset Microphone "$BUNDLE_ID" 2>/dev/null || true
-
 mkdir -p "$INSTALL_DIR"
 rm -rf "$TARGET_APP"
 cp -R "$SOURCE_APP" "$TARGET_APP"

@@ -2,6 +2,7 @@
 .build/
 .swiftpm/
 dist/
+.qwen
 
 # Local Xcode metadata
 **/xcuserdata/
@@ -9,3 +10,6 @@ dist/
 
 # Derived artwork generated during local packaging
 artwork/derived/
+
+# Local signing config (contains your developer certificate identity)
+.signing-env
