@@ -101,10 +101,54 @@ final class PermissionManager: ObservableObject {
     }
 
     func requestAccessibilityPermission(prompt: Bool = true) {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
-        self.hasAccessibilityPermission = AXIsProcessTrustedWithOptions(options)
-        AppLog.permissions.notice("Accessibility permission updated: \(self.hasAccessibilityPermission, privacy: .public)")
-        refreshPermissions()
+        // First check current status without prompting
+        let checkOptions = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary
+        let currentlyTrusted = AXIsProcessTrustedWithOptions(checkOptions)
+        
+        if currentlyTrusted {
+            self.hasAccessibilityPermission = true
+            AppLog.permissions.notice("Accessibility permission already granted")
+            refreshPermissions()
+            return
+        }
+        
+        // If not trusted and prompt is requested, open System Settings directly
+        // Note: AXIsProcessTrustedWithOptions with prompt=true does NOT show a dialog
+        // if the app is already in the Accessibility list (even if disabled).
+        // The only reliable way is to open System Settings and ask user to enable the toggle.
+        if prompt {
+            AppLog.permissions.notice("Accessibility not granted, opening System Settings")
+            openAccessibilitySettings()
+            showAccessibilityInstructionsAlert()
+        } else {
+            self.hasAccessibilityPermission = false
+            AppLog.permissions.notice("Accessibility permission denied")
+            refreshPermissions()
+        }
+    }
+    
+    /// Show clear instructions for enabling Accessibility in System Settings
+    private func showAccessibilityInstructionsAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Accessibility Permission Required"
+        alert.informativeText = """
+        VoiceType needs Accessibility permission to insert text.
+        
+        Please:
+        1. Find "VoiceType" in the Accessibility list
+        2. Enable the toggle (turn it ON)
+        3. Click "Restart App" below
+        
+        The app must be restarted for permissions to take effect.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Restart App")
+        alert.addButton(withTitle: "I'll do it later")
+        
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            restartAppForAccessibility()
+        }
     }
     
     func openAccessibilitySettings() {

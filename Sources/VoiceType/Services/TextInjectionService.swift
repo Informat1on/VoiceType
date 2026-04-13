@@ -170,8 +170,8 @@ final class TextInjectionService {
     }
 
     static func hasAccessibilityPermissions() -> Bool {
-        let options: [String: Any] = [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: false]
-        return AXIsProcessTrustedWithOptions(options as CFDictionary)
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
     }
 
     static func requestAccessibilityPermissions() {
