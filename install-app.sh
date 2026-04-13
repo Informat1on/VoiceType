@@ -13,26 +13,34 @@ LEGACY_APP_DIRS=(
     "$(pwd)/dist/$APP_NAME.app"
 )
 
-./build-app.sh
-
-# Detect signing identity to determine if TCC reset is needed
-SIGNING_TEAM_ID=$(codesign -dv "$SOURCE_APP" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
-
-if [ -z "$SIGNING_TEAM_ID" ]; then
-    # Ad-hoc signed: TCC permissions are bound to binary hash, which changes on every rebuild
-    echo "♻️  Ad-hoc signed build detected — resetting stale TCC entries..."
-    tccutil reset Accessibility "$BUNDLE_ID" 2>/dev/null || true
-    tccutil reset Microphone "$BUNDLE_ID" 2>/dev/null || true
-    echo ""
+# Only rebuild if the source app doesn't exist or source files changed
+NEEDS_BUILD=false
+if [ ! -d "$SOURCE_APP" ]; then
+    NEEDS_BUILD=true
+elif [ -d "$TARGET_APP" ]; then
+    # Check if any .swift file is newer than the installed binary
+    TARGET_MTIME=$(stat -f %m "$TARGET_APP/Contents/MacOS/$APP_NAME" 2>/dev/null || echo 0)
+    SOURCE_NEWER=$(find Sources -name "*.swift" -newer "$TARGET_APP/Contents/MacOS/$APP_NAME" -type f 2>/dev/null | head -1)
+    if [ -n "$SOURCE_NEWER" ]; then
+        NEEDS_BUILD=true
+    fi
 else
-    # Developer signed: TCC permissions are bound to Team ID, which persists across rebuilds
-    echo "🔏 Developer signed (Team ID: $SIGNING_TEAM_ID) — permissions will persist across rebuilds"
+    NEEDS_BUILD=true
+fi
+
+if [ "$NEEDS_BUILD" = true ]; then
+    echo "🔨 Source changed — rebuilding..."
+    ./build-app.sh
+else
+    echo "✅ Build up to date — skipping build (permissions will persist)"
 fi
 
 echo "📥 Installing $APP_NAME to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
-rm -rf "$TARGET_APP"
-cp -R "$SOURCE_APP" "$TARGET_APP"
+
+# Use ditto instead of rm+cp — ditto updates in-place preserving filesystem
+# metadata that macOS TCC uses to track the application.
+ditto "$SOURCE_APP" "$TARGET_APP"
 
 if [ -x "$LSREGISTER" ]; then
     for legacy_dir in "${LEGACY_APP_DIRS[@]}"; do
