@@ -83,8 +83,37 @@ final class TextInjectionService {
         }
     }
 
+    // Virtual key codes for keys that must use real scancodes rather than Unicode
+    // These are ignored by some apps (terminals, VS Code, etc.) when sent via keyboardSetUnicodeString
+    private static let virtualKeyMap: [Character: CGKeyCode] = [
+        " ": 0x31,   // Space
+        "\t": 0x30,  // Tab
+        "\n": 0x24,  // Return
+        "\r": 0x24,  // Return
+    ]
+
     private func typeCharacter(_ character: Character, eventSource: CGEventSource) {
-        let unichars = Array(String(character).utf16)
+        // Check if this character has a dedicated virtual key code
+        if let vkCode = Self.virtualKeyMap[character] {
+            typeCharacterWithVirtualKey(vkCode, eventSource: eventSource)
+        } else {
+            typeCharacterWithUnicode(String(character), eventSource: eventSource)
+        }
+    }
+
+    /// Type a character using its real keyboard virtual key code
+    private func typeCharacterWithVirtualKey(_ vkCode: CGKeyCode, eventSource: CGEventSource) {
+        guard let keyDown = CGEvent(keyboardEventSource: eventSource, virtualKey: vkCode, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: eventSource, virtualKey: vkCode, keyDown: false) else {
+            return
+        }
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+    }
+
+    /// Type a character using Unicode string (fallback for characters without dedicated virtual keys)
+    private func typeCharacterWithUnicode(_ string: String, eventSource: CGEventSource) {
+        let unichars = Array(string.utf16)
 
         guard let keyDown = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: false) else {
