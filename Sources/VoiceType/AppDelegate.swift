@@ -143,15 +143,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func setupBindings() {
-        AppSettings.shared.$hotkeyModifiers
-            .combineLatest(AppSettings.shared.$hotkeyKey)
-            .combineLatest(AppSettings.shared.$activationMode)
-            .dropFirst()
-            .removeDuplicates { $0.0 == $1.0 && $0.1 == $1.1 }
-            .sink { [weak self] _ in
-                self?.registerHotkey()
-            }
-            .store(in: &cancellables)
+        // Use CombineLatest3 for flat tuple (modifiers, keyCode, mode)
+        // This avoids nested tuple comparison issues
+        Publishers.CombineLatest3(
+            AppSettings.shared.$hotkeyModifiers,
+            AppSettings.shared.$hotkeyKey,
+            AppSettings.shared.$activationMode
+        )
+        .dropFirst()
+        .removeDuplicates { $0 == $1 }
+        .sink { [weak self] modifiers, keyCode, mode in
+            AppLog.hotkey.notice("Hotkey settings changed: mode=\(mode.rawValue, privacy: .public)")
+            self?.registerHotkey(modifiers: modifiers, keyCode: keyCode, mode: mode)
+        }
+        .store(in: &cancellables)
         
         AppSettings.shared.$selectedModel
             .dropFirst()
@@ -162,8 +167,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             .store(in: &cancellables)
     }
 
-    private func registerHotkey() {
+    private func registerHotkey(modifiers: Int, keyCode: Int, mode: ActivationMode) {
+        AppLog.hotkey.notice("Registering hotkey: \(modifiersToString(modifiers), privacy: .public)\(keyCodeToString(keyCode), privacy: .public) mode=\(mode.rawValue, privacy: .public)")
         hotkeyService.startListening(
+            modifiers: modifiers,
+            keyCode: keyCode,
+            mode: mode
+        )
+    }
+    
+    private func registerHotkey() {
+        // Fallback for initial registration - read from current settings
+        registerHotkey(
             modifiers: AppSettings.shared.hotkeyModifiers,
             keyCode: AppSettings.shared.hotkeyKey,
             mode: AppSettings.shared.activationMode

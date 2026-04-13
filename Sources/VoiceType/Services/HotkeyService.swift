@@ -1,6 +1,7 @@
 import Cocoa
 import Combine
 import Carbon
+import OSLog
 
 final class HotkeyService: ObservableObject {
     
@@ -84,6 +85,7 @@ final class HotkeyService: ObservableObject {
         }
         
         print("HotkeyService: Listening for hotkey: \(modifiersToString(modifiers))\(keyCodeToString(keyCode)) (mode: \(mode.rawValue), modifiers: \(modifiers), keyCode: \(keyCode))")
+        AppLog.hotkey.notice("Started listening: mode=\(mode.rawValue, privacy: .public)")
     }
     
     func stopListening() {
