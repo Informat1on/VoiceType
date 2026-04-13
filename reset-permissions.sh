@@ -21,7 +21,7 @@ echo "Resetting Microphone permission..."
 tccutil reset Microphone "$BUNDLE_ID"
 
 echo "Resetting Accessibility permission..."
-tccutil reset AppleEvents "$BUNDLE_ID"
+tccutil reset Accessibility "$BUNDLE_ID"
 
 echo ""
 echo "Permissions reset successfully."
