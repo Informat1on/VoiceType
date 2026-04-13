@@ -111,10 +111,72 @@ final class PermissionManager: ObservableObject {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else {
             return
         }
-        
+
         NSWorkspace.shared.open(url)
         AppLog.permissions.notice("Opened Accessibility settings")
-        refreshPermissions()
+
+        // Watch for permission changes and prompt user to restart when granted
+        watchForAccessibilityRestart()
+    }
+
+    /// After user enables Accessibility in System Settings, watch for it and prompt to restart.
+    /// macOS requires a full app restart for Accessibility permissions to take effect.
+    private func watchForAccessibilityRestart() {
+        refreshTask?.cancel()
+        refreshTask = Task { @MainActor [weak self] in
+            let maxAttempts = 30 // 30 seconds max
+            for _ in 0..<maxAttempts {
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1s
+                guard let self, !Task.isCancelled else { return }
+
+                // Check without prompting
+                let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary
+                if AXIsProcessTrustedWithOptions(options) {
+                    self.hasAccessibilityPermission = true
+                    AppLog.permissions.notice("Accessibility permission detected after grant!")
+                    self.showRestartRequiredAlert()
+                    return
+                }
+            }
+        }
+    }
+
+    /// Show alert asking user to restart the app. Accessibility permissions require
+    /// a full process restart on macOS — simply closing the window is not enough.
+    private func showRestartRequiredAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Accessibility permission granted!"
+        alert.informativeText = "macOS requires VoiceType to be fully restarted for Accessibility permissions to take effect.\n\nThe app will now quit and relaunch automatically."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Restart Now")
+        alert.runModal()
+
+        // Relaunch the app
+        let url = Bundle.main.bundleURL
+        let config = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+            NSApp.terminate(nil)
+        }
+    }
+
+    /// Restart the app — used when Accessibility permission was granted but the running
+    /// process was started before the permission was granted (cached stale state).
+    func restartAppForAccessibility() {
+        let alert = NSAlert()
+        alert.messageText = "Restart required"
+        alert.informativeText = "macOS requires VoiceType to be restarted for Accessibility permissions to take effect.\n\nThe app will quit and relaunch automatically."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Restart Now")
+        alert.addButton(withTitle: "Cancel")
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+
+        let url = Bundle.main.bundleURL
+        let config = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+            NSApp.terminate(nil)
+        }
     }
     
     func openMicrophoneSettings() {
