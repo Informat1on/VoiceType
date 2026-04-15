@@ -13,12 +13,14 @@ ICON_ART_SOURCE="artwork/image_voice_transparent.png"
 ICON_SOURCE="$BUILD_TEMP_DIR/app-icon-cropped.png"
 ICONSET_DIR="$BUILD_TEMP_DIR/AppIcon.iconset"
 ICON_FILE="$RESOURCES_DIR/$APP_NAME.icns"
+APP_VERSION="${APP_VERSION:-$(tr -d '[:space:]' < VERSION)}"
+APP_BUILD_VERSION="${APP_BUILD_VERSION:-$APP_VERSION}"
 LEGACY_APP_DIRS=(
     ".build/release/$APP_NAME.app"
     ".build/arm64-apple-macosx/release/$APP_NAME.app"
 )
 
-echo "🔨 Building $APP_NAME..."
+echo "🔨 Building $APP_NAME $APP_VERSION..."
 for legacy_dir in "${LEGACY_APP_DIRS[@]}"; do
     rm -rf "$legacy_dir"
 done
@@ -52,7 +54,7 @@ fi
 cp "$BUILD_PRODUCTS_DIR/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 
 # Create Info.plist
-cat > "$CONTENTS_DIR/Info.plist" << 'EOF'
+cat > "$CONTENTS_DIR/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -68,9 +70,9 @@ cat > "$CONTENTS_DIR/Info.plist" << 'EOF'
     <key>CFBundleIdentifier</key>
     <string>com.voicetype.app</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$APP_BUILD_VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>$APP_VERSION</string>
     <key>CFBundleExecutable</key>
     <string>VoiceType</string>
     <key>CFBundleIconFile</key>
@@ -107,6 +109,8 @@ EOF
 # For open-source: default is ad-hoc signing (no secrets in repo)
 # For personal/dev: create a .signing-env file in the project root with:
 #   SIGN_IDENTITY="Apple Development: your@email.com (TEAMID)"
+# For user-facing releases, prefer:
+#   SIGN_IDENTITY="Developer ID Application: your@email.com (TEAMID)"
 # This file is .gitignored and will not appear in the repository.
 # For release builds: the CI or maintainer sets SIGN_IDENTITY before building
 
