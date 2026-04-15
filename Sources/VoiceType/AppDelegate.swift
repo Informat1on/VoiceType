@@ -8,8 +8,18 @@ enum AppState: String {
     case injecting
 }
 
+enum RecordingReadiness: Equatable {
+    case ready
+    case missingMicrophonePermission
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+
+    private struct ModelLoadRequest {
+        let model: TranscriptionModel
+        let downloadCoreMLIfNeeded: Bool
+    }
 
     // MARK: - Services
 
@@ -38,6 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: - Windows
 
     private var voiceTypeWindow: VoiceTypeWindow?
+    private var modelLoadTask: Task<Void, Never>?
+    private var pendingModelLoadRequest: ModelLoadRequest?
     private var settingsWindow: NSWindow?
     private var aboutWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
@@ -141,66 +153,141 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func setupBindings() {
-        AppSettings.shared.$hotkeyModifiers
-            .combineLatest(AppSettings.shared.$hotkeyKey)
-            .combineLatest(AppSettings.shared.$activationMode)
-            .dropFirst()
-            .removeDuplicates { $0.0 == $1.0 && $0.1 == $1.1 }
-            .sink { [weak self] _ in
-                self?.registerHotkey()
-            }
-            .store(in: &cancellables)
+        // Use CombineLatest3 for flat tuple (modifiers, keyCode, mode)
+        // This avoids nested tuple comparison issues
+        Publishers.CombineLatest3(
+            AppSettings.shared.$hotkeyModifiers,
+            AppSettings.shared.$hotkeyKey,
+            AppSettings.shared.$activationMode
+        )
+        .dropFirst()
+        .removeDuplicates { $0 == $1 }
+        .sink { [weak self] modifiers, keyCode, mode in
+            AppLog.hotkey.notice("Hotkey settings changed: mode=\(mode.rawValue, privacy: .public)")
+            self?.registerHotkey(modifiers: modifiers, keyCode: keyCode, mode: mode)
+        }
+        .store(in: &cancellables)
         
         AppSettings.shared.$selectedModel
             .dropFirst()
             .sink { [weak self] newModel in
                 print("[AppDelegate] Model changed to: \(newModel.rawValue)")
-                self?.reloadModel(newModel)
+                self?.scheduleModelLoad(newModel, downloadCoreMLIfNeeded: false)
             }
             .store(in: &cancellables)
     }
 
-    private func registerHotkey() {
+    private func registerHotkey(modifiers: Int, keyCode: Int, mode: ActivationMode) {
+        AppLog.hotkey.notice("Registering hotkey: \(modifiersToString(modifiers), privacy: .public)\(keyCodeToString(keyCode), privacy: .public) mode=\(mode.rawValue, privacy: .public)")
         hotkeyService.startListening(
+            modifiers: modifiers,
+            keyCode: keyCode,
+            mode: mode
+        )
+    }
+    
+    private func registerHotkey() {
+        // Fallback for initial registration - read from current settings
+        registerHotkey(
             modifiers: AppSettings.shared.hotkeyModifiers,
             keyCode: AppSettings.shared.hotkeyKey,
             mode: AppSettings.shared.activationMode
         )
     }
     
-    private func reloadModel(_ model: TranscriptionModel) {
+    private func scheduleModelLoad(_ model: TranscriptionModel, downloadCoreMLIfNeeded: Bool) {
+        pendingModelLoadRequest = ModelLoadRequest(
+            model: model,
+            downloadCoreMLIfNeeded: downloadCoreMLIfNeeded
+        )
+        startModelLoadTaskIfNeeded()
+    }
+
+    private func startModelLoadTaskIfNeeded() {
+        guard modelLoadTask == nil else {
+            return
+        }
+
+        modelLoadTask = Task { [weak self] in
+            guard let self else { return }
+            await self.processPendingModelLoads()
+        }
+    }
+
+    private func processPendingModelLoads() async {
+        defer {
+            modelLoadTask = nil
+
+            // A new selection may arrive while the current task is finishing.
+            if pendingModelLoadRequest != nil {
+                startModelLoadTaskIfNeeded()
+            }
+        }
+
+        while let request = pendingModelLoadRequest {
+            pendingModelLoadRequest = nil
+            await loadModel(for: request)
+        }
+    }
+
+    private func hasNewerModelLoadRequest(than request: ModelLoadRequest) -> Bool {
+        guard let pendingModelLoadRequest else {
+            return false
+        }
+
+        return pendingModelLoadRequest.model != request.model
+    }
+
+    private func loadModel(for request: ModelLoadRequest) async {
+        let model = request.model
+
         let language = AppSettings.shared.preferredLanguage
         print("[AppDelegate] Reloading model: \(model.rawValue) with language: \(language)")
         AppLog.models.notice("Reloading model \(model.rawValue, privacy: .public)")
-        
-        Task {
-            if !modelManager.isModelDownloaded(model: model) {
-                print("[AppDelegate] Model not downloaded, downloading...")
-                AppLog.models.notice("Downloading model \(model.rawValue, privacy: .public)")
-                do {
-                    try await modelManager.downloadModel(model: model)
-                    print("[AppDelegate] Model downloaded successfully")
-                    AppLog.models.notice("Model download finished for \(model.rawValue, privacy: .public)")
-                } catch {
-                    print("[AppDelegate] Download failed: \(error)")
-                    AppLog.models.error("Model download failed for \(model.rawValue, privacy: .public)")
-                    showError("Failed to download model: \(error.localizedDescription)")
-                    return
-                }
-            }
-            
-            let modelURL = modelManager.modelURL(for: model)
-            transcriptionService.unloadModel()
-            
+
+        if !modelManager.isModelDownloaded(model: model) {
+            print("[AppDelegate] Model not downloaded, downloading...")
+            AppLog.models.notice("Downloading model \(model.rawValue, privacy: .public)")
             do {
-                try await transcriptionService.loadModel(at: modelURL, language: language)
-                print("[AppDelegate] Model reloaded successfully: \(model.rawValue)")
-                AppLog.models.notice("Model reloaded: \(model.rawValue, privacy: .public)")
+                try await modelManager.downloadModel(model: model)
+                print("[AppDelegate] Model downloaded successfully")
+                AppLog.models.notice("Model download finished for \(model.rawValue, privacy: .public)")
             } catch {
-                print("[AppDelegate] Failed to reload model: \(error)")
-                AppLog.models.error("Model reload failed for \(model.rawValue, privacy: .public)")
-                showError("Failed to load model: \(error.localizedDescription)")
+                print("[AppDelegate] Download failed: \(error)")
+                AppLog.models.error("Model download failed for \(model.rawValue, privacy: .public)")
+                showError("Failed to download model: \(error.localizedDescription)")
+                return
             }
+        } else if request.downloadCoreMLIfNeeded && model.hasCoreMLSupport && !modelManager.isCoreMLModelDownloaded(model: model) {
+            print("[AppDelegate] CoreML not downloaded, downloading for GPU acceleration...")
+            AppLog.models.notice("Downloading CoreML assets for \(model.rawValue, privacy: .public)")
+            do {
+                try await modelManager.downloadModel(model: model)
+                print("[AppDelegate] CoreML downloaded successfully")
+                AppLog.models.notice("CoreML assets ready for \(model.rawValue, privacy: .public)")
+            } catch {
+                print("[AppDelegate] CoreML download failed (non-critical): \(error)")
+                AppLog.models.error("CoreML download failed for \(model.rawValue, privacy: .public)")
+            }
+        }
+
+        if hasNewerModelLoadRequest(than: request) {
+            print("[AppDelegate] Skipping stale model load for \(model.rawValue)")
+            AppLog.models.notice("Skipping stale model load for \(model.rawValue, privacy: .public)")
+            return
+        }
+
+        let modelURL = modelManager.modelURL(for: model)
+        transcriptionService.unloadModel()
+
+        do {
+            try await transcriptionService.loadModel(at: modelURL, language: language, model: model)
+            print("[AppDelegate] Model reloaded successfully: \(model.rawValue)")
+            AppLog.models.notice("Model reloaded: \(model.rawValue, privacy: .public)")
+        } catch {
+            print("[AppDelegate] Failed to reload model: \(error)")
+            AppLog.models.error("Model reload failed for \(model.rawValue, privacy: .public)")
+            showError("Failed to load model: \(error.localizedDescription)")
         }
     }
 
@@ -210,55 +297,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         print("[AppDelegate] Preload model: \(model.rawValue), language: \(language)")
         print("[AppDelegate] Main model downloaded: \(modelManager.isModelDownloaded(model: model))")
         print("[AppDelegate] CoreML support: \(model.hasCoreMLSupport), downloaded: \(modelManager.isCoreMLModelDownloaded(model: model))")
-
-        Task {
-            if !modelManager.isModelDownloaded(model: model) {
-                print("[AppDelegate] Model not downloaded, auto-downloading...")
-                AppLog.models.notice("Auto-downloading model \(model.rawValue, privacy: .public)")
-                do {
-                    try await modelManager.downloadModel(model: model)
-                    print("[AppDelegate] Models downloaded successfully")
-                    AppLog.models.notice("Model assets ready for \(model.rawValue, privacy: .public)")
-                } catch {
-                    print("[AppDelegate] Auto-download failed: \(error)")
-                    AppLog.models.error("Initial model download failed for \(model.rawValue, privacy: .public)")
-                    showError("Failed to download model: \(error.localizedDescription)\n\nPlease go to Settings → Model → Download")
-                    return
-                }
-            } else if model.hasCoreMLSupport && !modelManager.isCoreMLModelDownloaded(model: model) {
-                print("[AppDelegate] CoreML not downloaded, downloading for GPU acceleration...")
-                AppLog.models.notice("Downloading CoreML assets for \(model.rawValue, privacy: .public)")
-                do {
-                    try await modelManager.downloadModel(model: model)
-                    print("[AppDelegate] CoreML downloaded successfully")
-                    AppLog.models.notice("CoreML assets ready for \(model.rawValue, privacy: .public)")
-                } catch {
-                    print("[AppDelegate] CoreML download failed (non-critical): \(error)")
-                    AppLog.models.error("CoreML download failed for \(model.rawValue, privacy: .public)")
-                }
-            }
-
-            let modelURL = modelManager.modelURL(for: model)
-            do {
-                print("[AppDelegate] Loading model from \(modelURL.lastPathComponent) with language: \(language)")
-                try await transcriptionService.loadModel(at: modelURL, language: language)
-                print("[AppDelegate] Model loaded successfully")
-                AppLog.models.notice("Initial model load completed")
-            } catch {
-                print("[AppDelegate] Failed to load model: \(error)")
-                AppLog.models.error("Initial model load failed")
-                showError("Failed to load model: \(error.localizedDescription)")
-            }
-        }
+        scheduleModelLoad(model, downloadCoreMLIfNeeded: true)
     }
 
     // MARK: - Recording Lifecycle
+
+    nonisolated static func recordingReadiness(hasMicrophonePermission: Bool) -> RecordingReadiness {
+        hasMicrophonePermission ? .ready : .missingMicrophonePermission
+    }
+
+    nonisolated static func microphonePermissionErrorMessage() -> String {
+        "Microphone permission is required before recording can start. Open System Settings -> Privacy & Security -> Microphone, enable VoiceType, then try again."
+    }
+
+    nonisolated static func emptyCaptureErrorMessage(hasMicrophonePermission: Bool) -> String {
+        if hasMicrophonePermission {
+            return "VoiceType did not capture any audio. Check the selected input device in macOS and try holding the hotkey a bit longer."
+        }
+
+        return microphonePermissionErrorMessage()
+    }
 
     private func handleRecordingStarted() {
         print("[AppDelegate] handleRecordingStarted, currentState: \(appState.rawValue)")
         
         guard appState == .idle else {
             print("[AppDelegate] Ignoring start, not idle")
+            return
+        }
+
+        permissionManager.checkAllPermissions()
+        let recordingReadiness = Self.recordingReadiness(
+            hasMicrophonePermission: permissionManager.hasMicrophonePermission
+        )
+
+        guard recordingReadiness == .ready else {
+            AppLog.permissions.error("Blocked recording start because microphone permission is missing")
+            permissionManager.requestMicrophonePermission()
+            showError(Self.microphonePermissionErrorMessage())
+            appState = .idle
             return
         }
 
@@ -294,6 +371,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             guard !samples.isEmpty else {
                 print("[AppDelegate] No audio samples")
                 AppLog.app.notice("Recording stopped with no audio")
+                permissionManager.checkAllPermissions()
+                if !permissionManager.hasMicrophonePermission {
+                    permissionManager.requestMicrophonePermission()
+                }
+                showError(Self.emptyCaptureErrorMessage(
+                    hasMicrophonePermission: permissionManager.hasMicrophonePermission
+                ))
                 appState = .idle
                 return
             }
@@ -384,6 +468,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func ensureModelLoaded() async throws {
+        while let modelLoadTask {
+            await modelLoadTask.value
+        }
+
         guard !transcriptionService.isModelLoaded else {
             print("[AppDelegate] Model already loaded")
             return
@@ -398,7 +486,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         let modelURL = modelManager.modelURL(for: model)
         print("[AppDelegate] Loading model on-demand: \(modelURL.lastPathComponent) with language: \(language)")
-        try await transcriptionService.loadModel(at: modelURL, language: language)
+        try await transcriptionService.loadModel(at: modelURL, language: language, model: model)
     }
 
     private func injectText(_ text: String, mode: TextInjectionMode) {

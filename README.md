@@ -9,7 +9,72 @@ Lightweight macOS menu bar voice typing app powered by `whisper.cpp` and optimiz
 
 VoiceType records audio with a global shortcut, transcribes it locally on your Mac, and inserts the resulting text into the currently focused app.
 
-## Quick Install
+## Installation
+
+### Option 1: Download a release (recommended)
+
+Go to the [Releases page](https://github.com/Informat1on/VoiceType/releases), download the latest `VoiceType-<version>.dmg`, open it, and drag `VoiceType.app` to your `Applications` folder.
+
+For public releases, use a Developer ID-signed build. That keeps TCC permissions (Microphone, Accessibility) stable across app updates.
+
+## Release Pipeline
+
+For end users, distribute only the GitHub Release DMG.
+
+The repository now supports both a safe prepare step and a one-command publish flow.
+
+Build artifacts only:
+
+```bash
+./release.sh 1.0.2 --prepare
+```
+
+One-button draft GitHub release:
+
+```bash
+./release.sh 1.0.2 --draft
+```
+
+Public GitHub release:
+
+```bash
+./release.sh 1.0.2 --publish
+```
+
+The script:
+
+1. Updates `VERSION`.
+2. Builds `dist/VoiceType.app`.
+3. Creates `dist/VoiceType-1.0.2.dmg`.
+4. Notarizes and staples the DMG if `NOTARY_PROFILE` is configured in `.signing-env`.
+5. Generates `dist/RELEASE_NOTES-v1.0.2.md`.
+6. In `--draft` / `--publish` mode: commits the version bump, creates the git tag, pushes branch + tag, and creates the GitHub release automatically.
+
+For a dry run without notarization, use:
+
+```bash
+SKIP_NOTARIZATION=1 ./release.sh 1.0.2 --prepare
+```
+
+Recommended `.signing-env` for public releases:
+
+```bash
+SIGN_IDENTITY="Developer ID Application: your@email.com (TEAMID)"
+NOTARY_PROFILE="voicetype-notary"
+```
+
+Create the notarization profile once on your Mac:
+
+```bash
+xcrun notarytool store-credentials "voicetype-notary" \
+  --apple-id "your-apple-id@example.com" \
+  --team-id "TEAMID" \
+  --password "app-specific-password"
+```
+
+For `--draft` and `--publish`, start from a clean git worktree. The script intentionally refuses to release from a dirty tree, so you do not accidentally ship unrelated local changes.
+
+### Option 2: Build from source
 
 Clone the repo and run the installer:
 
@@ -110,7 +175,7 @@ This does three things:
 
 Installing the app into a stable location is important. It helps macOS associate permissions and icons with the app correctly.
 
-Note: local source builds are ad-hoc signed. After rebuilding and reinstalling a new bundle, macOS may ask for Microphone or Accessibility permission again.
+Note: local source builds are ad-hoc signed by default. After rebuilding and reinstalling a new bundle, macOS may ask for Microphone or Accessibility permission again.
 
 If you only want one command for local setup, use `./install-app.sh`.
 
@@ -190,16 +255,10 @@ open "$HOME/Applications/VoiceType.app"
 
 This will rebuild the app, reinstall it into `~/Applications`, and refresh the registered app bundle used by macOS.
 
-Notes:
+Permission behavior depends on how the app is signed:
 
-- macOS may ask you to re-grant Microphone or Accessibility permission after reinstalling an updated local build.
-- If insertion stops working after an update, re-check Accessibility for `VoiceType` in `System Settings -> Privacy & Security -> Accessibility`.
-- If needed, reset stale permissions and grant them again:
-
-```bash
-tccutil reset Microphone com.voicetype.app
-tccutil reset Accessibility com.voicetype.app
-```
+- **Developer-signed** (release builds): permissions persist, no reset needed
+- **Ad-hoc signed** (local builds from source): macOS may ask you to grant permissions again after reinstalling
 
 ## Troubleshooting
 
@@ -214,11 +273,10 @@ Use this flow:
 open "$HOME/Applications/VoiceType.app"
 ```
 
-If you previously granted permissions to an older build inside `.build/`, reset them once:
+If you previously granted permissions to an older build inside `.build/`, you can manually reset them:
 
 ```bash
-tccutil reset Microphone com.voicetype.app
-tccutil reset Accessibility com.voicetype.app
+./reset-permissions.sh
 ```
 
 Then relaunch the installed app and grant permissions again.
@@ -295,6 +353,26 @@ Sources/VoiceType/
     ├── Recording/
     ├── Settings/
     └── Shared/
+```
+
+## Code Signing & Permissions
+
+macOS TCC (Transparency, Consent, Control) binds permissions to the app's code signature.
+
+| Scenario | Signing | Permission behavior |
+|----------|---------|-------------------|
+| **Download from Releases** | Developer-signed | Permissions persist across updates — grant once |
+| **Build from source** | Ad-hoc (default) | macOS may ask for permissions again after reinstalling |
+| **Developer with certificate** | Developer-signed | Create `.signing-env` with `SIGN_IDENTITY="..."` to persist permissions |
+
+To use your own developer certificate for local builds:
+
+```bash
+# Find your signing identity
+security find-identity -v -p codesigning
+
+# Create a local config file (gitignored, never committed)
+echo 'SIGN_IDENTITY="Apple Development: your@email.com (TEAMID)"' > .signing-env
 ```
 
 ## License

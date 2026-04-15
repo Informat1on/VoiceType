@@ -12,10 +12,12 @@ LEGACY_APP_DIRS=(
     "$(pwd)/dist/$APP_NAME.app"
 )
 
+echo "🔨 Building fresh app bundle..."
 ./build-app.sh
 
 echo "📥 Installing $APP_NAME to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
+
 rm -rf "$TARGET_APP"
 cp -R "$SOURCE_APP" "$TARGET_APP"
 

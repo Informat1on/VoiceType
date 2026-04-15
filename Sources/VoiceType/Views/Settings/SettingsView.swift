@@ -251,6 +251,16 @@ struct SettingsView: View {
                     .buttonStyle(.bordered)
 
                     Spacer()
+
+                    // macOS caches Accessibility state per-process. If the user
+                    // granted permission in System Settings but the running process
+                    // was started before/during the change, a full restart is needed.
+                    if !permissionManager.hasAccessibilityPermission {
+                        Button("Restart App") {
+                            permissionManager.restartAppForAccessibility()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                 }
             }
         }
