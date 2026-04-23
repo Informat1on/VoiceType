@@ -2,7 +2,11 @@
 .build/
 .swiftpm/
 dist/
-.qwen
+
+# AI tool local state — personal, not for repo
+.qwen/
+.claude/settings.local.json
+.claude/.session/
 
 # Local Xcode metadata
 **/xcuserdata/
@@ -13,3 +17,10 @@ artwork/derived/
 
 # Local signing config (contains your developer certificate identity)
 .signing-env
+
+# Personal dictation log — private data (what you dictated, what whisper heard)
+# Drives initial_prompt iteration but must not leak to public GitHub.
+hotwords-log.md
+
+# Private architecture / decision notes. Public ADRs go in docs/decisions/ directly.
+docs/decisions/private/
