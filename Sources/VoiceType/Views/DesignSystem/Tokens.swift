@@ -217,8 +217,11 @@ enum Typography {
     static let metaLabelLineHeight: CGFloat = 14
 
     /// Geist Mono 12pt Medium. Timers, hotkeys, model IDs.
+    /// Uses PostScript name "GeistMono-Medium" (not family "Geist Mono")
+    /// because family lookup doesn't always resolve via CTFontManager process
+    /// scope — PostScript name always does. Same for all mono tokens below.
     /// Call .monospacedDigit() at use sites for tabular figures. DESIGN.md line 61.
-    static let mono = Font.custom("Geist Mono", size: 12).weight(.medium)
+    static let mono = Font.custom("GeistMono-Medium", size: 12)
     /// Line height for mono text. DESIGN.md line 61: "12/16".
     static let monoLineHeight: CGFloat = 16
 
@@ -228,20 +231,17 @@ enum Typography {
     /// Line height for caption text. Matches metaLabel at 14pt for vertical rhythm.
     static let captionLineHeight: CGFloat = 14
 
-    /// Geist Mono 10pt Medium. DESIGN.md spec is "600 Semibold" but only
-    /// GeistMono-Regular + GeistMono-Medium are bundled (vendor/geist-font
-    /// raw TTF set). CTFont resolves .semibold → Medium at runtime anyway;
-    /// declaring .medium explicitly makes the fallback visible in code.
-    /// Upgrade path: bundle GeistMono-SemiBold.ttf + register + bump back.
-    /// Found by code review P2-B.
-    static let badge = Font.custom("Geist Mono", size: 10).weight(.medium)
+    /// Geist Mono 10pt Medium — via PostScript name (see `mono` comment).
+    /// DESIGN.md spec is "600 Semibold" but only GeistMono-Regular + Medium
+    /// TTFs are bundled. Upgrade path: bundle GeistMono-SemiBold.ttf.
+    static let badge = Font.custom("GeistMono-Medium", size: 10)
     /// Line height for badge text. DESIGN.md: "10/14".
     static let badgeLineHeight: CGFloat = 14
 
-    /// Geist Mono 11pt Medium. Sub-line + shortcut hints in menubar dropdown.
-    /// DESIGN.md / prototype: 11px font-size, 0.04em tracking.
+    /// Geist Mono 11pt Medium — via PostScript name (see `mono` comment).
+    /// Sub-line + shortcut hints in menubar dropdown.
     /// Phase 1 B2/B4: replaces Typography.mono (12pt) in MenuBarView sub-line and shortcut hints.
-    static let monoSmall = Font.custom("Geist Mono", size: 11).weight(.medium)
+    static let monoSmall = Font.custom("GeistMono-Medium", size: 11)
     /// Line height for monoSmall text. "11/14".
     static let monoSmallLineHeight: CGFloat = 14
 }

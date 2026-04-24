@@ -42,9 +42,13 @@ struct CapsuleIndicatorView: View {
     @ObservedObject var audioService: AudioCaptureService
     @ObservedObject private var settings = AppSettings.shared
 
-    // Timer state
-    @State private var recordingDuration: TimeInterval = 0
-    private let durationTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    // Timer state — Date-based so value is always correct regardless of when
+    // the timer subscriber started. Counter-style had a race where timer
+    // fired before first user recording, making "first take" show stale N sec.
+    @State private var recordingStartedAt: Date?
+    @State private var frozenDuration: TimeInterval = 0
+    @State private var tickTrigger: Int = 0
+    private let tickTimer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
 
     // Waveform state (audio-driven, silent at rest per Departure 1)
     @State private var waveHistory: [Float] = Array(repeating: 0, count: 16)
@@ -53,8 +57,16 @@ struct CapsuleIndicatorView: View {
     // Transcribing dot-breathing state. Removed unused `dotOffset` (P2-D).
     @State private var dotScale: CGFloat = 0.7
 
-    // Tally dot pulse (audio-threshold-gated, NOT continuous)
+    // Tally dot pulse — audio-threshold-gated. Updated from levelTimer.
     @State private var tallyScale: CGFloat = 1.0
+
+    /// Current recording duration in seconds, computed from startedAt anchor.
+    /// Depends on `tickTrigger` so SwiftUI re-renders every tick.
+    private var recordingDuration: TimeInterval {
+        _ = tickTrigger  // force dep
+        guard let start = recordingStartedAt else { return frozenDuration }
+        return Date().timeIntervalSince(start)
+    }
 
     var body: some View {
         ZStack {
@@ -63,12 +75,16 @@ struct CapsuleIndicatorView: View {
         .frame(width: VoiceTypeCapsuleMetrics.totalWidth, height: VoiceTypeCapsuleMetrics.totalHeight)
         .onReceive(levelTimer) { _ in
             guard state == .recording else { return }
-            waveHistory.append(audioService.audioLevel)
+            let level = audioService.audioLevel
+            waveHistory.append(level)
             if waveHistory.count > 16 { waveHistory.removeFirst() }
+            // Tally pulse: bumps to 1.15 when speech crosses threshold, else 1.0.
+            let threshold = Motion.waveformActivationThreshold
+            tallyScale = Double(level) > threshold ? 1.15 : 1.0
         }
-        .onReceive(durationTimer) { _ in
+        .onReceive(tickTimer) { _ in
             guard state == .recording else { return }
-            recordingDuration += 1
+            tickTrigger &+= 1  // triggers recomputation of recordingDuration
         }
         // NOTE: single-parameter onChange is the macOS 13 API.
         .onChange(of: state) { newState in
@@ -329,17 +345,26 @@ struct CapsuleIndicatorView: View {
     private func handleStateChange(_ newState: CapsuleState) {
         switch newState {
         case .recording:
-            recordingDuration = 0
+            recordingStartedAt = Date()          // timer anchor
+            frozenDuration = 0
+            tickTrigger = 0
             waveHistory = Array(repeating: 0, count: 16)
             dotScale = 0.7  // reset for next transcribing entry (P2-E)
+            tallyScale = 1.0
         case .transcribing:
+            // Freeze timer display at final recording duration.
+            if let start = recordingStartedAt {
+                frozenDuration = Date().timeIntervalSince(start)
+            }
+            recordingStartedAt = nil
             // Trigger 3-dot breathing animation. Reset-then-set so re-entry
             // from a prior transcribing cycle fires the animation again.
-            dotScale = 0.7
-            DispatchQueue.main.async { dotScale = 1.0 }
+            dotScale = 0.5
+            DispatchQueue.main.async { dotScale = 1.3 }
         default:
-            // Reset so the NEXT transcribing entry sees 0.7 → 1.0 transition.
             dotScale = 0.7
+            recordingStartedAt = nil
+            frozenDuration = 0
         }
     }
 }
@@ -364,16 +389,23 @@ struct CapsuleWaveformView: View {
     private let activeHeights: [CGFloat] = [8, 14, 18, 12, 6]
 
     var body: some View {
-        let recentPeak = history.suffix(4).max() ?? 0
+        // Each bar maps to its OWN sample from the tail of history → running
+        // waveform instead of all-bars-scale-together. Gives visible
+        // left-to-right motion while the user speaks.
+        let tail = history.suffix(barCount)
+        let samples: [Float] = Array(repeating: 0, count: max(0, barCount - tail.count)) + Array(tail)
+        let recentPeak = samples.max() ?? 0
         let isActive = Double(recentPeak) > Motion.waveformActivationThreshold
 
         HStack(spacing: spacing) {
             ForEach(0..<barCount, id: \.self) { idx in
-                // Active: spec heights × normalized peak (min 50% so bars
-                // don't collapse at low level). Silent: flat 4pt.
-                let scale = CGFloat(recentPeak)
-                let activeH = activeHeights[idx] * max(0.5, min(1.0, scale * 2.5))
-                let barHeight: CGFloat = isActive ? max(4, activeH) : 4
+                let sample = CGFloat(samples[idx])
+                // Amplify audioLevel (typical speech 0.05-0.30) into 0..1 range.
+                let normalized = min(1.0, sample * 3.5)
+                // Blend prototype spec heights with live audio: 40% spec arc
+                // (keeps the waveform "shape" even at max), 60% per-bar live.
+                let blended = activeHeights[idx] * (0.4 + 0.6 * max(0.15, normalized))
+                let barHeight: CGFloat = isActive ? max(4, blended) : 4
 
                 RoundedRectangle(cornerRadius: 1)
                     .fill(isActive
