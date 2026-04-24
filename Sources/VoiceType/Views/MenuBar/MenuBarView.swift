@@ -117,8 +117,9 @@ struct MenuBarView: View {
         // Width 280pt — DESIGN.md § MenuBar dropdown layout: "280px wide".
         VStack(spacing: 0) {
             StatusLine(state: menuBarState, settings: settings)
-                .padding(.horizontal, Spacing.md)
-                .padding(.vertical, Spacing.sm)
+                .padding(.horizontal, MenuBar.statusHorizontalPadding)
+                .padding(.top, MenuBar.statusTopPadding)
+                .padding(.bottom, MenuBar.statusBottomPadding)
 
             // 1px divider below status line. DESIGN.md § MenuBar dropdown layout.
             Palette.divider.frame(height: 1)
@@ -127,6 +128,9 @@ struct MenuBarView: View {
         }
         .frame(width: MenuBar.width) // off-scale: DESIGN.md § MenuBar dropdown layout
         .background(Palette.bgWindow)
+        .clipShape(RoundedRectangle(cornerRadius: MenuBar.cornerRadius))
+        .overlay(RoundedRectangle(cornerRadius: MenuBar.cornerRadius).stroke(Palette.strokeSubtle, lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.30), radius: 20, x: 0, y: 8)
         .onReceive(ticker) { _ in
             guard appDelegate.appState == .recording,
                   let start = appDelegate.recordingStartedAt else {
@@ -231,7 +235,7 @@ struct MenuBarView: View {
 
             // Canonical IA separator — DESIGN.md "About · divider · Quit".
             Palette.divider.frame(height: 1)
-                .padding(.vertical, Spacing.xs)
+                .padding(.vertical, Spacing.dividerGap)
 
             MenuActionRow(label: "Quit VoiceType", keyboardShortcut: ("q", .command)) {
                 NSApplication.shared.terminate(nil)
@@ -289,8 +293,12 @@ private struct StatusLine: View {
         switch state {
         case .idle, .transcribing:
             return Palette.textMuted
-        case .recording, .notReady:
+        case .recording:
+            // Recording tally stays capsule-world red (camera tally reference).
             return Palette.Capsule.recording
+        case .notReady:
+            // Surface-level error red — consistent with subLineColor semantic token.
+            return Palette.error
         }
     }
 
@@ -339,7 +347,10 @@ private struct StatusLine: View {
     }
 
     private var subLineColor: Color {
-        if case .notReady = state { return Palette.Capsule.recording }
+        // Use Palette.error (semantic surface-level red) for notReady sub-line.
+        // Palette.Capsule.recording is capsule-world-only; surface errors use Palette.error.
+        // DESIGN.md § Color / MenuBar dropdown layout.
+        if case .notReady = state { return Palette.error }
         return Palette.textMuted
     }
 
@@ -356,6 +367,7 @@ private struct SetupTaskRow: View {
 
     let label: String
     let action: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
@@ -372,10 +384,13 @@ private struct SetupTaskRow: View {
             }
             .padding(.horizontal, Spacing.md)
             .frame(minHeight: 32)
+            .background(isHovered ? Color.white.opacity(0.04) : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: Motion.micro), value: isHovered)
     }
 }
 
@@ -388,6 +403,7 @@ private struct MenuActionRow: View {
     var trailingHint: String?
     var keyboardShortcut: (KeyEquivalent, EventModifiers)?
     let action: () -> Void
+    @State private var isHovered = false
 
     init(
         label: String,
@@ -415,14 +431,18 @@ private struct MenuActionRow: View {
                         .font(Typography.mono)
                         .foregroundStyle(Palette.textMuted)
                         .monospacedDigit()
+                        .tracking(Typography.metaLabelTracking)
                 }
             }
             .padding(.horizontal, Spacing.md)
             .frame(minHeight: 32)
+            .background(isHovered ? Color.white.opacity(0.04) : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: Motion.micro), value: isHovered)
 
         if let (key, mods) = keyboardShortcut {
             row.keyboardShortcut(key, modifiers: mods)

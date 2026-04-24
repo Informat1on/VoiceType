@@ -138,6 +138,18 @@ enum MenuBar {
     static let cornerRadius: CGFloat = 10
     /// Tally dot diameter. DESIGN.md § MenuBar status line.
     static let tallyDotSize: CGFloat = 8
+    /// Status line horizontal padding. Prototype: `.mb-status-line { padding: 10px 14px 12px }`.
+    static let statusHorizontalPadding: CGFloat = 14
+    /// Status line top padding (asymmetric). Prototype: top=10px.
+    static let statusTopPadding: CGFloat = 10
+    /// Status line bottom padding (asymmetric). Prototype: bottom=12px.
+    static let statusBottomPadding: CGFloat = 12
+}
+
+extension Spacing {
+    /// Divider gap — 2pt total vertical. Tighter than Spacing.xs (4pt).
+    /// DESIGN.md MenuBar dropdown: dividers sit flush, 4pt total was too airy.
+    static let dividerGap: CGFloat = 2
 }
 
 // MARK: - Motion
