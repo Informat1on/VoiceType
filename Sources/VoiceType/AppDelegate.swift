@@ -570,6 +570,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
 extension AppDelegate: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
-        isSettingsOpen = false
+        // Only flip isSettingsOpen when the settings window itself closes.
+        // FirstLaunchWindow shares this delegate but must not re-enable the
+        // hotkey while Settings is still visible. Review P1-F1.
+        if (notification.object as? NSWindow) === settingsWindow {
+            isSettingsOpen = false
+        }
     }
 }

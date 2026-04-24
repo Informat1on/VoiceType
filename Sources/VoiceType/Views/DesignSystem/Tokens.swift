@@ -112,6 +112,10 @@ enum ButtonPadding {
 enum WindowSize {
     static let settings = CGSize(width: 620, height: 520)
     static let about = CGSize(width: 460, height: 560)
+    /// First-launch checklist window. DESIGN.md § First launch: "480px wide".
+    /// Height is a sensible initial guess — SwiftUI auto-sizes the window via
+    /// hosting view's fittingSize at init.
+    static let firstLaunch = CGSize(width: 480, height: 400)
 }
 
 // MARK: - CapsuleSize

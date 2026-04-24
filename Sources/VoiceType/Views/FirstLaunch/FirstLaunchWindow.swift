@@ -15,7 +15,6 @@
 
 import AppKit
 import SwiftUI
-import Combine
 
 // MARK: - OnboardingState
 
@@ -49,8 +48,10 @@ final class FirstLaunchWindow: NSWindow {
     init(permissionManager: PermissionManager) {
         // Width 480 per spec. Height is content-driven; start with a sensible default
         // and let SwiftUI auto-size via the hosting view's fittingSize.
-        // off-scale: DESIGN.md § First launch "480px wide"
-        let initialRect = NSRect(x: 0, y: 0, width: 480, height: 400)
+        let initialRect = NSRect(
+            origin: .zero,
+            size: WindowSize.firstLaunch
+        )
 
         super.init(
             contentRect: initialRect,
@@ -165,8 +166,12 @@ struct FirstLaunchView: View {
             Spacer(minLength: Spacing.xl)
         }
         .padding(Spacing.windowPadding)
-        .frame(width: 480) // off-scale: DESIGN.md § First launch "480px wide"
+        .frame(width: WindowSize.firstLaunch.width)
         .background(Palette.bgWindow)
+        // NOTE: single-parameter onChange is the macOS 13 API. The two-parameter
+        // form (onChange(of:initial:_:)) requires macOS 14+. Deployment target
+        // is macOS 13 (Package.swift), so keep this form until the target bumps.
+        // Review P3-F7 acknowledged as deferred time-bomb.
         .onChange(of: hasMic) { _ in checkBlockers() }
         .onChange(of: hasA11y) { _ in checkBlockers() }
         .onChange(of: _modelManager.isDownloading) { downloading in
@@ -327,6 +332,13 @@ struct FirstLaunchView: View {
     }
 
     private func checkBlockers() {
+        // Guard against re-firing auto-close when the window is reopened from
+        // the menubar after onboarding has already completed. Without this,
+        // the reopen path triggers onAppear → checkBlockers → onAllBlockersDone
+        // → handleAutoClose immediately, producing a jarring show-then-fade flash.
+        // Review P1-F2.
+        guard !OnboardingState.hasCompleted else { return }
+
         let ready = OnboardingState.allBlockersSatisfied(
             hasMicrophonePermission: hasMic,
             hasAccessibilityPermission: hasA11y,
