@@ -222,7 +222,7 @@ struct FirstLaunchView: View {
                 Button(isDownloadingModel ? "Downloading\u{2026}" : "Download model") {
                     startModelDownload()
                 }
-                .buttonStyle(ChecklistButtonStyle())
+                .buttonStyle(ChecklistPrimaryButtonStyle())
                 .disabled(isDownloadingModel)
                 .accessibilityLabel(
                     isDownloadingModel
@@ -252,7 +252,7 @@ struct FirstLaunchView: View {
             Button("Customize hotkey") {
                 openShortcutsSettings()
             }
-            .buttonStyle(ChecklistButtonStyle())
+            .buttonStyle(ChecklistLinkButtonStyle())
             .accessibilityLabel("Open settings to customize your recording hotkey")
         }
     }
@@ -285,11 +285,17 @@ struct FirstLaunchView: View {
             Spacer()
 
             if let label = config.actionLabel {
-                Button(label) {
-                    config.action()
+                // Blocker rows (isNeutral=false) use primary filled style.
+                // Optional rows (isNeutral=true) use link style.
+                if config.isNeutral {
+                    Button(label) { config.action() }
+                        .buttonStyle(ChecklistLinkButtonStyle())
+                        .accessibilityLabel(label)
+                } else {
+                    Button(label) { config.action() }
+                        .buttonStyle(ChecklistPrimaryButtonStyle())
+                        .accessibilityLabel(label)
                 }
-                .buttonStyle(ChecklistButtonStyle())
-                .accessibilityLabel(label)
             }
         }
     }
