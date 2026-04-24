@@ -70,7 +70,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         NSApp.setActivationPolicy(.accessory)
 
         voiceTypeWindow = VoiceTypeWindow(audioService: audioCaptureService)
-        
+
+        // Subscribe to .capsuleErrorInlineExpired so the 4s auto-dismiss
+        // emitted by CapsuleStateModel actually hides the window.
+        // Codex review P2-3.
+        NotificationCenter.default.addObserver(
+            forName: .capsuleErrorInlineExpired,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            if case .errorInline = self?.voiceTypeWindow?.stateModel.state {
+                self?.voiceTypeWindow?.hide()
+            }
+        }
+
         setupServices()
         setupHotkeyCallbacks()
         setupBindings()
@@ -533,9 +546,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         } catch {
             print("[AppDelegate] Transcription error: \(error)")
             AppLog.transcription.error("Transcription failed")
+            // Inline capsule error only — no NSAlert. Blocking modal would
+            // steal focus and double-notify the user. Codex review P1.
+            // The 4s auto-dismiss is wired via .capsuleErrorInlineExpired
+            // subscriber in applicationDidFinishLaunching.
             voiceTypeWindow?.show(state: .errorInline(message: "Transcription failed"))
             appState = .idle
-            showError("Transcription failed: \(error.localizedDescription)")
             return
         }
 
@@ -543,7 +559,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             print("[AppDelegate] Empty transcription result")
             AppLog.transcription.notice("Transcription produced no text")
-            // Flash "Nothing heard" emptyResult for 400ms, then hide.
+            // Flash "Nothing heard" emptyResult for 800ms, then hide.
+            // 800ms > 400ms prototype because users need time to read the text.
             voiceTypeWindow?.show(state: .emptyResult)
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(800))

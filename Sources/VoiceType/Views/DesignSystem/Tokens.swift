@@ -211,8 +211,11 @@ enum Typography {
     /// Geist 11pt Medium. Meta labels — callers apply .textCase(.uppercase)
     /// and .tracking(metaLabelTracking). DESIGN.md line 60.
     static let metaLabel = Font.custom("Geist", size: 11).weight(.medium)
-    /// Tracking value for meta labels: 0.04em × 11pt = 0.44. DESIGN.md line 60.
-    static let metaLabelTracking: CGFloat = 0.44
+    /// Tracking value for meta labels: 0.08em × 11pt = 0.88 per HTML prototype
+    /// `.meta-label { letter-spacing: 0.08em }`. DESIGN.md earlier said 0.04em
+    /// but prototype CSS is authoritative for visual fidelity (user mandate).
+    /// Codex review P3.
+    static let metaLabelTracking: CGFloat = 0.88
     /// Line height for meta labels. DESIGN.md line 60: "11/14".
     static let metaLabelLineHeight: CGFloat = 14
 

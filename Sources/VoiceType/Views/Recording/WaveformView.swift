@@ -387,10 +387,12 @@ struct CapsuleWaveformView: View {
     private let activeHeights: [CGFloat] = [8, 14, 18, 12, 6]
 
     var body: some View {
-        // Each bar maps to its OWN sample from the tail of history → running
-        // waveform instead of all-bars-scale-together. Bars always show live
-        // amplitude (no binary active/silent gate) — silent breath is just
-        // very short bars at muted color.
+        // Each bar reads its OWN sample from the tail of history → running
+        // waveform. Bar height = activeHeights[idx] × normalized amplitude,
+        // so the prototype arc contour (tallest in middle, shorter on edges)
+        // is preserved while amplitude drives vertical motion per bar.
+        // Found by codex review P2-1: previously `sample × maxHeight` ignored
+        // the activeHeights array, collapsing all bars to the same height.
         let tail = history.suffix(barCount)
         let samples: [Float] = Array(repeating: 0, count: max(0, barCount - tail.count)) + Array(tail)
         let recentPeak = samples.max() ?? 0
@@ -399,12 +401,13 @@ struct CapsuleWaveformView: View {
         HStack(spacing: spacing) {
             ForEach(0..<barCount, id: \.self) { idx in
                 let sample = CGFloat(samples[idx])
-                // Aggressive 8× amplification — typical speech audioLevel is
-                // 0.03-0.20, so ×8 maps to 0.24-1.6 clamped into visible range.
-                let amplified = min(1.0, sample * 8.0)
-                // Always reactive height: 2pt floor (silent) to maxHeight at 1.0.
-                // No gate — amplitude drives every frame.
-                let barHeight: CGFloat = max(2, amplified * maxHeight)
+                // Typical speech audioLevel 0.03-0.20 → amplified 0.24-1.6
+                // clamped 0-1. Floor 0.25 so even quiet speech shows some arc.
+                let amplified = min(1.0, max(0.25, sample * 8.0))
+                // Prototype height × live amplitude → arc shape preserved,
+                // amplitude drives motion. Silent: flat 4pt per prototype.
+                let contouredHeight = activeHeights[idx] * amplified
+                let barHeight: CGFloat = isLoud ? max(4, contouredHeight) : 4
 
                 RoundedRectangle(cornerRadius: 1)
                     .fill(isLoud
