@@ -292,8 +292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func applyInitialPrompt() {
-        // TODO post-merge: replace with AppSettings.shared.customVocabulary (0b is in parallel).
-        let userVocabulary: String = ""
+        let userVocabulary = AppSettings.shared.customVocabulary
         transcriptionService.setInitialPrompt(userVocabulary.isEmpty ? nil : userVocabulary)
     }
 
