@@ -11,8 +11,6 @@
 // DESIGN.md § Interaction States — Capsule (6 states).
 // DESIGN.md § Departure 1: honest waveform (silent during silence).
 
-// swiftlint:disable inline_color_rgb inline_color_hex inline_nscolor_rgb
-
 import SwiftUI
 
 // MARK: - CapsuleRootView
@@ -78,7 +76,7 @@ struct CapsuleIndicatorView: View {
 
     private var capsuleBody: some View {
         ZStack {
-            // Background — opaque dark per DESIGN.md (no .ultraThinMaterial)
+            // Background — opaque dark per DESIGN.md (no glassmorphism material)
             Capsule()
                 .fill(Palette.Capsule.bg)
 
@@ -321,5 +319,3 @@ struct CapsuleWaveformView: View {
         }
     }
 }
-
-// swiftlint:enable inline_color_rgb inline_color_hex inline_nscolor_rgb

@@ -105,10 +105,7 @@ final class FontRegistrationTests: XCTestCase {
             }
             let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
             let size = attrs[.size] as? Int ?? 0
-            XCTAssertGreaterThan(
-                size, 40_000,
-                "\(name).ttf is only \(size) bytes — likely an HTML redirect, not a real TTF"
-            )
+            XCTAssertGreaterThan(size, 40_000, "\(name).ttf is only \(size) bytes — likely an HTML redirect, not a real TTF")
         }
     }
 
