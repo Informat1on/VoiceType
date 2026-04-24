@@ -1,10 +1,21 @@
 import SwiftUI
 // Tier A Step 2 partial migration (2026-04-24):
-// - Safe Spacing token substitutions applied.
+// - Safe Spacing token substitutions applied (padding 24 → windowPadding;
+//   spacing 16/8/4 → lg/sm/xs; Spacer minLength 16 → lg).
 // - Inline Color RGB gradient tints removed (out-of-DESIGN.md).
-// - cornerRadius 22/26, .thinMaterial, .regularMaterial, Color.white.opacity,
-//   font literals remain as design-debt — Step 3 rewrites this file entirely
-//   (native rows, no boxed cards, no hero header).
+// - DEFERRED TO STEP 3 REWRITE (full native-rows refactor). Complete manifest
+//   of surviving design-debt literals in this file:
+//     • cornerRadius 22 / 26
+//     • .thinMaterial / .regularMaterial
+//     • Color.white.opacity(0.08)  (strokes + chip bg)
+//     • font literals: .font(.system(size: 22, weight: .semibold)), .font(.headline)
+//     • off-scale spacing: 20 (WindowSurface VStack, HeroHeader padding,
+//       SectionCard padding), 10 (HeroHeader inner VStack),
+//       chip/badge padding .horizontal 10 / .vertical 6
+//     • lineWidth 1 (stroke borders)
+//   DESIGN.md § Spacing line 693 deliberately closes the 16→24 gap — 20 is
+//   design-debt, not a missing token. Step 3 removes the hero-header and
+//   boxed-card layout entirely, which retires all items above.
 
 struct WindowSurface<Content: View>: View {
     let title: String
