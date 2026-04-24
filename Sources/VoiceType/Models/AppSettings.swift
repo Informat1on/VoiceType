@@ -178,18 +178,16 @@ final class AppSettings: ObservableObject {
         self.selectedModel = TranscriptionModel(rawValue: defaults.string(forKey: "selectedModel") ?? "") ?? .smallQ5
         let storedModifiers = defaults.integer(forKey: "hotkeyModifiers")
         if storedModifiers == 0 {
-            // Preserve legacy physical default. Pre-constants-fix, this expression
-            // evaluated to `optionKey | cmdKey` = 768 using OLD wrong constants,
-            // which Carbon heard as Cmd+Shift+V. Users on factory defaults have
-            // been pressing Cmd+Shift+V all along. After the constants fix, using
-            // literal `shiftKey | cmdKey` keeps the same 768 bit value so those
-            // users' muscle memory still fires the hotkey. New/intentional default
-            // changes (e.g. Option+Space) will override this expression.
-            self.hotkeyModifiers = shiftKey | cmdKey
+            // Factory default per spec audit: Option + Space. This supersedes the
+            // pre-fix physical default (Cmd+Shift+V) for users who never customized
+            // their hotkey. Intentional breaking change — factory-default users will
+            // need to learn the new shortcut or customize back. Customized hotkeys
+            // are preserved through the `else` branch via migrateLegacyControlBit.
+            self.hotkeyModifiers = optionKey
         } else {
             self.hotkeyModifiers = migrateLegacyControlBit(storedModifiers)
         }
-        self.hotkeyKey = defaults.integer(forKey: "hotkeyKey") == 0 ? 9 : defaults.integer(forKey: "hotkeyKey")
+        self.hotkeyKey = defaults.integer(forKey: "hotkeyKey") == 0 ? 49 : defaults.integer(forKey: "hotkeyKey")
         self.autoEnterAfterInsert = defaults.object(forKey: "autoEnterAfterInsert") as? Bool ?? true
 
         // Language migration: try new key first, then fall back to legacy "preferredLanguage"
