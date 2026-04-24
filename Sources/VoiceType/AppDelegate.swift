@@ -38,6 +38,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    /// Timestamp anchored at the moment recording started. Used by MenuBarView
+    /// to compute elapsed time for the live recording timer. Cleared on any
+    /// transition out of .recording.
+    @Published var recordingStartedAt: Date?
+
     var isSettingsOpen = false {
         didSet {
             hotkeyService.isEnabled = !isSettingsOpen
@@ -369,6 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         do {
             try audioCaptureService.startRecording()
             appState = .recording
+            recordingStartedAt = Date()
             voiceTypeWindow?.show(state: .recording)
             print("[AppDelegate] Recording started")
             AppLog.app.notice("Recording started")
@@ -380,8 +386,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    /// Entry point for the menubar "Start recording" button.
+    /// Delegates to the same hotkey-triggered path so state transitions are identical.
+    func startRecordingFromMenu() {
+        print("[AppDelegate] startRecordingFromMenu() called")
+        handleRecordingStarted()
+    }
+
     private func handleRecordingStopped() {
         print("[AppDelegate] handleRecordingStopped, currentState: \(appState.rawValue)")
+        recordingStartedAt = nil
         voiceTypeWindow?.hide()
 
         guard appState == .recording else {
@@ -436,6 +450,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         if appState == .recording {
             _ = try? audioCaptureService.stopRecording()
         }
+        recordingStartedAt = nil
         appState = .idle
         print("[AppDelegate] State forced to idle")
     }

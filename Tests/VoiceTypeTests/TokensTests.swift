@@ -113,6 +113,20 @@ final class TokensTests: XCTestCase {
         _ = Typography.badge // must compile and not crash
         XCTAssertEqual(Typography.badgeLineHeight, 14, "Typography.badgeLineHeight must be 14pt per DESIGN.md")
     }
+
+    // MARK: 11 — WindowSize.firstLaunch (Step 4 token, Step 5 coverage)
+
+    func testWindowSizeFirstLaunch() {
+        XCTAssertEqual(WindowSize.firstLaunch.width, 480, "FirstLaunch window width must be 480 per DESIGN.md § First launch")
+    }
+
+    // MARK: 12 — MenuBar tokens (Step 5)
+
+    func testMenuBarTokens() {
+        XCTAssertEqual(MenuBar.width, 280, "MenuBar.width must be 280pt per DESIGN.md § MenuBar dropdown layout")
+        XCTAssertEqual(MenuBar.cornerRadius, 10, "MenuBar.cornerRadius must be 10 per DESIGN.md § MenuBar dropdown layout")
+        XCTAssertEqual(MenuBar.tallyDotSize, 8, "MenuBar.tallyDotSize must be 8pt per DESIGN.md § MenuBar status line")
+    }
 }
 
 // swiftlint:enable inline_color_hex

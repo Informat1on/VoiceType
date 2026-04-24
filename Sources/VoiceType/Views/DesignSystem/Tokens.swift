@@ -126,6 +126,20 @@ enum CapsuleSize {
     static let height: CGFloat = 44
 }
 
+// MARK: - MenuBar
+// DESIGN.md § MenuBar dropdown layout.
+
+enum MenuBar {
+    /// DESIGN.md § MenuBar dropdown layout: "280px wide".
+    static let width: CGFloat = 280
+    /// DESIGN.md § MenuBar dropdown layout: "radius 10".
+    /// Note: MenuBarExtra(.window) window chrome provides rounded corners automatically
+    /// on macOS 13+. This token is kept for reference and potential future use.
+    static let cornerRadius: CGFloat = 10
+    /// Tally dot diameter. DESIGN.md § MenuBar status line.
+    static let tallyDotSize: CGFloat = 8
+}
+
 // MARK: - Motion
 // DESIGN.md § Motion. Values in seconds for SwiftUI Animation durations.
 

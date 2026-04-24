@@ -1,3 +1,12 @@
+// VoiceTypeApp.swift
+//
+// Step 5: MenuBarExtra switched to .window style to support the custom 280pt
+// SwiftUI layout in MenuBarView. Menubar icon is a single SF Symbol ("waveform")
+// that stays the same shape at all times — color is the only signal:
+//   • default (.primary / template) — idle, transcribing, injecting
+//   • Palette.Capsule.recording (red) — recording
+// DESIGN.md § Iconography: "template SF Symbol, same shape at all times".
+
 import SwiftUI
 
 @main
@@ -6,28 +15,17 @@ struct VoiceTypeApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(hotkeyService: appDelegate.hotkeyService, appDelegate: appDelegate)
+            MenuBarView(appDelegate: appDelegate)
         } label: {
-            Image(systemName: menuBarIcon)
-                .foregroundColor(menuBarColor)
+            Image(systemName: "waveform")
+                .foregroundStyle(menuBarIconColor)
         }
+        .menuBarExtraStyle(.window)
     }
 
-    private var menuBarIcon: String {
-        switch appDelegate.appState {
-        case .idle: return "waveform"
-        case .recording: return "mic.fill"
-        case .transcribing: return "text.bubble.fill"
-        case .injecting: return "arrow.right.doc.on.clipboard.fill"
-        }
-    }
-
-    private var menuBarColor: Color {
-        switch appDelegate.appState {
-        case .idle: return .primary
-        case .recording: return .red
-        case .transcribing: return .blue
-        case .injecting: return .mint
-        }
+    /// Two-color icon: red during recording, system default otherwise.
+    /// DESIGN.md § Iconography: "Color: default text/primary; red Capsule.recording when recording."
+    private var menuBarIconColor: Color {
+        appDelegate.appState == .recording ? Palette.Capsule.recording : .primary
     }
 }
