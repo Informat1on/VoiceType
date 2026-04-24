@@ -101,9 +101,18 @@ implicitly_unwrapped_optional:
 
 # --- custom rules: DESIGN.md token discipline ----------------------------
 #
-# These are intentionally WARNING, not ERROR. They flag drift without
-# blocking builds before Tokens.swift exists (Tier A, Weekend 3-4). Once
-# Palette is in place, bump these to error and update DESIGN.md decision log.
+# Tokens.swift is live as of 2026-04-24 (Tier A Step 1, commit fc93c77).
+# Severity policy for the 3 color-literal rules:
+#   - inline_color_hex:    ERROR  — zero current violations (Tokens.swift
+#                                   is the sole legitimate consumer and
+#                                   uses file-level swiftlint:disable).
+#   - inline_nscolor_rgb:  ERROR  — zero current violations.
+#   - inline_color_rgb:    WARNING (bump to ERROR in Tier A Step 2 after
+#                                   WaveformView/VoiceTypeArtwork/WindowChrome
+#                                   migrate to Palette tokens — currently
+#                                   8 known violations across those 3 files).
+# nsalert_runmodal + ultra_thin_material_on_capsule stay WARNING until Step 7
+# (error-handling + capsule migration) replaces the current usages.
 
 custom_rules:
 
@@ -122,7 +131,7 @@ custom_rules:
     message: >
       Use Palette tokens from Tokens.swift instead of Color(hex:) literals.
       See DESIGN.md § Color.
-    severity: warning
+    severity: error
 
   inline_nscolor_rgb:
     name: "Inline NSColor RGB literal"
@@ -131,7 +140,7 @@ custom_rules:
       Use Palette.dynamic(...) or Palette tokens instead of inline NSColor
       RGB literals. See DESIGN.md § Color and D4 (NSColor(name:dynamicProvider:)
       pattern).
-    severity: warning
+    severity: error
 
   ultra_thin_material_on_capsule:
     name: "ultraThinMaterial on recording capsule"
