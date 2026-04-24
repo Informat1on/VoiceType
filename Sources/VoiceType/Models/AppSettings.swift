@@ -176,7 +176,19 @@ final class AppSettings: ObservableObject {
     private init() {
         self.activationMode = ActivationMode(rawValue: defaults.string(forKey: "activationMode") ?? "") ?? .singlePress
         self.selectedModel = TranscriptionModel(rawValue: defaults.string(forKey: "selectedModel") ?? "") ?? .smallQ5
-        self.hotkeyModifiers = defaults.integer(forKey: "hotkeyModifiers") == 0 ? optionKey | cmdKey : defaults.integer(forKey: "hotkeyModifiers")
+        let storedModifiers = defaults.integer(forKey: "hotkeyModifiers")
+        if storedModifiers == 0 {
+            // Preserve legacy physical default. Pre-constants-fix, this expression
+            // evaluated to `optionKey | cmdKey` = 768 using OLD wrong constants,
+            // which Carbon heard as Cmd+Shift+V. Users on factory defaults have
+            // been pressing Cmd+Shift+V all along. After the constants fix, using
+            // literal `shiftKey | cmdKey` keeps the same 768 bit value so those
+            // users' muscle memory still fires the hotkey. New/intentional default
+            // changes (e.g. Option+Space) will override this expression.
+            self.hotkeyModifiers = shiftKey | cmdKey
+        } else {
+            self.hotkeyModifiers = migrateLegacyControlBit(storedModifiers)
+        }
         self.hotkeyKey = defaults.integer(forKey: "hotkeyKey") == 0 ? 9 : defaults.integer(forKey: "hotkeyKey")
         self.autoEnterAfterInsert = defaults.object(forKey: "autoEnterAfterInsert") as? Bool ?? true
 
@@ -204,6 +216,12 @@ final class AppSettings: ObservableObject {
         self.indicatorStyle = IndicatorStyle(rawValue: defaults.string(forKey: "indicatorStyle") ?? "") ?? .dot
         self.textInjectionMode = TextInjectionMode(rawValue: defaults.string(forKey: "textInjectionMode") ?? "") ?? .paste
         self.trimWhitespaceAfterInsert = defaults.object(forKey: "trimWhitespaceAfterInsert") as? Bool ?? true
+
+        // Persist migrated Control bit back to UserDefaults so subsequent launches
+        // skip the remap. Only writes when migration actually changed the value.
+        if storedModifiers != 0 && storedModifiers != self.hotkeyModifiers {
+            defaults.set(self.hotkeyModifiers, forKey: "hotkeyModifiers")
+        }
     }
 
     private func save() {
@@ -220,11 +238,46 @@ final class AppSettings: ObservableObject {
     }
 }
 
-// Carbon modifier constants (from Events.h)
-let cmdKey: Int = 256       // 1 << 8
-let optionKey: Int = 512    // 1 << 9
-let controlKey: Int = 1024  // 1 << 10
-let shiftKey: Int = 2048    // 1 << 11
+// Carbon modifier constants per HIToolbox/Events.h
+// cmdKey     = 0x0100 = 256  (1 << 8)
+// shiftKey   = 0x0200 = 512  (1 << 9)
+// alphaLock  = 0x0400 = 1024 (1 << 10) — not used for hotkeys
+// optionKey  = 0x0800 = 2048 (1 << 11)
+// controlKey = 0x1000 = 4096 (1 << 12)
+let cmdKey: Int     = 256   // 1 << 8
+let shiftKey: Int   = 512   // 1 << 9
+let optionKey: Int  = 2048  // 1 << 11
+let controlKey: Int = 4096  // 1 << 12
+
+/// The `alphaLock` bit (1024, 1 << 10) was mistakenly used as `controlKey` in
+/// pre-fix builds. Any UserDefaults value containing this bit represents a
+/// Control-based hotkey that was stored with the wrong constant.
+internal let legacyAlphaLockBit: Int = 1024
+
+/// Remap legacy Carbon modifier bits for shortcuts that contained the
+/// pre-fix `controlKey = 1024` (actually Carbon's alphaLock). These
+/// shortcuts never fired under the old constants, so the user never
+/// learned a physical combo — we honor their original recorded intent.
+///
+/// For values WITHOUT bit 1024: no migration. Carbon has been listening
+/// on the stored bit value; users have physical muscle memory for that.
+/// Migrating would break their working shortcut.
+///
+/// For values WITH bit 1024: strip bit 1024, swap bits 512 ↔ 2048, add
+/// bit 4096. Rationale: pre-fix recorder stored Option as 512 and Shift
+/// as 2048, but new constants have 512 = Shift and 2048 = Option. To
+/// preserve original physical intent, companion bits must swap.
+internal func migrateLegacyControlBit(_ modifiers: Int) -> Int {
+    guard modifiers & legacyAlphaLockBit != 0 else { return modifiers }
+    var remapped = modifiers & ~legacyAlphaLockBit
+    // Swap bits 512 and 2048 to reflect the Option/Shift name-vs-bit inversion.
+    let had512 = (remapped & 512) != 0
+    let had2048 = (remapped & 2048) != 0
+    remapped &= ~(512 | 2048)
+    if had512 { remapped |= 2048 }
+    if had2048 { remapped |= 512 }
+    return remapped | controlKey
+}
 
 func modifiersToString(_ modifiers: Int) -> String {
     var result = ""
