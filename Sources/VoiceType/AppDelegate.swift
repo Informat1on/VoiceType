@@ -415,7 +415,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             try audioCaptureService.startRecording()
             appState = .recording
             recordingStartedAt = Date()
-            voiceTypeWindow?.show(state: .recording)
+            voiceTypeWindow?.show(state: CapsuleState.recording)
             print("[AppDelegate] Recording started")
             AppLog.app.notice("Recording started")
         } catch {
@@ -480,7 +480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
 
             appState = .transcribing
-            voiceTypeWindow?.show(state: .processing)
+            voiceTypeWindow?.show(state: CapsuleState.transcribing)
             AppLog.transcription.notice("Transcription started")
 
             print("[AppDelegate] About to create transcription Task")
