@@ -50,9 +50,8 @@ struct CapsuleIndicatorView: View {
     @State private var waveHistory: [Float] = Array(repeating: 0, count: 16)
     private let levelTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
 
-    // Transcribing dot-breathing state
+    // Transcribing dot-breathing state. Removed unused `dotOffset` (P2-D).
     @State private var dotScale: CGFloat = 0.7
-    @State private var dotOffset: CGFloat = 0
 
     // Tally dot pulse (audio-threshold-gated, NOT continuous)
     @State private var tallyScale: CGFloat = 1.0
@@ -143,12 +142,7 @@ struct CapsuleIndicatorView: View {
 
         case .transcribing:
             threeZoneLayout(
-                leading: {
-                    // Muted 8pt tally
-                    Circle()
-                        .fill(Palette.Capsule.timer)
-                        .frame(width: MenuBar.tallyDotSize, height: MenuBar.tallyDotSize)
-                },
+                leading: { mutedTallyWithChip },
                 center: {
                     // Dots only — no "TRANSCRIBING" text per A6
                     TranscribingDotsView(dotScale: dotScale)
@@ -159,7 +153,12 @@ struct CapsuleIndicatorView: View {
 
         case let .inserted(charCount, appName):
             threeZoneLayout(
-                leading: { InsertedTallyView() },
+                leading: {
+                    HStack(spacing: 8) {
+                        InsertedTallyView()
+                        langChip
+                    }
+                },
                 center: {
                     Text("Inserted \u{00B7} \(charCount) chars \u{2192} \(appName)")
                         .font(Typography.metaLabel)
@@ -173,16 +172,12 @@ struct CapsuleIndicatorView: View {
 
         case let .errorInline(message):
             threeZoneLayout(
-                leading: {
-                    Circle()
-                        .fill(Palette.error)
-                        .frame(width: MenuBar.tallyDotSize, height: MenuBar.tallyDotSize)
-                },
+                leading: { errorTallyWithChip },
                 center: {
-                    // Message in cream (NOT red) per A4 spec
+                    // Error message in red per v3-states-atlas `.err-text { color: #FF7A6B }`.
                     Text(message)
                         .font(Typography.metaLabel)
-                        .foregroundStyle(Palette.Capsule.text)
+                        .foregroundStyle(Palette.error)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 },
@@ -192,17 +187,13 @@ struct CapsuleIndicatorView: View {
 
         case let .errorToast(title, _):
             // TODO: Step 7 — render as separate toast NSWindow.
-            // For now: mirror errorInline treatment per A4.
+            // For now: mirror errorInline treatment (tally + chip + red text).
             threeZoneLayout(
-                leading: {
-                    Circle()
-                        .fill(Palette.error)
-                        .frame(width: MenuBar.tallyDotSize, height: MenuBar.tallyDotSize)
-                },
+                leading: { errorTallyWithChip },
                 center: {
                     Text(title)
                         .font(Typography.metaLabel)
-                        .foregroundStyle(Palette.Capsule.text)
+                        .foregroundStyle(Palette.error)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 },
@@ -216,11 +207,7 @@ struct CapsuleIndicatorView: View {
 
         case .emptyResult:
             threeZoneLayout(
-                leading: {
-                    Circle()
-                        .fill(Palette.Capsule.timer)
-                        .frame(width: MenuBar.tallyDotSize, height: MenuBar.tallyDotSize)
-                },
+                leading: { mutedTallyWithChip },
                 center: {
                     Text("Nothing heard")
                         .font(Typography.metaLabel)
@@ -231,6 +218,38 @@ struct CapsuleIndicatorView: View {
             )
             .transition(.opacity.combined(with: .scale(scale: 0.97)))
         }
+    }
+
+    // MARK: - Zone-left helpers (lang-chip present in ALL states per prototype)
+
+    /// `<tally> + <lang-chip>` — prototype shows both in every state's zone-left.
+    /// Recording uses leadingZone (adds REC label); the helpers below cover the
+    /// remaining 5 states with the correct tally color.
+    private var mutedTallyWithChip: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(Palette.Capsule.timer)
+                .frame(width: MenuBar.tallyDotSize, height: MenuBar.tallyDotSize)
+            langChip
+        }
+    }
+
+    private var errorTallyWithChip: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(Palette.error)
+                .frame(width: MenuBar.tallyDotSize, height: MenuBar.tallyDotSize)
+            langChip
+        }
+    }
+
+    /// Flat lang-chip — Geist Mono 10pt Medium, capsule-text cream, 0.6pt tracking.
+    /// Prototype `.lang-chip { font-size: 10px; font-weight: 500; letter-spacing: 0.06em }`.
+    private var langChip: some View {
+        Text(chipLabel)
+            .font(Typography.badge)
+            .foregroundStyle(Palette.Capsule.text)
+            .tracking(0.6)
     }
 
     // MARK: - Three-zone layout helper (A4)
@@ -312,11 +331,15 @@ struct CapsuleIndicatorView: View {
         case .recording:
             recordingDuration = 0
             waveHistory = Array(repeating: 0, count: 16)
+            dotScale = 0.7  // reset for next transcribing entry (P2-E)
         case .transcribing:
-            // Trigger 3-dot breathing animation
-            dotScale = 1.0
+            // Trigger 3-dot breathing animation. Reset-then-set so re-entry
+            // from a prior transcribing cycle fires the animation again.
+            dotScale = 0.7
+            DispatchQueue.main.async { dotScale = 1.0 }
         default:
-            break
+            // Reset so the NEXT transcribing entry sees 0.7 → 1.0 transition.
+            dotScale = 0.7
         }
     }
 }

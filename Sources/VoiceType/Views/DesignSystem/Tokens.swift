@@ -390,16 +390,20 @@ enum Palette {
 
     // MARK: Sidebar / menu-row backgrounds
 
-    /// Sidebar active-row background. Used on the currently-selected sidebar item
-    /// in Settings and MenuBar. Dark: rgba(89,199,255,0.08) / Light: rgba(9,157,223,0.08).
+    /// Sidebar active-row background. Prototype: dark rgba(89,199,255,0.08) /
+    /// light rgba(9,157,223,0.06). Light-mode alpha 0.06 per v1 `:root`.
     static let sidebarActive = Color.dynamic(
-        light: NSColor(srgbRed: 0.035294, green: 0.615686, blue: 0.874510, alpha: 0.08),
+        light: NSColor(srgbRed: 0.035294, green: 0.615686, blue: 0.874510, alpha: 0.06),
         dark: NSColor(srgbRed: 0.349020, green: 0.780392, blue: 1.000000, alpha: 0.08)
     )
 
-    /// Sidebar hover background. Neutral white wash at 4% opacity (both modes).
-    /// Used for row hover in MenuBar and Settings sidebar.
-    static let sidebarHover = Color(nsColor: NSColor(white: 1, alpha: 0.04))
+    /// Sidebar hover background — adaptive per prototype v1 `:root` variables.
+    /// Dark: rgba(255,255,255,0.04). Light: rgba(14,23,32,0.03) (dark wash on
+    /// light surface). Single-value would fail visibly in light mode.
+    static let sidebarHover = Color.dynamic(
+        light: NSColor(srgbRed: 0.054902, green: 0.090196, blue: 0.125490, alpha: 0.03),
+        dark: NSColor(white: 1, alpha: 0.04)
+    )
 }
 
 // swiftlint:enable inline_color_rgb inline_color_hex inline_nscolor_rgb

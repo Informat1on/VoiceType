@@ -67,12 +67,11 @@ final class TokensTests: XCTestCase {
     // MARK: 8 — Waveform activation threshold
 
     func testWaveformActivationThreshold() {
-        // Phase 1 A9: threshold lowered from 0.15 → 0.03 for conversational speech
-        // at ~30cm mic distance. Must be in range [0.01, 0.10].
-        // swiftlint:disable:next line_length
-        XCTAssertLessThanOrEqual(Motion.waveformActivationThreshold, 0.10, "waveformActivationThreshold must be ≤ 0.10 (conversational speech range)")
-        // swiftlint:disable:next line_length
-        XCTAssertGreaterThanOrEqual(Motion.waveformActivationThreshold, 0.01, "waveformActivationThreshold must be ≥ 0.01 (avoid false-positives)")
+        // Phase 1 A9 spec: threshold MUST be in [0.02, 0.05] for conversational
+        // speech at ~30cm mic distance. Tightened from [0.01, 0.10] per review.
+        let threshold = Motion.waveformActivationThreshold
+        XCTAssertLessThanOrEqual(threshold, 0.05)
+        XCTAssertGreaterThanOrEqual(threshold, 0.02)
     }
 
     // MARK: 9 — Hex color parser round-trip (optional safety guard)
