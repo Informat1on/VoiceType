@@ -21,10 +21,27 @@ section at the bottom of `DESIGN.md` with date + rationale.
 The compass: **"A tool for people who just build things, with the polish of
 commercial software."** Every design decision serves that one thing.
 
-In QA / design-review mode, flag any code that doesn't match `DESIGN.md`
-(inline color literals, missing token usage, hero-header in Settings, continuous
-waveform animation during silence, etc.). The Tier A refactor — implementing the
-token file and migrating views — is sequenced for v1.1 Track 1 Weekend 3-4.
+Key sections in DESIGN.md (all locked as of 2026-04-24):
+- **Aesthetic Direction** — Cool Ink-Steel palette, Geist/Geist Mono, no glassmorphism
+- **Color** — dark/light token pairs; adapt via `NSColor(name:dynamicProvider:)`
+- **Layout** — native rows + dividers (not cards), Settings tab order General→Models→Shortcuts→Advanced
+- **Interaction States** — 6 capsule states: recording/transcribing/inserted/errorInline/errorToast/emptyResult
+- **Accessibility** — contrast rules, VoiceOver announcements on all state transitions, colorblind REC label
+- **Motion** — `Motion.micro/short/medium/long = 100/200/300/500ms`; silent waveform during silence
+- **User Journey** — first-launch arc (4-step checklist), daily-use arc (800ms ceremony), error-recovery arc
+- **Error Handling & Logging** — solvable errors inline, unsolvable as toast; all errors to `~/Library/Logs/VoiceType/errors.log`
+- **Transcription History** — `history.jsonl` (100 entries rolling); re-insert activates targetApp first
+- **Focus Return** — capture previousApp at hotkey; restore on dismiss; mandatory behavior
+- **Language Mapping** — `Language.bilingualRuEn` = `whisperLanguage: .ru` + `usesBilingualPrompt: true` (NOT auto)
+- **Implementation Plan** — 14 Tier A steps with test requirements per step; see Pre-Tier A W1 steps 0a-0c
+
+In QA / design-review mode, flag any code that doesn't match `DESIGN.md`:
+inline color literals, missing token usage, hero-header in Settings, continuous
+waveform animation during silence, `.ultraThinMaterial` on capsule, boxed cards
+in preferences, `NSAlert.runModal()` for errors instead of capsule states.
+
+The Tier A refactor (tokens + view migration) is sequenced for v1.1 Weekend 3-4.
+Track 2 W1 (Language enum + hotwords) is Weekend 1, independent of Tier A.
 
 ## Skill routing
 

@@ -552,26 +552,106 @@ Competitors silently lose transcriptions when focus changes. VoiceType keeps eve
 
 ## Implementation Plan (Tier A refactor)
 
-1. Create `Sources/VoiceType/Views/DesignSystem/Tokens.swift` with `Spacing`, `Radius`, `Palette`, `Typography`, `WindowSize`, `CapsuleSize`, `Motion`, `ButtonPadding`.
+### Pre-Tier A: Track 2 W1 (Weekend 1, independent of Tier A)
+
+0a. Add `enum Language: String, Codable, CaseIterable` to `AppSettings.swift`:
+    cases `ru`, `en`, `auto`, `bilingualRuEn = "ru+en"`. Computed props:
+    `var whisperLanguage: WhisperLanguage? { .ru / .en / nil / .ru }` and
+    `var usesBilingualPrompt: Bool`. Replaces `preferredLanguage: String`.
+    **Tests:** `LanguageEnumTests.swift` — Codable round-trip, whisperLanguage mapping.
+
+0b. Add `customVocabulary: String` to `AppSettings`. Add Custom Vocabulary
+    textarea to current General tab with `// TODO Tier A: move to Advanced tab`.
+
+0c. Add `TranscriptionService.setInitialPrompt(_ text: String?)` with
+    `_initialPrompt: UnsafeMutablePointer<CChar>?` lifetime management (strdup/free,
+    deinit). Call `setInitialPrompt` at end of `loadModel()` to re-apply after
+    model reload. `applyRuntimeConfiguration` takes `Language` not `String`.
+    **Tests:** `TranscriptionServiceInitialPromptTests.swift` — ptr lifecycle,
+    re-apply after reload, empty string = nil ptr.
+
+### Tier A (Weekends 3-4)
+
+1. Create `Sources/VoiceType/Views/DesignSystem/Tokens.swift` with `Spacing`,
+   `Radius`, `Palette`, `Typography`, `WindowSize`, `CapsuleSize`, `Motion`,
+   `ButtonPadding`. Include `Color(light:dark:)` extension via
+   `NSColor(name:dynamicProvider:)` for automatic dark/light adaptation.
+   **Tests:** `TokensTests.swift` — regression guard: spot-check 5+ token values
+   against DESIGN.md spec.
+
 2. Replace literals in `WindowChrome.swift` with token references.
-3. Rewrite `SettingsView.swift`: sidebar, tab order (General → Models → Shortcuts → Advanced), native-rows (no `SettingsSectionCard`), no hero header, segmented language control, inline permission rows.
+
+3. Rewrite `SettingsView.swift`: sidebar, tab order (General → Models → Shortcuts
+   → Advanced), native-rows (no `SettingsSectionCard`), no hero header, segmented
+   `Language` control (RU / RU+EN / EN / AUTO), inline permission rows. Move
+   Custom Vocabulary from General to Advanced tab (completing W1 TODO).
+
 4. Create `FirstLaunchWindow.swift`: 4-step checklist per First Launch spec.
-5. Update `MenuBarView.swift` with three-state dropdown (Idle / Recording / Not Ready). Status line + tally + two-line readout. Menubar icon → red during recording.
-6. Rewrite `WaveformView.swift` (capsule): token-based, three-zone layout (tally + REC + RU/EN chip), palette to opaque dark + red.
-7. Add capsule states: `transcribing` (breathing dots), `error-inline`, `error-toast` (separate NSWindow), `empty-result` ("Nothing heard").
-8. Add `inserted` state to `VoiceTypeIndicatorView` with char-count + target-app name (400ms flash).
-9. Implement Transcription History: `Services/HistoryStore.swift` (history.jsonl), `Views/Settings/HistorySheet.swift`.
-10. Implement Error Log: `Services/ErrorLogger.swift` (daily rotation), row in Advanced tab.
-11. Implement Focus Return: `Services/FocusCaptureService.swift` captures + restores previousApp / previousWindow.
-12. Implement Accessibility announcements: post `NSAccessibilityAnnouncementRequestedNotification` on state transitions.
-13. Implement Reduced Motion branch: check `accessibilityDisplayShouldReduceMotion`; opacity-only animations.
-14. Vendor Geist + Geist Mono woff2/otf into `Resources/Fonts/`, register via Bundle. `.font(Tokens.Typography.body)` across views.
+   **Remove `permissionManager.requestInitialPermissionsIfNeeded()` from
+   `applicationDidFinishLaunching()` — FirstLaunchWindow is now the sole
+   onboarding surface.** Subsequent launches skip checklist via
+   `hasCompletedOnboarding` UserDefaults flag.
+
+5. Update `MenuBarView.swift` with three-state dropdown (Idle / Recording / Not
+   Ready). Status line + tally + two-line readout. Menubar icon → red during
+   recording.
+
+6. Rewrite `WaveformView.swift` (capsule): token-based, three-zone layout
+   (tally + REC + RU/EN chip), opaque dark surface, red tally. Replace
+   `VoiceTypeState` enum with `CapsuleState` (6 cases with associated values:
+   `recording`, `transcribing`, `inserted(charCount:Int, targetAppName:String)`,
+   `errorInline(message:String)`, `errorToast(title:String, body:String)`,
+   `emptyResult`). `VoiceTypeWindow` gets `@Published var capsuleState: CapsuleState`;
+   `RecordingWindow.setContent()` removed — single `NSHostingView` created once at
+   init. `AppDelegate` mutates `capsuleState` instead of calling `setContent()`.
+
+7. Add capsule states to `VoiceTypeIndicatorView`: `transcribing` (3-dot breathing,
+   `Motion.long` per cycle), `errorInline` (4s auto-dismiss), `errorToast` (separate
+   NSWindow, 6s auto-dismiss + "View log" link), `emptyResult` ("Nothing heard"
+   400ms flash). **Explicitly remove `AppDelegate.showError()` / `NSAlert.runModal()`
+   from all 4 failure paths** (mic denied, empty capture, transcription failed,
+   insertion failed) — route all errors through `CapsuleState.errorInline` or
+   `.errorToast` per DESIGN.md solvable/unsolvable rule.
+
+8. Add `inserted` state: char-count + target-app name 400ms flash, green tally.
+
+9. Implement Transcription History: `Services/HistoryStore.swift` (history.jsonl,
+   100-entry rolling, thread-safe writes), `Views/Settings/HistorySheet.swift`.
+   `HistoryStore.reinsert(entry:)` **activates
+   `NSRunningApplication(bundleIdentifier: entry.targetApp)` before calling
+   `TextInjectionService.injectText()`**; shows toast if target app not running:
+   "App not running — copied to clipboard".
+   **Tests:** `HistoryStoreTests.swift` — write/read/rolling limit/concurrent
+   writes/delete/reinsert-activates-correct-app.
+
+10. Implement Error Log: `Services/ErrorLogger.swift` (daily rotation, 7-day
+    retention). **Create `~/Library/Logs/VoiceType/` if missing on first write.**
+    Rotation check once at app launch (not on every write). Row in Advanced tab.
+    **Tests:** `ErrorLoggerTests.swift` — write/rotation/retention/directory
+    auto-creation.
+
+11. Implement Focus Return: `Services/FocusCaptureService.swift` captures
+    `previousApp` + `previousWindow` at hotkey press. On restore: activate
+    `previousApp`, raise window. **Guard `kAXErrorInvalid` on stale AX element —
+    if previous app quit, save text to history only + toast "App closed — saved
+    to history" (T6 edge case).**
+    **Tests:** `FocusCaptureServiceTests.swift` — capture/restore/nil-when-no-focus/
+    stale-AX-no-crash.
+
+12. Implement Accessibility announcements: `NSAccessibilityPostNotification` on all
+    6 `CapsuleState` transitions (not just recording). See VoiceOver section.
+
+13. Implement Reduced Motion branch: `accessibilityDisplayShouldReduceMotion`;
+    opacity-only, no scale, no pulse.
+
+14. Vendor Geist + Geist Mono into `Resources/Fonts/`, register via Bundle.
+    `.font(Tokens.Typography.body)` across views.
 
 Sequence per v1.1 roadmap:
-- Weekend 1 (Track 2): hotwords — unblocked, no token dependency
-- Weekend 3-4 (Track 1): Tier A steps 1-8
-- Weekend 3-4 extended: steps 9-14 (History, Error Log, Focus Return, a11y, Reduced Motion)
-- If Tier A runs long: History can split to Weekend 5 as self-contained module
+- Weekend 1 (Track 2): steps 0a-0c — unblocked, no token dependency
+- Weekend 3-4 (Track 1, parallel): steps 1-8 (Views/) ‖ steps 9-11 (Services/ new files)
+- Weekend 4 (after lanes merge): steps 12-14 (need CapsuleState from step 6)
+- If Tier A runs long: History (step 9) can split to Weekend 5 as self-contained module
 
 ---
 
@@ -611,3 +691,10 @@ Sequence per v1.1 roadmap:
 | 2026-04-24 | **Token hygiene:** removed `2xs 2px`; assigned `accent/strong` to capsule-border-emphasis + hover; `stroke/strong` to active-section-edge + focus-ring | Unused tokens drift. Assigned or removed. |
 | 2026-04-24 | **Button padding 7px 14px as locked off-scale exception**           | Battle-tested rhythm. `Tokens.ButtonPadding` with Decisions Log entry so future maintainers know it's intentional. |
 | 2026-04-24 | **Prefs-row padding: lg 16px horizontal, md 12px vertical, min-height 40px** | Replaces ambiguous "20-24px depending on density". Single rhythm. |
+| 2026-04-24 | **Language enum replaces preferredLanguage: String** | `enum Language` with `whisperLanguage: WhisperLanguage?` and `usesBilingualPrompt: Bool` computed props. Compile-time safety, explicit RU+EN mapping. `/plan-eng-review` D5. |
+| 2026-04-24 | **RU+EN = language=ru + bilingual initial_prompt** | Auto-detect picks "en" on heavy code-switching, mangling Russian. Primary use case is Russian text + English tech terms; "ru" as base decoder + prompt bias is correct. NOT language=nil/auto. Cross-model (Codex confirmed). `/plan-eng-review` D1, D10. |
+| 2026-04-24 | **Color tokens via NSColor(name:dynamicProvider:)** | Dynamic dark/light adaptation without asset catalog files or @Environment boilerplate. `Color(light:dark:)` extension in Tokens.swift. `/plan-eng-review` D4. |
+| 2026-04-24 | **RecordingWindow: single NSHostingView + @Published CapsuleState** | setContent() rebuild breaks state-transition animations and wastes memory across 6 states. One view, mutation via @Published. `/plan-eng-review` D2. |
+| 2026-04-24 | **FirstLaunchWindow replaces requestInitialPermissionsIfNeeded()** | Auto-request + onboarding checklist = duplicate prompts + focus theft + undefined first-run state. Checklist is the sole onboarding surface. Codex finding. `/plan-eng-review` D8. |
+| 2026-04-24 | **HistoryStore.reinsert() activates targetApp before inject** | Re-inserting from Settings sheet without activating target app injects text into Settings. Fix: activate NSRunningApplication(bundleIdentifier:) + 50ms delay before injectText(). Codex finding. `/plan-eng-review` D9. |
+| 2026-04-24 | **Custom Vocabulary lands in General tab on W1, Advanced on Tier A** | Keeps W1 and Tier A as parallel independent tracks. General tab temporary placement marked with TODO comment. `/plan-eng-review` D3. |

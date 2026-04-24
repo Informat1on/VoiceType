@@ -72,6 +72,24 @@ Design-debt и follow-up items, вынесенные из `/plan-design-review` 
 - **Cons:** каждая под-фича = дополнительный UI surface + edge cases. Sync требует решения о privacy (история содержит текст, который мог быть чувствительным).
 - **Depends on:** v1.1 ships + telemetry about history usage.
 
+## T9 — ADR: RU+EN language mode mapping
+
+- **What:** написать `docs/decisions/2026-04-XX-ruen-language-mode.md` — ADR документирующий, почему `Language.bilingualRuEn` маппится в `whisperLanguage: .ru` + bilingual `initial_prompt`, а не в `language=nil` (auto) или отдельный режим.
+- **Why:** `/plan-eng-review` 2026-04-24 выявил, что без ADR будущий maintainer не поймёт почему `bilingualRuEn.whisperLanguage = .ru` — это выглядит как баг, но является архитектурным решением. Codex независимо подтвердил риск silent degradation в auto.
+- **Pros:** решение самодокументировано; будущий `/plan-eng-review` не повторит этот вопрос.
+- **Cons:** 20-30 мин на написание.
+- **Context:** решение: "ru+en" = `language=ru` потому что primary use case — русский текст с английскими техтерминами; auto-detect часто выбирает "en" при heavy code-switching и манглит русские части. Bilingual initial_prompt биасирует декодер на техлексику.
+- **Depends on:** до W1 Track 2 Weekend 1 (перед реализацией Language enum).
+
+## T10 — initial_prompt length limit: проверить порог whisper.cpp + clamp в UI
+
+- **What:** проверить в whisper.cpp upstream (`whisper.cpp:whisper_full()`), сколько токенов принимает `initial_prompt` перед обрезкой. Добавить clamp в textarea (например, maxLength = 500 символов) + счётчик символов в Settings.
+- **Why:** spike-документ `2026-04-25-initial-prompt-plumbing.md` оставил это открытым: "Does whisper.cpp truncate initial_prompt at some length?" Без clamp пользователь с большим словарём получит молчаливую обрезку без feedback.
+- **Pros:** честный UX; пользователь знает, что вмещается в prompt.
+- **Cons:** ~1 час на исследование + ~30 мин на UI.
+- **Context:** искать в whisper.cpp: `prompt_past` логику, context window. Likely trim at ~224 tokens.
+- **Depends on:** до W1 Track 2, или сразу после первой рабочей реализации textarea.
+
 ---
 
 ## Process TODOs
