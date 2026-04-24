@@ -113,59 +113,59 @@ struct FirstLaunchView: View {
     @ObservedObject private var _modelManager = ModelManager.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Title
+        // MARK: First-launch prototype CSS values
+        // .fl-body { padding: 36px 32px; gap: 20px }
+        // .fl-steps { gap: 10px } — no Dividers between step rows per prototype
+        VStack(alignment: .center, spacing: 20) {
+            // .fl-body h2 { font-size: 17px; font-weight: 500 }
+            // No Typography token for 17pt Medium; use PostScript name per project pattern.
             Text("Four steps and you're typing with your voice")
-                .font(Typography.display)
-                .lineSpacing(Typography.displayLineHeight - 23)
+                .font(Font.custom("Geist-Medium", size: 17))
                 .foregroundStyle(Palette.textPrimary)
+                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, Spacing.xl)
 
-            // Step rows
-            stepRow(StepRowConfig(
-                number: 1,
-                title: "Grant microphone access",
-                subtitle: hasMic
-                    ? "Microphone access granted"
-                    : "Required to capture your voice",
-                isDone: hasMic,
-                isNeutral: false,
-                actionLabel: hasMic ? nil : "Grant microphone access",
-                action: { permissionManager.requestMicrophonePermission() }
-            ))
+            // .fl-steps { display:flex; flex-direction:column; gap:10px }
+            // Matches .fl-steps { margin-top: 8px } in v4-revisions.html — layered on top
+            // of the outer VStack(spacing: 20) for a total 28pt gap.
+            VStack(spacing: 10) {
+                stepRow(StepRowConfig(
+                    number: 1,
+                    title: "Grant microphone access",
+                    subtitle: hasMic
+                        ? "Microphone access granted"
+                        : "Required to capture your voice",
+                    isDone: hasMic,
+                    isNeutral: false,
+                    actionLabel: hasMic ? nil : "Grant microphone access",
+                    action: { permissionManager.requestMicrophonePermission() }
+                ))
 
-            Divider()
-                .overlay(Palette.divider)
-                .padding(.vertical, Spacing.md)
+                stepRow(StepRowConfig(
+                    number: 2,
+                    title: "Grant accessibility access",
+                    subtitle: hasA11y
+                        ? "Accessibility access granted"
+                        : "Required to insert transcribed text",
+                    isDone: hasA11y,
+                    isNeutral: false,
+                    actionLabel: hasA11y ? nil : "Grant accessibility access",
+                    action: { permissionManager.requestAccessibilityPermission(prompt: true) }
+                ))
 
-            stepRow(StepRowConfig(
-                number: 2,
-                title: "Grant accessibility access",
-                subtitle: hasA11y
-                    ? "Accessibility access granted"
-                    : "Required to insert transcribed text",
-                isDone: hasA11y,
-                isNeutral: false,
-                actionLabel: hasA11y ? nil : "Grant accessibility access",
-                action: { permissionManager.requestAccessibilityPermission(prompt: true) }
-            ))
+                modelStepRow()
 
-            Divider()
-                .overlay(Palette.divider)
-                .padding(.vertical, Spacing.md)
-
-            modelStepRow()
-
-            Divider()
-                .overlay(Palette.divider)
-                .padding(.vertical, Spacing.md)
-
-            hotkeyStepRow()
-
-            Spacer(minLength: Spacing.xl)
+                hotkeyStepRow()
+            }
+            // Matches .fl-steps { margin-top: 8px } in v4-revisions.html — layered on top
+            // of the outer VStack(spacing: 20) for a total 28pt gap.
+            .padding(.top, 8)
         }
-        .padding(Spacing.windowPadding)
+        // .fl-body { padding: 36px 32px }
+        // 36pt vertical: no token exists (Spacing.xxxl=48, Spacing.xxl=32) → inline literal.
+        // 32pt horizontal: Spacing.xxl (32pt) matches exactly.
+        .padding(.vertical, 36)
+        .padding(.horizontal, Spacing.xxl)
         .frame(width: WindowSize.firstLaunch.width)
         .background(Palette.bgWindow)
         // NOTE: single-parameter onChange is the macOS 13 API. The two-parameter
@@ -189,18 +189,21 @@ struct FirstLaunchView: View {
     private func modelStepRow() -> some View {
         let modelDone = hasModel && !isDownloadingModel
 
-        HStack(alignment: .top, spacing: Spacing.md) {
+        // .fl-step container — same chrome as stepRow()
+        HStack(alignment: .center, spacing: Spacing.md) {
             StepBadge(number: 3, isDone: modelDone, isNeutral: false)
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
+                // .step-title { font-size:12px; font-weight:500 }
                 Text("Download a model")
-                    .font(Typography.body)
+                    .font(Typography.buttonLabel)
                     .foregroundStyle(Palette.textPrimary)
 
                 if isDownloadingModel {
                     Text("Downloading\u{2026}")
                         .font(Typography.caption)
-                        .foregroundStyle(Palette.textSecondary)
+                        // Palette.textMuted == CSS --text-muted (dark #7F90A1 / light #6E7F90).
+                        .foregroundStyle(Palette.textMuted)
                 } else if downloadFailed {
                     Text("Download failed — tap to retry")
                         .font(Typography.caption)
@@ -208,11 +211,13 @@ struct FirstLaunchView: View {
                 } else if modelDone {
                     Text("Model ready")
                         .font(Typography.caption)
-                        .foregroundStyle(Palette.textSecondary)
+                        // Palette.textMuted == CSS --text-muted (dark #7F90A1 / light #6E7F90).
+                        .foregroundStyle(Palette.textMuted)
                 } else {
                     Text("Required to transcribe speech")
                         .font(Typography.caption)
-                        .foregroundStyle(Palette.textSecondary)
+                        // Palette.textMuted == CSS --text-muted (dark #7F90A1 / light #6E7F90).
+                        .foregroundStyle(Palette.textMuted)
                 }
             }
 
@@ -231,20 +236,26 @@ struct FirstLaunchView: View {
                 )
             }
         }
+        .padding(.vertical, Spacing.md)
+        .padding(.horizontal, Spacing.capsuleHorizontal)
+        .background(Palette.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
     @ViewBuilder
     private func hotkeyStepRow() -> some View {
-        HStack(alignment: .top, spacing: Spacing.md) {
+        // .fl-step container — same chrome as stepRow()
+        HStack(alignment: .center, spacing: Spacing.md) {
             StepBadge(number: 4, isDone: false, isNeutral: true)
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
+                // .step-title { font-size:12px; font-weight:500 }
                 Text("Set a custom hotkey")
-                    .font(Typography.body)
+                    .font(Typography.buttonLabel)
                     .foregroundStyle(Palette.textPrimary)
                 Text("Default ⌥ Space works out of the box — optional")
                     .font(Typography.caption)
-                    .foregroundStyle(Palette.textSecondary)
+                    // Palette.textMuted == CSS --text-muted (dark #7F90A1 / light #6E7F90).
+                    .foregroundStyle(Palette.textMuted)
             }
 
             Spacer()
@@ -255,6 +266,9 @@ struct FirstLaunchView: View {
             .buttonStyle(ChecklistLinkButtonStyle())
             .accessibilityLabel("Open settings to customize your recording hotkey")
         }
+        .padding(.vertical, Spacing.md)
+        .padding(.horizontal, Spacing.capsuleHorizontal)
+        .background(Palette.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
     /// Configuration bundle for a generic step row (keeps parameter count ≤ 5).
@@ -270,16 +284,21 @@ struct FirstLaunchView: View {
 
     @ViewBuilder
     private func stepRow(_ config: StepRowConfig) -> some View {
-        HStack(alignment: .top, spacing: Spacing.md) {
+        // .fl-step { padding:12px 14px; background:var(--surface-inset); border-radius:8px; gap:12px }
+        // Spacing.md (12pt) vertical, Spacing.capsuleHorizontal (14pt) horizontal, Radius.control (8pt).
+        HStack(alignment: .center, spacing: Spacing.md) {
             StepBadge(number: config.number, isDone: config.isDone, isNeutral: config.isNeutral)
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
+                // .step-title { font-size:12px; font-weight:500 } — Typography.buttonLabel matches exactly.
                 Text(config.title)
-                    .font(Typography.body)
+                    .font(Typography.buttonLabel)
                     .foregroundStyle(Palette.textPrimary)
+                // .step-sub { font-size:11px; color:var(--text-muted) }
+                // Palette.textMuted == CSS --text-muted (dark #7F90A1 / light #6E7F90); NOT textSecondary.
                 Text(config.subtitle)
                     .font(Typography.caption)
-                    .foregroundStyle(Palette.textSecondary)
+                    .foregroundStyle(Palette.textMuted)
             }
 
             Spacer()
@@ -298,6 +317,9 @@ struct FirstLaunchView: View {
                 }
             }
         }
+        .padding(.vertical, Spacing.md)
+        .padding(.horizontal, Spacing.capsuleHorizontal)
+        .background(Palette.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
     // MARK: - Actions
@@ -364,12 +386,14 @@ struct StepBadge: View {
     /// Neutral steps (hotkey) render with muted styling to signal "optional".
     let isNeutral: Bool
 
-    // Badge is 24×24, rounded rect. Radius.control (8) gives a tight squircle feel.
-    private let size: CGFloat = 24
+    // MARK: First-launch prototype CSS values
+    // .num { width:20px; height:20px; border-radius:50% } — Circle, not rounded-rect.
+    // Previous: 24pt RoundedRectangle(cornerRadius: Radius.control).
+    private let size: CGFloat = 20
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: Radius.control)
+            Circle()
                 .fill(badgeBackground)
                 .frame(width: size, height: size)
 
@@ -388,9 +412,10 @@ struct StepBadge: View {
     }
 
     private var badgeBackground: Color {
-        if isDone { return Palette.accentSoft }
-        if isNeutral { return Palette.surfaceInset }
-        return Palette.accentSoft
+        // Prototype CSS: .fl-step .num { background:var(--accent-soft) } — applies to ALL badge states,
+        // including neutral/optional steps. surfaceInset was previously used here but blends into the
+        // surfaceInset row background, making the circle invisible (codex P3).
+        Palette.accentSoft
     }
 
     private var badgeForeground: Color {
