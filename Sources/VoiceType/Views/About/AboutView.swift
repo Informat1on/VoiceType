@@ -71,11 +71,7 @@ struct AboutView: View {
     }
 
     private var languageLabel: String {
-        switch settings.preferredLanguage {
-        case "ru": return "Russian"
-        case "en": return "English"
-        default: return "Auto-detect"
-        }
+        settings.language.displayName
     }
 
     private var shortcutBadge: some View {

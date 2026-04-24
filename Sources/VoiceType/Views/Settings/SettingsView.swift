@@ -203,10 +203,10 @@ struct SettingsView: View {
                         }
                     }
 
-                    Picker("Language", selection: $settings.preferredLanguage) {
-                        Text("Auto-detect").tag("auto")
-                        Text("Russian").tag("ru")
-                        Text("English").tag("en")
+                    Picker("Language", selection: $settings.language) {
+                        ForEach(Language.allCases, id: \.self) { lang in
+                            Text(lang.displayName).tag(lang)
+                        }
                     }
 
                     Picker("Recording Indicator", selection: $settings.indicatorStyle) {

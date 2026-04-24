@@ -151,7 +151,7 @@ final class AppSettings: ObservableObject {
         didSet { save() }
     }
 
-    @Published var preferredLanguage: String {
+    @Published var language: Language {
         didSet { save() }
     }
 
@@ -171,7 +171,26 @@ final class AppSettings: ObservableObject {
         self.hotkeyModifiers = defaults.integer(forKey: "hotkeyModifiers") == 0 ? optionKey | cmdKey : defaults.integer(forKey: "hotkeyModifiers")
         self.hotkeyKey = defaults.integer(forKey: "hotkeyKey") == 0 ? 9 : defaults.integer(forKey: "hotkeyKey")
         self.autoEnterAfterInsert = defaults.object(forKey: "autoEnterAfterInsert") as? Bool ?? true
-        self.preferredLanguage = defaults.string(forKey: "preferredLanguage") ?? "auto"
+
+        // Language migration: try new key first, then fall back to legacy "preferredLanguage"
+        if let newRaw = defaults.string(forKey: "language"),
+           let resolved = Language(rawValue: newRaw) {
+            self.language = resolved
+        } else if let legacyRaw = defaults.string(forKey: "preferredLanguage") {
+            switch legacyRaw {
+            case "auto": self.language = .auto
+            case "ru":   self.language = .ru
+            case "en":   self.language = .en
+            default:
+                print("[AppSettings] Unknown legacy preferredLanguage=\(legacyRaw), defaulting to .auto")
+                self.language = .auto
+            }
+            defaults.removeObject(forKey: "preferredLanguage")
+        } else {
+            self.language = .auto
+        }
+        defaults.removeObject(forKey: "preferredLanguage")
+
         self.indicatorStyle = IndicatorStyle(rawValue: defaults.string(forKey: "indicatorStyle") ?? "") ?? .dot
         self.textInjectionMode = TextInjectionMode(rawValue: defaults.string(forKey: "textInjectionMode") ?? "") ?? .paste
     }
@@ -182,7 +201,7 @@ final class AppSettings: ObservableObject {
         defaults.set(hotkeyModifiers, forKey: "hotkeyModifiers")
         defaults.set(hotkeyKey, forKey: "hotkeyKey")
         defaults.set(autoEnterAfterInsert, forKey: "autoEnterAfterInsert")
-        defaults.set(preferredLanguage, forKey: "preferredLanguage")
+        defaults.set(language.rawValue, forKey: "language")
         defaults.set(indicatorStyle.rawValue, forKey: "indicatorStyle")
         defaults.set(textInjectionMode.rawValue, forKey: "textInjectionMode")
     }
