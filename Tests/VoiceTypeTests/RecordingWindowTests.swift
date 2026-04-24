@@ -142,4 +142,49 @@ final class RecordingWindowTests: XCTestCase {
         let model: any ObservableObject = CapsuleStateModel()
         XCTAssertNotNil(model)
     }
+
+    // MARK: - A7: scheduleErrorInlineDismiss posts notification
+
+    func testScheduleErrorInlineDismissPostsNotification() async throws {
+        let model = CapsuleStateModel()
+        model.state = .errorInline(message: "test error")
+
+        let expectation = XCTestExpectation(description: "capsuleErrorInlineExpired notification received")
+
+        let observer = NotificationCenter.default.addObserver(
+            forName: .capsuleErrorInlineExpired,
+            object: nil,
+            queue: .main
+        ) { _ in
+            expectation.fulfill()
+        }
+
+        model.scheduleErrorInlineDismiss(after: 0.05)
+
+        await fulfillment(of: [expectation], timeout: 2.0)
+        NotificationCenter.default.removeObserver(observer)
+    }
+
+    func testScheduleErrorInlineDismissDoesNotPostIfStateChanged() async throws {
+        let model = CapsuleStateModel()
+        model.state = .errorInline(message: "test error")
+
+        var notificationFired = false
+        let observer = NotificationCenter.default.addObserver(
+            forName: .capsuleErrorInlineExpired,
+            object: nil,
+            queue: .main
+        ) { _ in
+            notificationFired = true
+        }
+
+        // Schedule with very short delay, but change state before it fires
+        model.scheduleErrorInlineDismiss(after: 0.1)
+        model.state = .recording  // state changes before timer fires
+
+        // Wait longer than the dismiss delay
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(notificationFired, "Notification must not fire when state has changed away from errorInline")
+        NotificationCenter.default.removeObserver(observer)
+    }
 }

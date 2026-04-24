@@ -271,14 +271,15 @@ private struct StatusLine: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(titleText)
                     .font(Typography.body)
+                    .fontWeight(.medium)
                     .foregroundStyle(Palette.textPrimary)
                     .lineLimit(1)
 
                 Text(subLineText)
-                    .font(Typography.mono)
+                    .font(Typography.monoSmall)
                     .foregroundStyle(subLineColor)
                     .textCase(subLineUppercase ? .uppercase : nil)
-                    .tracking(subLineUppercase ? Typography.metaLabelTracking : 0)
+                    .tracking(subLineUppercase ? Typography.metaLabelTracking : Typography.metaLabelTracking)
                     .monospacedDigit()
                     .lineLimit(1)
             }
@@ -382,9 +383,9 @@ private struct SetupTaskRow: View {
 
                 Spacer()
             }
-            .padding(.horizontal, Spacing.md)
+            .padding(.horizontal, MenuBar.statusHorizontalPadding)
             .frame(minHeight: 32)
-            .background(isHovered ? Color.white.opacity(0.04) : Color.clear)
+            .background(isHovered ? Palette.sidebarHover : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -428,15 +429,15 @@ private struct MenuActionRow: View {
 
                 if let hint = trailingHint {
                     Text(hint)
-                        .font(Typography.mono)
+                        .font(Typography.monoSmall)
                         .foregroundStyle(Palette.textMuted)
                         .monospacedDigit()
                         .tracking(Typography.metaLabelTracking)
                 }
             }
-            .padding(.horizontal, Spacing.md)
+            .padding(.horizontal, MenuBar.statusHorizontalPadding)
             .frame(minHeight: 32)
-            .background(isHovered ? Color.white.opacity(0.04) : Color.clear)
+            .background(isHovered ? Palette.sidebarHover : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

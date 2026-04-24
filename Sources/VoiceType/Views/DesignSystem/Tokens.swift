@@ -167,8 +167,10 @@ enum Motion {
     /// Audio RMS amplitude threshold (range 0.0-1.0, UNITLESS, not a time duration)
     /// to trigger the recording-dot pulse. Lives under Motion alongside
     /// duration constants because DESIGN.md line 356 pins the reference path.
-    /// DESIGN.md line 356: "audio crosses Tokens.Motion.waveformActivationThreshold = 0.15".
-    static let waveformActivationThreshold: Double = 0.15
+    /// DESIGN.md line 356: "audio crosses Tokens.Motion.waveformActivationThreshold".
+    /// Phase 1 A9: lowered from 0.15 → 0.03 so conversational speech at 30cm
+    /// mic distance activates isActive for most of the recording duration.
+    static let waveformActivationThreshold: Double = 0.03
 }
 
 // MARK: - Typography
@@ -235,6 +237,13 @@ enum Typography {
     static let badge = Font.custom("Geist Mono", size: 10).weight(.medium)
     /// Line height for badge text. DESIGN.md: "10/14".
     static let badgeLineHeight: CGFloat = 14
+
+    /// Geist Mono 11pt Medium. Sub-line + shortcut hints in menubar dropdown.
+    /// DESIGN.md / prototype: 11px font-size, 0.04em tracking.
+    /// Phase 1 B2/B4: replaces Typography.mono (12pt) in MenuBarView sub-line and shortcut hints.
+    static let monoSmall = Font.custom("Geist Mono", size: 11).weight(.medium)
+    /// Line height for monoSmall text. "11/14".
+    static let monoSmallLineHeight: CGFloat = 14
 }
 
 // MARK: - Palette
@@ -378,6 +387,19 @@ enum Palette {
         /// Found by code review P2-D.
         static let borderOk = Color(nsColor: NSColor(srgbRed: 0.152941, green: 0.717647, blue: 0.643137, alpha: 0.40))
     }
+
+    // MARK: Sidebar / menu-row backgrounds
+
+    /// Sidebar active-row background. Used on the currently-selected sidebar item
+    /// in Settings and MenuBar. Dark: rgba(89,199,255,0.08) / Light: rgba(9,157,223,0.08).
+    static let sidebarActive = Color.dynamic(
+        light: NSColor(srgbRed: 0.035294, green: 0.615686, blue: 0.874510, alpha: 0.08),
+        dark: NSColor(srgbRed: 0.349020, green: 0.780392, blue: 1.000000, alpha: 0.08)
+    )
+
+    /// Sidebar hover background. Neutral white wash at 4% opacity (both modes).
+    /// Used for row hover in MenuBar and Settings sidebar.
+    static let sidebarHover = Color(nsColor: NSColor(white: 1, alpha: 0.04))
 }
 
 // swiftlint:enable inline_color_rgb inline_color_hex inline_nscolor_rgb

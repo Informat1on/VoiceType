@@ -36,6 +36,22 @@ enum CapsuleState: Equatable {
 /// DESIGN.md Decisions Log D2: single NSHostingView + @Published CapsuleState.
 final class CapsuleStateModel: ObservableObject {
     @Published var state: CapsuleState = .recording
+
+    // MARK: - A7: errorInline auto-dismiss
+
+    /// Called when state transitions to .errorInline. After `seconds` the model
+    /// posts .capsuleErrorInlineExpired so AppDelegate can hide the window.
+    /// AppDelegate wiring (voiceTypeWindow?.hide()) is Phase 2 work.
+    /// The callback is decoupled via NotificationCenter to avoid a direct
+    /// AppDelegate import in this file.
+    func scheduleErrorInlineDismiss(after seconds: TimeInterval = 4) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(seconds))
+            if case .errorInline = state {
+                NotificationCenter.default.post(name: .capsuleErrorInlineExpired, object: nil)
+            }
+        }
+    }
 }
 
 // MARK: - VoiceTypeWindow

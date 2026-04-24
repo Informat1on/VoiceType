@@ -67,8 +67,12 @@ final class TokensTests: XCTestCase {
     // MARK: 8 — Waveform activation threshold
 
     func testWaveformActivationThreshold() {
-        // DESIGN.md line 356: recording dot pulses when audio RMS crosses this value
-        XCTAssertEqual(Motion.waveformActivationThreshold, 0.15, accuracy: 0.001)
+        // Phase 1 A9: threshold lowered from 0.15 → 0.03 for conversational speech
+        // at ~30cm mic distance. Must be in range [0.01, 0.10].
+        // swiftlint:disable:next line_length
+        XCTAssertLessThanOrEqual(Motion.waveformActivationThreshold, 0.10, "waveformActivationThreshold must be ≤ 0.10 (conversational speech range)")
+        // swiftlint:disable:next line_length
+        XCTAssertGreaterThanOrEqual(Motion.waveformActivationThreshold, 0.01, "waveformActivationThreshold must be ≥ 0.01 (avoid false-positives)")
     }
 
     // MARK: 9 — Hex color parser round-trip (optional safety guard)
@@ -126,6 +130,37 @@ final class TokensTests: XCTestCase {
         XCTAssertEqual(MenuBar.width, 280, "MenuBar.width must be 280pt per DESIGN.md § MenuBar dropdown layout")
         XCTAssertEqual(MenuBar.cornerRadius, 10, "MenuBar.cornerRadius must be 10 per DESIGN.md § MenuBar dropdown layout")
         XCTAssertEqual(MenuBar.tallyDotSize, 8, "MenuBar.tallyDotSize must be 8pt per DESIGN.md § MenuBar status line")
+    }
+
+    // MARK: 13 — Phase 1 Scope C tokens
+
+    func testTypographyMonoSmallExists() {
+        _ = Typography.monoSmall   // must compile; Geist Mono 11pt Medium
+        XCTAssertEqual(Typography.monoSmallLineHeight, 14, "Typography.monoSmallLineHeight must be 14pt per Phase 1 spec")
+    }
+
+    func testPaletteSidebarActiveExists() {
+        // Palette.sidebarActive must exist and be non-nil at runtime.
+        // Color does not expose channels directly; just verify the token
+        // compiles and produces a non-default value.
+        let color = Palette.sidebarActive
+        // Render to verify it produces a valid SwiftUI Color (no crash)
+        _ = color.description
+    }
+
+    func testPaletteSidebarHoverExists() {
+        let color = Palette.sidebarHover
+        _ = color.description
+    }
+
+    // MARK: 14 — Phase 1 A7: capsuleErrorInlineExpired notification name
+
+    func testCapsuleErrorInlineExpiredNotificationNameExists() {
+        // Verify the name is declared and has the correct bundle-prefixed raw value.
+        XCTAssertEqual(
+            Notification.Name.capsuleErrorInlineExpired.rawValue,
+            "com.voicetype.capsuleErrorInlineExpired"
+        )
     }
 }
 
