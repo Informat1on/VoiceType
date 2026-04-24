@@ -1,4 +1,86 @@
 import SwiftUI
+import AppKit
+
+// MARK: - Row Primitives
+
+/// Uppercase meta-label group header.
+/// DESIGN.md line 180: 11/14 Medium, letter-spacing 0.04em, textMuted. 8px gap below.
+private struct GroupHeader: View {
+    let title: String
+    var body: some View {
+        Text(title)
+            .font(Typography.metaLabel)
+            .tracking(Typography.metaLabelTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(Palette.textMuted)
+            .padding(.bottom, Spacing.sm)  // 8px per DESIGN.md line 180
+    }
+}
+
+/// Native prefs row: left label + optional subtitle, right control.
+/// Min-height 40, horizontal padding lg, vertical padding md. DESIGN.md line 181.
+private struct PrefsRow<Control: View>: View {
+    let label: String
+    let subtitle: String?
+    let control: Control
+
+    init(_ label: String, subtitle: String? = nil, @ViewBuilder control: () -> Control) {
+        self.label = label
+        self.subtitle = subtitle
+        self.control = control()
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Spacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(Typography.body)
+                    .foregroundStyle(Palette.textPrimary)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(Typography.metaLabel)  // 11/14 per DESIGN.md line 181
+                        .foregroundStyle(Palette.textSecondary)
+                }
+            }
+            Spacer(minLength: Spacing.md)
+            control
+        }
+        .padding(.horizontal, Spacing.prefsRowHorizontal)
+        .padding(.vertical, Spacing.prefsRowVertical)
+        .frame(minHeight: Spacing.prefsRowMinHeight)
+    }
+}
+
+/// 1px divider. DESIGN.md line 182 / Palette.divider.
+private struct RowDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Palette.divider)
+            .frame(height: 1)
+    }
+}
+
+/// Colored dot for permission state rows. DESIGN.md lines 256-258.
+private struct PermissionDot: View {
+    enum DotState { case granted, denied, notRequested }
+    let state: DotState
+
+    var body: some View {
+        Circle()
+            .fill(dotColor)
+            .frame(width: 8, height: 8)
+    }
+
+    private var dotColor: Color {
+        switch state {
+        case .granted:      return Palette.success
+        case .denied:       return Palette.error
+        case .notRequested: return Palette.textMuted
+        }
+    }
+}
+
+// MARK: - SettingsView
 
 struct SettingsView: View {
     @ObservedObject private var settings = AppSettings.shared
@@ -8,71 +90,258 @@ struct SettingsView: View {
     @State private var recordedModifiers = 0
     @State private var recordedKey = 0
 
-    var body: some View {
-        TabView {
-            settingsPane(
-                title: "Keyboard Shortcut",
-                subtitle: "Tune how recording starts, confirm the current shortcut, and keep the trigger easy to reach without clashing with other apps.",
-                symbol: "keyboard",
-                chips: ["Global shortcut", "Low friction"]
-            ) {
-                hotkeyTab
+    /// Sidebar tab enum — order is tab order per DESIGN.md line 176.
+    private enum Tab: String, CaseIterable, Identifiable, Hashable {
+        case general, models, shortcuts, advanced
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .general:   return "General"
+            case .models:    return "Models"
+            case .shortcuts: return "Shortcuts"
+            case .advanced:  return "Advanced"
             }
-                .tabItem {
-                    Label("Hotkey", systemImage: "keyboard")
-                }
-
-            settingsPane(
-                title: "Model & Performance",
-                subtitle: "Choose the transcription model, keep CoreML ready, and make the local pipeline fit your speed and quality target.",
-                symbol: "brain",
-                chips: ["CoreML aware", "On-device"]
-            ) {
-                modelTab
-            }
-                .tabItem {
-                    Label("Model", systemImage: "brain")
-                }
-
-            settingsPane(
-                title: "Behavior & Permissions",
-                subtitle: "Control language detection, insertion behavior, and the macOS permissions that keep VoiceType responsive.",
-                symbol: "slider.horizontal.3",
-                chips: ["Local only", "macOS native"]
-            ) {
-                generalTab
-            }
-                .tabItem {
-                    Label("General", systemImage: "gearshape")
-                }
         }
-        .frame(width: 620, height: 520)
+        var symbolName: String {
+            switch self {
+            case .general:   return "gearshape"
+            case .models:    return "brain"
+            case .shortcuts: return "keyboard"
+            case .advanced:  return "slider.horizontal.3"
+            }
+        }
     }
 
-    // MARK: - Hotkey Tab
+    /// Default tab per DESIGN.md line 176.
+    @State private var selectedTab: Tab = .general
 
-    private var hotkeyTab: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            SettingsSectionCard(title: "Current Shortcut", description: "This is the global trigger VoiceType listens for while the app is running.") {
-                SettingsValueRow("Shortcut") {
-                    Text("\(modifiersToString(settings.hotkeyModifiers))\(keyCodeToString(settings.hotkeyKey))")
-                        .font(.system(.subheadline, design: .monospaced))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.white.opacity(0.08), in: Capsule(style: .continuous))
-                }
-
-                SettingsValueRow("Mode") {
-                    Text(settings.activationMode.displayName)
-                }
+    var body: some View {
+        NavigationSplitView {
+            List(Tab.allCases, selection: $selectedTab) { tab in
+                Label(tab.displayName, systemImage: tab.symbolName)
+                    .tag(tab)
             }
+            .navigationSplitViewColumnWidth(160)  // off-scale: sidebar column width per DESIGN.md line 177
+        } detail: {
+            tabContent
+        }
+        .frame(width: WindowSize.settings.width, height: WindowSize.settings.height)
+    }
 
-            SettingsSectionCard(title: "Recorder", description: "Capture a new shortcut directly from the keyboard without leaving the app.") {
+    // MARK: - Tab Router
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .general:   generalTab
+        case .models:    modelsTab
+        case .shortcuts: shortcutsTab
+        case .advanced:  advancedTab
+        }
+    }
+
+    // MARK: - Tab 1: General
+
+    private var generalTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+
+                // MARK: LANGUAGE group
+                GroupHeader(title: "Language")
+                RowDivider()
+                PrefsRow("Language") {
+                    Picker("Language", selection: $settings.language) {
+                        ForEach(Language.allCases, id: \.self) { lang in
+                            Text(lang.displayName).tag(lang)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityLabel("Preferred language")
+                    .accessibilityValue(settings.language.displayName)
+                }
+                RowDivider()
+
+                Spacer().frame(height: Spacing.sectionGap)
+
+                // MARK: INSERTION group
+                GroupHeader(title: "Insertion")
+                RowDivider()
+                PrefsRow("Mode") {
+                    Picker("Activation Mode", selection: $settings.activationMode) {
+                        ForEach(ActivationMode.allCases, id: \.self) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                }
+                RowDivider()
+                PrefsRow("Press Enter after insertion") {
+                    Toggle("", isOn: $settings.autoEnterAfterInsert)
+                        .labelsHidden()
+                }
+                RowDivider()
+                PrefsRow("Paste method") {
+                    Picker("Paste method", selection: $settings.textInjectionMode) {
+                        ForEach(TextInjectionMode.allCases, id: \.self) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                }
+                RowDivider()
+
+                Spacer().frame(height: Spacing.sectionGap)
+
+                // MARK: MICROPHONE group — inline permission hint per DESIGN.md line 185 / 256-258
+                GroupHeader(title: "Microphone")
+                RowDivider()
+                microphonePermissionRow
+                RowDivider()
+            }
+            .padding(Spacing.windowPadding)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    // MARK: - Tab 2: Models
+
+    private var modelsTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+
+                // MARK: MODEL group
+                GroupHeader(title: "Model")
+                RowDivider()
+                PrefsRow("Model") {
+                    Picker("Model", selection: $settings.selectedModel) {
+                        ForEach(TranscriptionModel.allCases, id: \.self) { model in
+                            Text(model.displayName).tag(model)
+                        }
+                    }
+                    .accessibilityLabel(settings.selectedModel.displayName)
+                    .accessibilityValue("\(settings.selectedModel.estimatedSize)")
+                }
+                RowDivider()
+                PrefsRow("Size") {
+                    Text(settings.selectedModel.estimatedSize)
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+                RowDivider()
+                PrefsRow("Speed") {
+                    Text(settings.selectedModel.speedRating)
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+                RowDivider()
+                PrefsRow("Quality") {
+                    Text(settings.selectedModel.qualityRating)
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+                RowDivider()
+                PrefsRow("Best for") {
+                    Text(settings.selectedModel.recommendedFor)
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+                RowDivider()
+
+                Spacer().frame(height: Spacing.sectionGap)
+
+                // MARK: CORE ML group
+                GroupHeader(title: "Core ML")
+                RowDivider()
+                PrefsRow("Main model") {
+                    modelStatusBadge
+                }
+                RowDivider()
+                PrefsRow("CoreML encoder") {
+                    coreMLStatusBadge
+                }
+
+                // Inline progress / action under CoreML row per brief
+                if modelManager.isDownloading {
+                    ProgressView(value: modelManager.downloadProgress)
+                        .progressViewStyle(.linear)
+                        .padding(.horizontal, Spacing.prefsRowHorizontal)
+                        .padding(.bottom, Spacing.sm)
+                } else if modelManager.isModelDownloaded(model: settings.selectedModel) {
+                    HStack {
+                        Spacer()
+                        Button("Delete") {
+                            try? modelManager.deleteModel(model: settings.selectedModel)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    .padding(.horizontal, Spacing.prefsRowHorizontal)
+                    .padding(.bottom, Spacing.sm)
+                } else {
+                    HStack {
+                        Spacer()
+                        Button("Download (with CoreML)") {
+                            Task {
+                                try? await modelManager.downloadModel(model: settings.selectedModel)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                    .padding(.horizontal, Spacing.prefsRowHorizontal)
+                    .padding(.bottom, Spacing.sm)
+                }
+
+                RowDivider()
+
+                // CoreML footnote caption — below group, styled per tone
+                Text(modelFootnote)
+                    .font(Typography.metaLabel)
+                    .foregroundStyle(modelFootnoteToneColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Spacing.prefsRowHorizontal)
+                    .padding(.top, Spacing.sm)
+            }
+            .padding(Spacing.windowPadding)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    // MARK: - Tab 3: Shortcuts
+
+    private var shortcutsTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+
+                // MARK: RECORDING group
+                GroupHeader(title: "Recording")
+                RowDivider()
+
+                // Hotkey chip row
+                PrefsRow("Shortcut") {
+                    // Hotkey chip — Geist Mono, surfaceInset Capsule background
+                    Text("\(modifiersToString(settings.hotkeyModifiers))\(keyCodeToString(settings.hotkeyKey))")
+                        .font(Typography.mono)
+                        .foregroundStyle(Palette.textPrimary)
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, Spacing.sm)
+                        .background(Palette.surfaceInset, in: Capsule(style: .continuous))
+                }
+                RowDivider()
+                PrefsRow("Mode") {
+                    Text(settings.activationMode.displayName)
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+                RowDivider()
+
+                // Record New Shortcut / HotkeyRecorderView flow
                 if isRecordingHotkey {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: Spacing.md) {
                         Text("Press your desired hotkey combination now.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .font(Typography.body)
+                            .foregroundStyle(Palette.textSecondary)
 
                         HotkeyRecorderView(
                             isRecording: $isRecordingHotkey,
@@ -81,10 +350,10 @@ struct SettingsView: View {
                         )
                         .frame(maxWidth: .infinity)
                         .frame(height: 72)
-                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .background(Palette.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .strokeBorder(Color.accentColor.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
+                            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                                .strokeBorder(Palette.strokeStrong, lineWidth: 1)
                         )
 
                         HStack {
@@ -96,204 +365,194 @@ struct SettingsView: View {
                             .buttonStyle(.bordered)
                         }
                     }
+                    .padding(.horizontal, Spacing.prefsRowHorizontal)
+                    .padding(.vertical, Spacing.prefsRowVertical)
                 } else {
                     HStack {
-                        Text("Record a new shortcut whenever you want to change the global trigger.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-
                         Spacer()
-
-                        Button("Record New Hotkey") {
+                        Button("Record New Shortcut") {
                             recordedModifiers = 0
                             recordedKey = 0
                             isRecordingHotkey = true
                         }
                         .buttonStyle(.borderedProminent)
                     }
+                    .padding(.horizontal, Spacing.prefsRowHorizontal)
+                    .padding(.vertical, Spacing.prefsRowVertical)
                 }
+
+                Spacer().frame(height: Spacing.sectionGap)
+
+                // MARK: ACCESSIBILITY group — inline permission per DESIGN.md line 193 / 256-258
+                GroupHeader(title: "Accessibility")
+                RowDivider()
+                accessibilityPermissionRow
+                RowDivider()
             }
+            .padding(Spacing.windowPadding)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .scrollIndicators(.hidden)
     }
 
-    // MARK: - Model Tab
+    // MARK: - Tab 4: Advanced
 
-    private var modelTab: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            SettingsSectionCard(title: "Transcription Model", description: "Pick the model that matches your preferred tradeoff between speed, size, and accuracy.") {
-                VStack(alignment: .leading, spacing: 14) {
-                    Picker("Model", selection: $settings.selectedModel) {
-                        ForEach(TranscriptionModel.allCases, id: \.self) { model in
-                            Text(model.displayName).tag(model)
-                        }
-                    }
+    private var advancedTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
 
-                    SettingsValueRow("Size") {
-                        Text(settings.selectedModel.estimatedSize)
-                    }
-
-                    SettingsValueRow("Speed") {
-                        Text(settings.selectedModel.speedRating)
-                    }
-
-                    SettingsValueRow("Quality") {
-                        Text(settings.selectedModel.qualityRating)
-                    }
-
-                    SettingsValueRow("Best for") {
-                        Text(settings.selectedModel.recommendedFor)
-                            .foregroundStyle(.secondary)
-                    }
+                // MARK: CUSTOM VOCABULARY group — moved from General per DESIGN.md D3
+                GroupHeader(title: "Custom Vocabulary")
+                RowDivider()
+                PrefsRow("Custom vocabulary",
+                         subtitle: "Comma- or newline-separated: tool names, APIs, jargon, names. Applied on the next recording.") {
+                    EmptyView()
                 }
+                // Full-width TextEditor below the row — vocab needs vertical space
+                TextEditor(text: $settings.customVocabulary)
+                    .font(Typography.mono)
+                    .frame(minHeight: 80, maxHeight: 160)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                            .strokeBorder(Palette.strokeSubtle, lineWidth: 1)
+                    )
+                    .padding(.horizontal, Spacing.prefsRowHorizontal)
+                    .padding(.bottom, Spacing.prefsRowVertical)
+                RowDivider()
+
+                Spacer().frame(height: Spacing.sectionGap)
+
+                // TODO Tier A Step 9 / W2: wire HistoryStore here (DESIGN.md line 191).
+                // MARK: TRANSCRIPTION HISTORY group
+                GroupHeader(title: "Transcription History")
+                RowDivider()
+                PrefsRow("Open history", subtitle: "Coming in a later update") {
+                    Button("Open history") {}
+                        .disabled(true)
+                }
+                RowDivider()
+                PrefsRow("Entries") {
+                    Text("0")
+                        .font(Typography.mono)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+                RowDivider()
+
+                Spacer().frame(height: Spacing.sectionGap)
+
+                // TODO Step 7: wire ErrorLogger here (DESIGN.md line 191).
+                // MARK: DIAGNOSTICS group
+                GroupHeader(title: "Diagnostics")
+                RowDivider()
+                PrefsRow("Error log", subtitle: "~/Library/Logs/VoiceType/errors.log") {
+                    Button("Reveal in Finder") {}
+                        .disabled(true)
+                }
+                RowDivider()
+                PrefsRow("Build") {
+                    Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")
+                        .font(Typography.mono)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+                RowDivider()
             }
-
-            SettingsSectionCard(title: "Downloads & Acceleration", description: "Keep the base model and CoreML encoder ready for the fastest local inference path available.") {
-                SettingsValueRow("Main model") {
-                    modelStatusBadge
-                }
-
-                SettingsValueRow("CoreML") {
-                    coreMLStatusBadge
-                }
-
-                if modelManager.isDownloading {
-                    ProgressView(value: modelManager.downloadProgress)
-                        .progressViewStyle(.linear)
-                }
-
-                Text(modelFootnote)
-                    .font(.caption)
-                    .foregroundStyle(modelFootnoteTone)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack {
-                    Spacer()
-
-                    if modelManager.isModelDownloaded(model: settings.selectedModel) && !modelManager.isDownloading {
-                        Button("Delete") {
-                            try? modelManager.deleteModel(model: settings.selectedModel)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-
-                    if !modelManager.isModelDownloaded(model: settings.selectedModel) && !modelManager.isDownloading {
-                        Button("Download (with CoreML)") {
-                            Task {
-                                try? await modelManager.downloadModel(model: settings.selectedModel)
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                    }
-                }
-            }
+            .padding(Spacing.windowPadding)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .scrollIndicators(.hidden)
     }
 
-    // MARK: - General Tab
+    // MARK: - Permission Rows
 
-    private var generalTab: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            SettingsSectionCard(title: "Behavior", description: "These options shape how recording starts, which language is expected, and how text is delivered back into the current app.") {
-                VStack(alignment: .leading, spacing: 14) {
-                    Picker("Activation Mode", selection: $settings.activationMode) {
-                        ForEach(ActivationMode.allCases, id: \.self) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
+    /// Microphone permission row — inline in General tab. DESIGN.md lines 254-258.
+    private var microphonePermissionRow: some View {
+        PrefsRow("Microphone access",
+                 subtitle: permissionManager.hasMicrophonePermission ? nil : "Required to capture your voice") {
+            HStack(spacing: Spacing.sm) {
+                PermissionDot(state: microphoneDotState)
+                if permissionManager.hasMicrophonePermission {
+                    Text("Granted")
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.success)
+                    Button("Open Privacy") {
+                        openMicrophonePrivacySettings()
                     }
-
-                    Picker("Language", selection: $settings.language) {
-                        ForEach(Language.allCases, id: \.self) { lang in
-                            Text(lang.displayName).tag(lang)
-                        }
-                    }
-
-                    Picker("Recording Indicator", selection: $settings.indicatorStyle) {
-                        ForEach(IndicatorStyle.allCases, id: \.self) { style in
-                            Text(style.displayName).tag(style)
-                        }
-                    }
-
-                    Picker("Text Injection", selection: $settings.textInjectionMode) {
-                        ForEach(TextInjectionMode.allCases, id: \.self) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-
-                    Toggle("Press Enter after insertion", isOn: $settings.autoEnterAfterInsert)
-                }
-            }
-
-            // TODO Tier A: move Custom Vocabulary to Advanced tab (DESIGN.md D3).
-            SettingsSectionCard(title: "Custom Vocabulary", description: "Terms the model should recognize — applied as an initial prompt to whisper.cpp.") {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextEditor(text: $settings.customVocabulary)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(minHeight: 80, maxHeight: 120)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
-                        )
-                    Text("Comma- or newline-separated: tool names, APIs, jargon, names. Applied on the next recording.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            SettingsSectionCard(title: "Permissions", description: "VoiceType needs microphone and accessibility access to capture speech and insert text back into your focused app.") {
-                SettingsValueRow("Microphone") {
-                    permissionStatus(permissionManager.hasMicrophonePermission)
-                }
-
-                SettingsValueRow("Accessibility") {
-                    permissionStatus(permissionManager.hasAccessibilityPermission)
-                }
-
-                HStack {
-                    Button("Request Microphone Access") {
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button("Request") {
                         permissionManager.requestMicrophonePermission()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            permissionManager.hasMicrophonePermission
+                ? "Microphone access: Granted"
+                : "Microphone access: Not granted. Tap to request."
+        )
+    }
 
-                    Button("Request Accessibility Access") {
-                        permissionManager.requestAccessibilityPermission()
+    /// Accessibility permission row — inline in Shortcuts tab. DESIGN.md lines 254-258 / line 193.
+    private var accessibilityPermissionRow: some View {
+        PrefsRow("Accessibility access",
+                 subtitle: "Required for synthesized ⌘V") {
+            HStack(spacing: Spacing.sm) {
+                PermissionDot(state: accessibilityDotState)
+                if permissionManager.hasAccessibilityPermission {
+                    Text("Granted")
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.success)
+                    Button("Open Privacy") {
+                        permissionManager.openAccessibilitySettings()
                     }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button("Grant Access") {
+                        permissionManager.requestAccessibilityPermission()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
 
                     Button("Refresh") {
                         permissionManager.refreshPermissions()
                     }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
 
-                    Spacer()
-
-                    // macOS caches Accessibility state per-process. If the user
-                    // granted permission in System Settings but the running process
-                    // was started before/during the change, a full restart is needed.
-                    if !permissionManager.hasAccessibilityPermission {
-                        Button("Restart App") {
-                            permissionManager.restartAppForAccessibility()
-                        }
-                        .buttonStyle(.borderedProminent)
+                    // macOS caches Accessibility state per-process. Full restart needed
+                    // when user granted in System Settings but app was running before.
+                    Button("Restart App") {
+                        permissionManager.restartAppForAccessibility()
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            permissionManager.hasAccessibilityPermission
+                ? "Accessibility access: Granted"
+                : "Accessibility access: Not granted. Required for synthesized ⌘V. Tap to grant."
+        )
     }
 
-    private func settingsPane<Content: View>(
-        title: String,
-        subtitle: String,
-        symbol: String,
-        chips: [String],
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        WindowSurface(title: title, subtitle: subtitle, symbol: symbol, chips: chips) {
-            content()
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
+    // MARK: - Permission Dot State Helpers
+
+    private var microphoneDotState: PermissionDot.DotState {
+        permissionManager.hasMicrophonePermission ? .granted : .denied
     }
+
+    private var accessibilityDotState: PermissionDot.DotState {
+        permissionManager.hasAccessibilityPermission ? .granted : .denied
+    }
+
+    // MARK: - Model Status Badges (logic preserved verbatim)
 
     private var modelStatusBadge: some View {
         Group {
@@ -321,44 +580,44 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Model Footnote (logic preserved, colors migrated to Palette tokens)
+
     private var modelFootnote: String {
         if settings.selectedModel.hasCoreMLSupport && modelManager.isCoreMLModelDownloaded(model: settings.selectedModel) {
             return "GPU acceleration is enabled via CoreML for this model."
         }
-
         if let explanation = settings.selectedModel.coreMLExplanation {
             return explanation
         }
-
         if modelManager.isModelDownloaded(model: settings.selectedModel) {
             return "Download the matching CoreML encoder to unlock faster local inference on Apple Silicon."
         }
-
         return "Download the selected model bundle before starting transcription."
     }
 
-    private var modelFootnoteTone: Color {
+    /// Migrated from `.green` / `.orange` / `.secondary` to Palette tokens.
+    private var modelFootnoteToneColor: Color {
         if settings.selectedModel.hasCoreMLSupport && modelManager.isCoreMLModelDownloaded(model: settings.selectedModel) {
-            return .green
+            return Palette.success
         }
-
         if settings.selectedModel.coreMLExplanation != nil {
-            return .secondary
+            return Palette.textSecondary
         }
-
         if modelManager.isModelDownloaded(model: settings.selectedModel) {
-            return .orange
+            return Palette.warning
         }
-
-        return .secondary
+        return Palette.textSecondary
     }
 
-    private func permissionStatus(_ isGranted: Bool) -> some View {
-        StatusBadge(isGranted ? "Granted" : "Needs attention", tone: isGranted ? .positive : .warning)
+    // MARK: - Helpers
+
+    private func openMicrophonePrivacySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") else { return }
+        NSWorkspace.shared.open(url)
     }
 }
 
-// MARK: - Hotkey Recorder View
+// MARK: - Hotkey Recorder View (preserved verbatim — do NOT modify)
 
 struct HotkeyRecorderView: View {
     @Binding var isRecording: Bool
@@ -391,19 +650,19 @@ struct HotkeyRecorderRepresentable: NSViewRepresentable {
         let view = NSView()
         context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard isRecording else { return event }
-            
+
             var carbonModifiers = 0
             if event.modifierFlags.contains(.command) { carbonModifiers |= cmdKey }
             if event.modifierFlags.contains(.option) { carbonModifiers |= optionKey }
             if event.modifierFlags.contains(.shift) { carbonModifiers |= shiftKey }
             if event.modifierFlags.contains(.control) { carbonModifiers |= controlKey }
-            
+
             recordedModifiers = carbonModifiers
             recordedKey = Int(event.keyCode)
             isRecording = false
             AppSettings.shared.hotkeyModifiers = recordedModifiers
             AppSettings.shared.hotkeyKey = recordedKey
-            
+
             print("[HotkeyRecorder] Recorded: modifiers=\(carbonModifiers) (\(modifiersToString(carbonModifiers))), keyCode=\(recordedKey) (\(keyCodeToString(recordedKey)))")
             return nil
         }
