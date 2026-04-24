@@ -11,6 +11,21 @@ Lightweight macOS menu bar voice typing app powered by `whisper.cpp`, optimized 
 (Lint and dead-code are intentionally not configured yet — see
 `docs/decisions/2026-04-26-views-inventory.md` Tier A for SwiftLint plan.)
 
+## Design System
+
+Always read `DESIGN.md` before making any visual or UI decision. All font choices,
+colors, spacing, radii, motion, and aesthetic direction live there. Do not deviate
+without explicit user approval. Record every change in the `## Decisions Log`
+section at the bottom of `DESIGN.md` with date + rationale.
+
+The compass: **"A tool for people who just build things, with the polish of
+commercial software."** Every design decision serves that one thing.
+
+In QA / design-review mode, flag any code that doesn't match `DESIGN.md`
+(inline color literals, missing token usage, hero-header in Settings, continuous
+waveform animation during silence, etc.). The Tier A refactor — implementing the
+token file and migrating views — is sequenced for v1.1 Track 1 Weekend 3-4.
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. The
