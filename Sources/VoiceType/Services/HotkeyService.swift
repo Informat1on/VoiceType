@@ -13,6 +13,17 @@ final class HotkeyService: ObservableObject {
     
     /// Closure to check if recording can start (delegates to AppDelegate state)
     var canStartRecording: () -> Bool = { true }
+
+    /// Sync the internal `isRecording` flag with an external source of truth.
+    /// Call when recording is started/stopped via a path that bypasses this service
+    /// (e.g., the menubar "Start recording" button). Keeps hotkey stop/toggle
+    /// semantics correct for externally-initiated recording.
+    func syncIsRecording(_ value: Bool) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        if isRecording != value {
+            isRecording = value
+        }
+    }
     
     private var eventHotKey: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?

@@ -388,15 +388,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Entry point for the menubar "Start recording" button.
     /// Delegates to the same hotkey-triggered path so state transitions are identical.
+    /// After a successful start we sync `HotkeyService.isRecording` so a subsequent
+    /// hotkey press (toggle/stop) correctly terminates a menu-initiated recording.
     func startRecordingFromMenu() {
         print("[AppDelegate] startRecordingFromMenu() called")
         handleRecordingStarted()
+        if appState == .recording {
+            hotkeyService.syncIsRecording(true)
+        }
+    }
+
+    /// Entry point for the menubar "Stop recording" button.
+    /// Symmetric to `startRecordingFromMenu()`: delegates to the same stop path
+    /// as the hotkey so state transitions (recording → transcribing) are identical.
+    func stopRecordingFromMenu() {
+        print("[AppDelegate] stopRecordingFromMenu() called")
+        handleRecordingStopped()
     }
 
     private func handleRecordingStopped() {
         print("[AppDelegate] handleRecordingStopped, currentState: \(appState.rawValue)")
         recordingStartedAt = nil
         voiceTypeWindow?.hide()
+        // Sync HotkeyService.isRecording defensively — covers paths that stop via
+        // menu / forceReset / error, not just hotkey-triggered stop.
+        hotkeyService.syncIsRecording(false)
 
         guard appState == .recording else {
             print("[AppDelegate] Ignoring stop, not recording (state: \(appState.rawValue))")

@@ -155,12 +155,26 @@ struct MenuBarView: View {
         case .idle:
             idleContent
         case .recording:
-            // Recording: status line is sufficient. No action rows while active.
-            EmptyView()
+            recordingContent
         case .transcribing:
             // Transcribing is short-lived (1-8s); status line sub-line carries the signal.
+            // No stop action — audio already captured, waiting on whisper.
             EmptyView()
         }
+    }
+
+    // MARK: Recording content
+
+    /// Dropdown body while recording: a single "Stop recording" action mirroring
+    /// the hotkey stop path. Required for UX symmetry — if the user can start
+    /// from the menu, they must also be able to stop from the menu.
+    private var recordingContent: some View {
+        VStack(spacing: 0) {
+            MenuActionRow(label: "Stop recording", trailingHint: currentHotkeyString) {
+                appDelegate.stopRecordingFromMenu()
+            }
+        }
+        .padding(.vertical, Spacing.xs)
     }
 
     // MARK: Not Ready content
