@@ -56,64 +56,52 @@ hotkeys, model IDs, anything that should read as a tool readout.
 - **Display / window title:** Geist — `23/28`, Medium
 - **Section title:** Geist — `15/20`, Medium
 - **Body:** Geist — `13/18`, Regular
+- **Button label:** Geist — `12/16`, Medium (`Typography.buttonLabel`)
 - **Meta labels (uppercase, tracked):** Geist — `11/14`, Medium, letter-spacing `0.04em`, uppercase
 - **Mono / timer / hotkey / model ID:** Geist Mono — `12/16`, Medium, with `font-feature-settings: 'tnum', 'zero'`
-- **Loading:** Google Fonts initially (zero-config). For an offline build, vendor
-  the variable woff2 files into `Resources/Fonts/` and register via
-  `Bundle.main.url(forResource:withExtension:)`. SwiftUI `Font.custom("Geist", size: ...)` after registration.
-- **Cyrillic fallback:** if Geist Cyrillic glyph coverage proves weak in practice
-  (test verified `запушил коммит` rendering during preview on 2026-04-24), fall
-  back to `.system(.body, design: .default)` only for Cyrillic strings via SwiftUI's
-  font fallback chain. Do NOT switch the entire UI to system font — that defeats
-  the typographic identity.
+- **Loading:** Google Fonts initially. For offline build, vendor the variable woff2 files into `Resources/Fonts/` and register via `Bundle.main.url(forResource:withExtension:)`. SwiftUI `Font.custom("Geist", size: ...)` after registration.
+- **Cyrillic fallback:** if Geist Cyrillic glyph coverage proves weak (test-verified `запушил коммит` rendering during preview on 2026-04-24 passed), fall back to `.system(.body, design: .default)` only for Cyrillic strings via SwiftUI's font fallback chain. Do NOT switch the entire UI to system font — that defeats the typographic identity.
 
 ### Numerals
 
-All numbers (timer, sizes, durations, percentages) use Geist Mono with tabular
-figures so digits don't reflow on each tick. Apply via SwiftUI's
-`.monospacedDigit()` modifier or directly via `Geist Mono` with
-`font-feature-settings: 'tnum'`.
+All numbers (timer, sizes, durations, percentages) use Geist Mono with tabular figures via `.monospacedDigit()` or `font-feature-settings: 'tnum'`.
 
 ---
 
 ## Color
 
-**Approach:** restrained. Single accent (electric cyan) carries interactivity,
-focus, active state, and links across the entire app. The recording capsule
-operates in its own world with one signature exception (red tally light) that no
-other surface uses — this is what makes the capsule feel like a hardware status
-LED, not a UI notification.
+**Approach:** restrained. Single accent (electric cyan) carries interactivity, focus, active state, and links across the app. The recording capsule operates in its own world with one signature exception (red tally light).
 
 ### Dark mode (primary)
 
 ```
-bg / app           #0B1015   deep ink, app background
-bg / window        #10171F   window surfaces
-surface / card     #151D26   settings cards, group containers
-surface / inset    #0E141B   inputs, code blocks, segmented control bg
-stroke / subtle    rgba(255,255,255,0.08)   default borders, dividers
-stroke / strong    rgba(143,207,255,0.20)   focus, active emphasis
+bg / app           #0B1015
+bg / window        #10171F
+surface / inset    #0E141B
+stroke / subtle    rgba(255,255,255,0.08)   default borders
+stroke / strong    rgba(143,207,255,0.20)   active section 2px left-edge accent + focused control outlines
+divider            rgba(255,255,255,0.06)   row dividers in native row layout
 text / primary     #EEF3F7
-text / secondary   #C7D2DC
-text / muted       #7F90A1
-accent             #59C7FF   electric cyan, used sparingly
-accent / strong    #1AA7F6
-accent / soft      rgba(89,199,255,0.12)   badge backgrounds, soft fills
+text / secondary   #C7D2DC                  subtitles under row labels, body copy
+text / muted       #7F90A1                  meta-labels ONLY (uppercase tracked 11/14)
+accent             #59C7FF                  electric cyan, used sparingly
+accent / strong    #1AA7F6                  capsule border full-recording + accent-hover
+accent / soft      rgba(89,199,255,0.12)
 focus-ring         rgba(89,199,255,0.40)
 success            #27B7A4
 warning            #E8A93A
 error              #FF7A6B
 ```
 
-### Light mode (secondary, must work)
+### Light mode
 
 ```
 bg / app           #F3F6F8
 bg / window        #FBFCFD
-surface / card     #F0F4F7
 surface / inset    #E2E9EE
 stroke / subtle    rgba(14,23,32,0.08)
 stroke / strong    rgba(21,159,225,0.20)
+divider            rgba(14,23,32,0.06)
 text / primary     #0E1720
 text / secondary   #314253
 text / muted       #6E7F90
@@ -128,41 +116,30 @@ error              #D95C4F
 
 ### Capsule — its own world (both modes identical)
 
-The recording capsule is the signature object. It uses an opaque dark surface
-darker than any window background, regardless of system theme. The red tally
-light is universal across themes.
+Opaque dark surface darker than any window background. Universal across themes.
 
 ```
-capsule / bg              #0D0D0C   deeper than any window — opaque, signature
+capsule / bg              #0D0D0C
 capsule / text            #F0EDE8
 capsule / timer           #9E9A94
-capsule / recording       #E8423A   RED — tally-light reference (camera, studio mic)
+capsule / recording       #E8423A            RED — tally-light reference
 capsule / recording-glow  rgba(232,66,58,0.35)
 capsule / border-idle     rgba(255,255,255,0.07)
 capsule / border-rec      rgba(232,66,58,0.40)
+capsule / border-err      rgba(255,122,107,0.50)
 ```
 
-**Why red for recording (taste decision, locked):** every competitor uses green
-(MacWhisper) or cyan/blue (Wispr). Red is unclaimed in the category. It's the
-camera tally light, the microphone-active LED on a studio console, the universal
-"this device is recording you right now" signal. It's also the one color that
-creates genuine visual urgency — glance at the screen, you know.
+**Why red (locked):** unclaimed in category; MacWhisper uses green, Wispr uses cyan/blue. Red is the camera tally / studio mic / "recording now" universal signal.
 
-**Why opaque (taste decision, locked):** glassmorphism / `.ultraThinMaterial`
-on the capsule weakens the object — it borrows from Control Center and dilutes
-identity. The capsule is the one surface in the app that should be opaque and
-confident. Window surfaces (Settings, About) may use tinted opaque colors with
-subtle inner contrast, but never broad frosted-glass treatment.
+**Why opaque (locked):** glassmorphism borrows from Control Center and dilutes identity. Signature object should be confident. Window surfaces use tinted opaque colors; never broad frosted glass.
 
 ---
 
 ## Spacing
 
-Base unit: **4px**. Density: comfortable (between Linear's compact and Apple's
-generous default).
+Base unit: **4px**.
 
 ```
-2xs   2px
 xs    4px
 sm    8px
 md   12px
@@ -173,196 +150,428 @@ xl   24px
 4xl  64px
 ```
 
-Window padding: `xl` (24px). Card padding: `xl` (20-24px depending on density).
-Row vertical padding: `sm` (8px). Section gap: `xl` (24px). Button padding:
-`7px 14px` (slightly tighter than the 4-base — buttons read denser at this scale).
+- Window padding: `xl` (24px)
+- Prefs-row horizontal padding: `lg` (16px); vertical: `md` (12px); min-height 40px
+- Section gap between prefs-groups: `2xl` (32px)
+- Button padding: `7px 14px` — locked off-scale exception (`Tokens.ButtonPadding`). Battle-tested rhythm at 12/16 label size.
+- Capsule horizontal padding: `14px`
+
+`2xs 2px` removed — no component needed it.
 
 ---
 
 ## Layout
 
-- **Approach:** grid-disciplined for app surfaces (Settings, About, menu bar
-  dropdown). Composition-first for the recording capsule (it's a single
-  unconventional object that defines the rest of the system).
-- **Window dimensions:** Settings `620 × 520`. About `460 × 560`. Both centralized
-  in `Tokens.WindowSize` so we stop sprinkling magic numbers across views.
-- **Max content width inside a window:** matches window width (no extra clamping).
-  These windows are deliberately small — content density is the polish.
+- **Approach:** native macOS convention for Settings and About windows — no boxed cards. Grouped rows separated by `1px` dividers, uppercase meta-label as group header. Cards only when the card IS the interaction (model-download row with progress, error toast, first-launch checklist).
+- **Window dimensions:** Settings `620 × 520`. About `460 × 560`. Capsule `300 × 44`. Centralized in `Tokens.WindowSize` and `Tokens.CapsuleSize`.
 - **Border radius scale:**
-  - Capsule (recording overlay) → `14`
-  - Buttons → `8`
-  - Pickers, inputs → `8`
-  - Section cards → `12`
-  - Window surfaces (rounded corners on titlebar-less windows) → `12`
-  - Chips / badges → full pill (`999`)
-  - App artwork rounded square → `28%` of size
+  - Capsule → `14` (`Tokens.Radius.capsule`)
+  - Buttons, pickers, inputs → `8`
+  - Window surfaces → `12`
+  - Chips / badges → full pill
+  - App artwork → `28%` of size (`Tokens.Radius.artworkPercent`)
 
-### Settings layout — left-aligned, content-first (Departure 2)
+### Settings layout — native rows, content-first (Departure 2, corrected 2026-04-24)
 
-- No app artwork at the top of any Settings tab.
-- No subtitle re-introducing the product on every tab open.
-- Each tab opens directly to its content. Section header inside the card uses the
-  meta-label type (uppercase, tracked, muted) — not a hero.
-- Active section card gets a 2px accent rule on the left edge (only when the
-  section is genuinely interactive — picker open, download in progress).
-- Tabs read like tool sections, not App Store categories.
+Tab order: **General → Models → Shortcuts → Advanced**. Default: **General**.
+Sidebar left (`160px`), content right. No app artwork, no hero header, no subtitle.
+
+**Row layout** (replaces boxed cards after Codex hard rejection 2026-04-24):
+- Group header: uppercase meta-label (11/14 Medium letter-spacing 0.08em muted), `8px` below → `1px divider` → rows
+- Rows: left `prefs-row-label` (body 13/18 primary, optional subtitle 11/14 **secondary**), right `prefs-row-control` (segmented / select / switch / button / mono readout)
+- Rows separated by `1px divider` lines, not box borders
+- Active section: `2px` left-edge accent using `stroke/strong`, only when actively edited
+
+**Tab 1 — General:** LANGUAGE (segmented RU/RU+EN/EN/AUTO, default RU+EN) · INSERTION (Insert toggle, Trim whitespace, Paste method) · MICROPHONE (device select + inline permission hint row).
+
+**Tab 2 — Models:** MODEL (row per model with size, speed rating, quality rating, recommended-for subtitle; download states per row) · CORE ML (CoreML encoder toggle, download CoreML variants).
+
+**Tab 3 — Shortcuts:** RECORDING (current hotkey chip + "Record new" button) · inline accessibility permission hint row.
+
+**Tab 4 — Advanced:** CUSTOM VOCABULARY (hotwords textarea) · TRANSCRIPTION HISTORY (Open history button + count readout) · DIAGNOSTICS (Open error log row · Build info).
+
+Permissions live **inline** where they're needed (microphone in General, accessibility in Shortcuts), not as a dedicated Permissions tab.
 
 ### About layout — the only place the app artwork lives
 
-- Artwork at left, 64px (smaller than the previous 86px).
-- Title + subtitle to the right, left-aligned.
-- All other Settings-style cards below (build info, current setup, permissions,
-  privacy).
+- Dimensions: `460 × 560`
+- Artwork left, `64px`
+- Title + version string right of artwork, left-aligned
+- First paragraph: bilingual RU+EN positioning
+- Below intro: three native row-groups in order:
+  1. **BUILD** — Version · macOS version
+  2. **CURRENT SETUP** — Model · Language · Hotkey
+  3. **PRIVACY** — "Your voice never leaves this Mac" + subtitle (no network during recording)
+- No tabs, no buttons beyond Close
 
-### Recording capsule layout — three zones
+### MenuBar dropdown layout
+
+`280px` wide, radius `10`:
+- **Status line** (top, `1px divider` below):
+  - Left: tally dot (gray idle / red recording / red on blocker)
+  - Right: two-line readout — title + Geist Mono sub-line (model + language, or `N SETUP STEPS REMAINING`)
+- **Not Ready:** header `N SETUP STEPS REMAINING` (red sub-line) + task-rows ("→ Grant microphone access", "→ Grant accessibility access", "→ Download model")
+- **Idle:** Start recording (⌥ SPACE) · Open Settings… (⌘ ,) · About · divider · Quit (⌘ Q)
+- **Recording:** Status shows "Recording · 0:14"
+
+### Recording capsule — three zones
 
 ```
 ┌─────────────────────────────────────────────┐
-│  ●  RU/EN     ▮▮▮▮▮▮     0:14              │  300 × 44, radius 14
+│  ●  REC  RU/EN     ▮▮▮▮▮▮     0:14          │  300 × 44, radius 14
 └─────────────────────────────────────────────┘
-   left zone     center        right
-   - tally dot   - waveform    - timer
-   - lang chip
+   left zone             center        right
+   - tally dot           - waveform    - timer
+   - REC label (during recording only — a11y)
+   - RU/EN chip (display only)
 ```
 
-- **Width:** `300px` (current `240px` → +60). **Height:** `44px` (current `48px` → -4).
-- **Padding:** `14px` horizontal, no vertical padding (height is fixed).
-- **Background:** `capsule/bg` (`#0D0D0C`) at `100%` opacity, no material blur.
-- **Border:** `1px` `capsule/border-idle` when idle; `1px` `capsule/border-rec` (red 40%) when recording.
-- **Shadow:** `0 2px 8px rgba(0,0,0,0.5), 0 0 16px capsule/recording-glow` (red ambient halo, only perceptible against dark content).
-- **Position:** top-center of the screen with the focused window, `80px` from the screen top. Multi-screen handling deferred to v1.2 (see views inventory).
+- **Width:** `300px`. **Height:** `44px`. **Padding:** `14px` horizontal.
+- **Background:** `capsule/bg` `#0D0D0C` at `100%` opacity, no material blur.
+- **Border:** `1px` idle/rec/err per state.
+- **Shadow:** `0 2px 8px rgba(0,0,0,0.5), 0 0 16px capsule/recording-glow`.
+- **Position (v1.0):** top-center of screen containing focused window at hotkey press, `80px` from screen top. Fallback: `NSScreen.main`. Multi-screen preferences + mid-recording screen change deferred to v1.2.
+- **RU/EN chip:** display only in v1.1. Not clickable. Change language via Settings.
+
+---
+
+## Interaction States
+
+### Capsule
+
+| State | Trigger | What the user sees | Duration |
+|-------|---------|--------------------|----------|
+| idle | no active recording | tally gray, RU/EN chip, flat waveform, timer 0:00, dismissed | — |
+| recording | hotkey pressed, voice active | tally RED, **"REC" text label** left zone (Geist Mono 10/14 600 letter-spacing 0.08em), RU/EN chip, waveform bars audio-driven, timer counting, red border 40% + glow | until hotkey release |
+| transcribing | hotkey released, whisper processing | tally gray, RU/EN chip, 3-dot breathing center (ease-in-out), timer frozen, border returns to idle | 1-8 seconds |
+| inserted | text inserted into previous app | tally green check ✓ 14×14, RU/EN chip, center: "Inserted · N chars → AppName" (11/14 Medium) | 400ms flash then dismiss |
+| error (inline) | solvable error (mic denied, accessibility denied, model not loaded, download failed) | tally light-red, RU/EN chip, center: short error text `"Mic denied · Open Privacy"`, red-pink border | 4s auto-dismiss, click to fix |
+| error (toast) | unsolvable error (whisper crashed, OOM) | capsule dismisses first; toast at same position: 320px, dark-red bg `#2A1A1A`, 12px padding, icon + title + body + "View log" link | 6s auto-dismiss |
+| empty-result | whisper returned "" | tally gray, RU/EN chip, center: "Nothing heard" | 400ms flash then dismiss |
+
+**Transcribing state is NEW** — fills the gap between hotkey release and text insertion.
+
+### Settings — permission row states (microphone, accessibility)
+
+- **Granted:** green dot · "Granted" label · ghost "Open Privacy" button
+- **Denied:** red dot · primary-danger "Grant Access" button (opens System Settings)
+- **Not yet requested:** gray dot · "Grant once and you're set" subtitle · primary accent "Request" button
+
+### Settings — model download row states
+
+- **Not downloaded:** model name + size subtitle · primary "Download" button
+- **Downloading:** model name + "Downloading · N MB / M MB" · inline progress bar + percent (Geist Mono tabular)
+- **Failed:** red dot · error reason inline · ghost-danger "Retry" button
+- **Downloaded:** green check · size on disk + "CoreML compiled" subtitle · ghost "Delete" button
+
+### First launch
+
+Blockers (must-do before VoiceType works):
+1. microphone permission
+2. accessibility permission (required for synthesized ⌘V; insertion fails silently without it)
+3. at least one downloaded model
+
+Nice-to-have:
+4. custom hotkey (default ⌥ SPACE works out of the box)
+
+**Surface:** checklist window, 480px wide, titlebar-less modal on first launch. Title: "Four steps and you're typing with your voice". Rows = numbered badge (Geist Mono 10/14 600 cyan-soft bg) + step-title + step-subtitle + action link. When all four green, window auto-closes. Reopenable via menubar → "Run setup checklist".
+
+**Menubar mirror (safety net):** while ANY blocker is unresolved, menubar tally stays red and dropdown shows `N SETUP STEPS REMAINING` with inline task rows. If user closes the checklist early, the menubar keeps the status visible.
+
+### Reduced motion
+
+When `@Environment(\.accessibilityReduceMotion)` is true:
+- Capsule appear: `opacity 0 → 1` only (no scale), `Motion.short` (200ms).
+- Capsule dismiss: `opacity 1 → 0` only.
+- Recording tally: static red dot, no pulse, no audio-driven animation.
+- Inserted-state flash: 200ms opacity-only (shortened from 400ms).
+
+### Focus state
+
+`focus-ring` applied as `2px outline, 2px offset` on all interactive elements:
+- Segmented control (focused segment)
+- Select, button, switch, hotkey-chip
+- Model-row (entire row focusable)
+
+Respects macOS Full Keyboard Access.
+
+---
+
+## Accessibility
+
+### Contrast (WCAG AA)
+
+- `text/muted #7F90A1` on `bg/window #10171F` = 4.1:1 — **fails AA for body text**. Restricted to uppercase tracked meta-labels (11/14, which pass large-text AA).
+- Subtitles under prefs-row labels use `text/secondary #C7D2DC` (11.5:1 AAA pass).
+- `text/primary` on every background: AAA.
+- Light mode: all pairings pass AA without restriction.
+
+### VoiceOver announcements
+
+Capsule is a floating NSWindow — invisible to screen readers without explicit posts. On state transitions, post `NSAccessibilityNotificationAnnouncement`:
+
+- **appear:** "VoiceType recording. Speak now."
+- **transcribing:** "Transcribing."
+- **inserted:** "Inserted {N} characters into {appName}."
+- **empty-result:** "Nothing heard."
+- **error (inline):** "{error text}. {action hint}."
+- **error (toast):** toast title + toast body
+
+All Settings controls accessibility-labeled:
+- Segmented language: `.accessibilityLabel("Preferred language")`, `.accessibilityValue("{RU | RU+EN | EN | AUTO}")`
+- Model rows: `.accessibilityLabel("{modelName}")`, `.accessibilityValue("{state, size}")`
+- Permission rows: describe current state + available action
+
+### Colorblind — secondary signal for recording
+
+Red tally alone loses contrast under protanopia (~8% of males). Secondary signal: **"REC" text label** in left zone during recording (Geist Mono 10/14 600 letter-spacing 0.08em, recording red). Triple-encoding: color + motion (waveform) + text.
+
+### Full keyboard access
+
+All custom SwiftUI controls respond to keyboard selection in Full Keyboard Access mode (⌘F7). Custom views (segmented, model row list) use `.focusable(true)` + focus-ring visual.
+
+### Tab order
+
+Settings window:
+- Sidebar: General (default) → Models → Shortcuts → Advanced, arrow-key navigable
+- Main content: top-to-bottom, left-to-right within each prefs-row
+- Escape / ⌘W closes window
 
 ---
 
 ## Motion
 
-**Approach:** minimal-functional. Movement carries information; it never
-decorates. The category default is "always animate to reduce anxiety." We
-deliberately reject that — see Departure 1.
+**Approach:** minimal-functional. Movement carries information; it never decorates.
 
-- **Easing:** enter `ease-out`, exit `ease-in`, move `ease-in-out`
-- **Duration:** micro `100ms`, short `200ms`, medium `300ms`, long `500ms`
-- **Capsule appear:** `scale 0.95 → 1.0` + `opacity 0 → 1`, `200ms` ease-out
-- **Capsule disappear (after inserted-state flash):** `scale 1.0 → 0.96` + `opacity 1 → 0`, `200ms` ease-in
-- **Recording dot:** ONE `scale 1.0 → 1.4 → 1.0` pulse over `200ms` when audio level crosses `0.15`. No continuous breathing.
-- **Border during active recording:** static at `red 40%` opacity. No angular gradient sweep, no continuous animation.
-- **Inserted-state flash (NEW state to add):** `400ms` cyan-to-teal checkmark with text "Inserted", then capsule dismisses.
-- **Tab switching, picker opening:** native macOS animations (`200ms`).
+**Motion tokens (named, locked):**
+- `Motion.micro` = `100ms` — hover feedback, color transitions
+- `Motion.short` = `200ms` — capsule appear/dismiss, tab switching
+- `Motion.medium` = `300ms` — picker opening, segmented transitions
+- `Motion.long` = `500ms` — rare, cross-surface transitions only
 
----
-
-## Bilingual RU/EN — first-class operational parameter (Departure 3)
-
-The product exists because of code-switching. Make this visible in UI structure,
-not buried in a dropdown.
-
-- **Recording capsule:** `RU/EN` chip in left zone, equal weight, slash separator
-  (Geist Mono, 10/14, letter-spacing 0.06em). Both languages get the same
-  visual prominence.
-- **Settings → General → Language:** segmented control with `RU | RU+EN | EN | AUTO`,
-  not a buried Picker dropdown. Equal-width segments, active state uses the
-  window-bg fill so the active option reads as "raised." Default to `RU+EN`.
-- **About window:** first paragraph mentions bilingual code-switching as the core
-  positioning, not a feature note buried in capabilities list.
-
----
-
-## Three Deliberate Departures
-
-These break category convention on purpose. Each must be defended in the Decisions
-Log if challenged.
-
-### Departure 1: Honest waveform (silent during silence)
-
-Every direct competitor (MacWhisper, Wispr, Superwhisper) animates the recording
-waveform continuously, even when the user is not speaking, to reassure them that
-the mic is "listening." This is reassurance theater. VoiceType shows a flat
-waveform during silence and only animates bars when audio level crosses a
-threshold (≥ 0.15). When the bars finally move, they mean something.
-
-This is technically honest — the model is not "always thinking," it is waiting.
-It treats the user as someone who knows what silence looks like on an audio
-buffer. MacWhisper's user research says "always show activity to reduce anxiety."
-VoiceType's user wrote the build script — they have no such anxiety.
-
-### Departure 2: Settings without a hero
-
-Every Settings tab in the current build opens with `WindowHeroHeader` — app
-artwork at 86px, subtitle text, chip labels. That pattern is a direct import from
-the iOS App Store / first-launch onboarding aesthetic. It's warm but it's
-borrowed. Linear and Raycast settings panels open straight to the model picker,
-the hotkey field, the permission status. Remove the hero header from every
-Settings tab. Put a small uppercase meta-label section header at the top
-left. The user is here to change something, not be re-introduced 20 times a day.
-
-The `VoiceTypeArtwork` component still belongs in About — that's the right
-context for it.
-
-### Departure 3: Bilingual visible in the UI
-
-See section above. The category convention is to bury language preference in a
-dropdown. VoiceType makes language a first-class operational parameter visible
-on every recording.
+**Behavior:**
+- Easing: enter `ease-out`, exit `ease-in`, move `ease-in-out`
+- Capsule appear: `scale 0.95 → 1.0` + `opacity 0 → 1`, `Motion.short` ease-out
+- Capsule disappear: `scale 1.0 → 0.96` + `opacity 1 → 0`, `Motion.short` ease-in
+- Recording dot pulse: ONE `scale 1.0 → 1.4 → 1.0` over `Motion.short` when audio crosses `Tokens.Motion.waveformActivationThreshold = 0.15`. No continuous breathing.
+- Border during active recording: static at `red 40%`. No sweep.
+- Inserted-state flash: `400ms` green-to-teal + "Inserted · N chars → AppName", then dismiss.
+- Transcribing-state dots: 3 dots, ease-in-out scale, `Motion.long` per cycle.
+- Tab switching, picker opening: native macOS (`Motion.short`).
+- Reduced motion: opacity-only, no scale, no pulse.
 
 ---
 
 ## Iconography
 
-- **App icon (`VoiceTypeArtwork`):** keep the existing rounded-square + microphone
-  + waveform composition, but migrate the inline color literals to design tokens.
-  Dark navy gradient stays as the "brand identity" surface — it predates this
-  document and works well as the app icon. Cyan glow accent stays.
-- **System glyphs:** SF Symbols throughout. No custom icons unless absolutely
-  required (e.g., capsule waveform bars are not glyphs, they're shapes).
-- **Tally dot:** custom 8px filled `Circle` with red fill. Not an icon.
+- **App icon (`VoiceTypeArtwork`):** rounded-square + microphone + waveform. Migrate color literals to tokens. Dark navy gradient + cyan glow stay.
+- **Menubar icon:** template SF Symbol, same shape at all times. Color: default `text/primary` (template, follows menubar theme); red `capsule/recording` when recording. No pulse, no animation.
+- **System glyphs:** SF Symbols throughout. No custom icons unless required (waveform bars are shapes, not glyphs).
+- **Tally dot:** custom 8px `Circle` red fill during recording.
+
+---
+
+## Bilingual RU/EN — first-class (Departure 3)
+
+The product exists because of code-switching. Visible in UI structure.
+
+- **Recording capsule:** `RU/EN` chip in left zone, equal weight, slash separator (Geist Mono 10/14 letter-spacing 0.06em). **Display only** — not clickable in v1.1.
+- **Settings → General → Language:** segmented control `RU | RU+EN | EN | AUTO`, equal-width segments. Active uses window-bg fill ("raised"). Default `RU+EN`.
+- **Language change:** takes effect on the **next recording**. Active recording continues with its mode. Protects whisper decoder from mid-buffer switches.
+- **About:** first paragraph names bilingual code-switching as core positioning.
+
+---
+
+## User Journey
+
+### 1. First launch arc
+
+| Step | User does | User sees | User feels |
+|------|-----------|-----------|------------|
+| 1 | Opens VoiceType.app first time | Checklist window, 4 steps (3 red / 1 neutral) | "OK, clear what's required." |
+| 2 | Clicks "Grant microphone access" | System Settings → Privacy → Microphone opens | Familiar, no friction |
+| 3 | Toggles on, returns | Step 1 green | "One down." |
+| 4 | Clicks "Grant accessibility access" | System Settings → Privacy → Accessibility opens | "Makes sense." |
+| 5 | Toggles on, returns | Step 2 green | "Halfway." |
+| 6 | Clicks "Download a model" | Row shows progress | "I see progress." |
+| 7 | Download completes | Step 3 green | "Three down." |
+| 8 | Sets custom hotkey or skips | Checklist closes | Ready. |
+| 9 | Presses ⌥ SPACE | Capsule appears | "It's listening." |
+| 10 | Speaks, releases | Transcribing dots, insert → focused field | "It just worked." |
+
+Total time to first dictation: **≈2-3 minutes** (dominated by model download).
+
+### 2. Daily use arc (100×/day)
+
+| Frame | Time | What happens | User feeling |
+|-------|------|--------------|--------------|
+| T+0 | — | User typing in Cursor | flow |
+| T+50ms | ⌥ SPACE pressed | Intent | decide |
+| T+200ms | — | Capsule appears, scale 0.95→1.0, tally gray | "listening" |
+| T+varies | recording | Red tally + REC + waveform active | speak |
+| release | — | Capsule enters transcribing (dots) | short wait |
+| +1-3s | whisper done | Text inserted, 400ms flash "Inserted · N chars → Cursor" | done |
+| +400ms | — | Capsule dismisses, focus returns | back to flow |
+
+Total UI ceremony per dictation: ≈800ms. 100×/day = ~80s total overhead, should feel invisible.
+
+### 3. Error recovery arc
+
+| Trigger | User sees | Path forward |
+|---------|-----------|--------------|
+| Mic permission denied | Capsule error: "Mic denied · Open Privacy" | Click → System Settings |
+| Accessibility denied | Capsule error: "Accessibility denied · Open" | Click → System Settings |
+| Model not downloaded | Capsule error: "No model · Download" | Click → Settings → Models |
+| Whisper crashed | Toast: "Transcription failed unexpectedly. Model has been reloaded. [View log]" | Click "View log" → errors.log |
+| Text insertion failed (wrong focus) | Transcription is in history | Settings → Advanced → Transcription history → Re-insert or Copy |
+
+Every error is logged. Every transcription is saved. **Nothing is ever truly lost.**
+
+---
+
+## Error Handling & Logging
+
+### Log file
+
+Path: `~/Library/Logs/VoiceType/errors.log`
+Format: `[ISO8601] [severity] [type] message | context`
+Rotation: daily, keep 7 days, delete older.
+
+Every error logged before UI surface appears.
+
+### UI treatment rule
+
+- **Solvable errors** (one-click fix): inline in capsule, 4s auto-dismiss, clickable text opens the fix. Examples: mic denied, accessibility denied, model not downloaded, download failed.
+- **Unsolvable errors** (need explanation): toast, 6s auto-dismiss, "View log" link. Examples: whisper crash, OOM, unknown runtime error.
+
+### Settings access
+
+Settings → Advanced → **Error log** row:
+- Title "Error log"
+- Subtitle: `~/Library/Logs/VoiceType/errors.log · N entries` (Geist Mono, secondary)
+- Actions: `Reveal in Finder` · `Clear`
+
+---
+
+## Transcription History
+
+**Why this exists (user-stated 2026-04-24):** transcriptions can be lost when focus changes mid-recording — the user starts dictating in Cursor, clicks into another window, finishes, and the insert goes to the wrong place. Transcriptions are expensive (user's speech, 1-8s of work each). Losing them is unacceptable.
+
+### Storage
+
+Path: `~/Library/Application Support/VoiceType/history.jsonl`
+Format: one JSON object per line:
+- `id` (UUID)
+- `timestamp` (ISO 8601)
+- `durationSeconds` (float)
+- `language` (RU | EN | mixed | auto-detected)
+- `model` (model name used)
+- `text` (full transcription)
+- `targetApp` (bundle identifier at insert time)
+- `targetWindowTitle` (best-effort window title at insert time)
+- `insertSuccess` (bool)
+
+Retention: last **100 entries** with rolling rotation (oldest dropped on limit hit). Limit tokenizable in future.
+
+### UI surface
+
+Settings → Advanced → **Transcription History** row:
+- Title "Transcription history"
+- Subtitle: `{N} entries saved · oldest from {date}` (Geist Mono, secondary)
+- Actions: `Open history` (primary) opens a sheet
+
+**History sheet** (800 × 560 modal):
+- Left: chronological list, newest first. Row: timestamp (Geist Mono) + language chip + duration + target-app name
+- Right: selected entry detail: full text, timestamp header, target-app, insert-success badge
+- Actions per entry: `Copy text` · `Re-insert into current app` (warns if target app differs from original) · `Delete entry`
+
+### v1.1 scope
+
+- Storage layer writes on every successful or failed transcription
+- Settings row: count + Open history button
+- History sheet: list + detail + Copy + Re-insert + Delete
+- **NOT in v1.1:** search, filter, export, cross-device sync
+
+---
+
+## Focus Return (mandatory behavior)
+
+**On hotkey press:**
+1. Capture `NSRunningApplication.currentApplication()` = `previousApp`
+2. Capture focused window via `AXUIElementCopyAttributeValue` + `kAXFocusedApplicationAttribute` = `previousWindow`
+3. Show capsule without stealing focus
+
+**On capsule dismiss (after inserted-flash or any error state):**
+1. Activate `previousApp`
+2. Raise `previousWindow`
+3. User's cursor blinks in the same field they left
+
+**Guarantee:** user can hotkey → speak → continue typing without touching the mouse. This is the reason VoiceType exists. Breaking this = shipping a toy.
+
+---
+
+## Four Deliberate Departures
+
+### Departure 1: Honest waveform (silent during silence)
+
+Competitors animate the waveform continuously to reassure users. That's theatre. VoiceType shows a flat waveform during silence; bars move only when audio level crosses `Tokens.Motion.waveformActivationThreshold = 0.15`. When bars move, they mean something.
+
+### Departure 2: Settings without a hero, native rows not cards
+
+No app artwork on any Settings tab. No subtitle re-introducing the product. Native rows separated by dividers, not boxed cards (per 2026-04-24 Codex hard rejection). Cards only for discrete interactions. Linear / Raycast / System Settings convention.
+
+### Departure 3: Bilingual visible in the UI
+
+Segmented control in first tab, not dropdown. Chip in recording capsule. See Bilingual section.
+
+### Departure 4 (new 2026-04-24): Transcription history as safety net
+
+Competitors silently lose transcriptions when focus changes. VoiceType keeps every transcription in `~/Library/Application Support/VoiceType/history.jsonl`. Not a "power user feature" — the answer to "I just dictated 30 seconds into the wrong window."
 
 ---
 
 ## Anti-Slop Hard Rules
 
-Do not generate any of these in code, mockups, or future design iterations.
-If a future skill or designer proposes one, refuse and reference this section.
-
-- ✗ Purple gradients anywhere (signals "AI app" / dating app / Notion plugin)
-- ✗ Centered hero compositions (signals marketing site, not tool)
-- ✗ Glassmorphism / broad frosted-glass treatment as default surface
+- ✗ Purple gradients anywhere
+- ✗ Centered hero compositions
+- ✗ Glassmorphism / frosted-glass as default surface
 - ✗ Decorative animated blobs in window backgrounds
 - ✗ Rainbow / angular gradient borders on the capsule
-- ✗ Continuous waveform animation during silence (UX theater)
-- ✗ Uniform bubble border-radius on every element (use the radius scale)
-- ✗ system-ui / -apple-system as the primary display or body font
-- ✗ Inter, Roboto, Space Grotesk as primary font (overused, signals lack of
-  taste investment)
-- ✗ Stock SaaS dashboard look (3-column feature grid, gradient CTA buttons)
+- ✗ Continuous waveform animation during silence
+- ✗ Uniform bubble border-radius on every element
+- ✗ system-ui / -apple-system as primary display or body font
+- ✗ Inter, Roboto, Space Grotesk as primary font
+- ✗ Stock SaaS dashboard look (3-column feature grid, gradient CTA)
 - ✗ "Built for X" / "Designed for Y" tagline aesthetic
-- ✗ Apple App Store hero treatment in Settings windows
-- ✗ Warm mint radial accents in window chrome (legacy from current build)
+- ✗ Apple App Store hero treatment in Settings
+- ✗ Warm mint radial accents in window chrome
+- ✗ **Boxed card stacks in preferences** (Codex hard rejection 2026-04-24). Native rows + 1px dividers. Cards only for discrete interactive moments.
+- ✗ **Onboarding wizard with icons-in-colored-circles** (SaaS template). Numbered-badge checklist with native typography.
 
 ---
 
 ## Implementation Plan (Tier A refactor)
 
-This DESIGN.md is the spec. The Tier A refactor implements it in code.
+1. Create `Sources/VoiceType/Views/DesignSystem/Tokens.swift` with `Spacing`, `Radius`, `Palette`, `Typography`, `WindowSize`, `CapsuleSize`, `Motion`, `ButtonPadding`.
+2. Replace literals in `WindowChrome.swift` with token references.
+3. Rewrite `SettingsView.swift`: sidebar, tab order (General → Models → Shortcuts → Advanced), native-rows (no `SettingsSectionCard`), no hero header, segmented language control, inline permission rows.
+4. Create `FirstLaunchWindow.swift`: 4-step checklist per First Launch spec.
+5. Update `MenuBarView.swift` with three-state dropdown (Idle / Recording / Not Ready). Status line + tally + two-line readout. Menubar icon → red during recording.
+6. Rewrite `WaveformView.swift` (capsule): token-based, three-zone layout (tally + REC + RU/EN chip), palette to opaque dark + red.
+7. Add capsule states: `transcribing` (breathing dots), `error-inline`, `error-toast` (separate NSWindow), `empty-result` ("Nothing heard").
+8. Add `inserted` state to `VoiceTypeIndicatorView` with char-count + target-app name (400ms flash).
+9. Implement Transcription History: `Services/HistoryStore.swift` (history.jsonl), `Views/Settings/HistorySheet.swift`.
+10. Implement Error Log: `Services/ErrorLogger.swift` (daily rotation), row in Advanced tab.
+11. Implement Focus Return: `Services/FocusCaptureService.swift` captures + restores previousApp / previousWindow.
+12. Implement Accessibility announcements: post `NSAccessibilityAnnouncementRequestedNotification` on state transitions.
+13. Implement Reduced Motion branch: check `accessibilityDisplayShouldReduceMotion`; opacity-only animations.
+14. Vendor Geist + Geist Mono woff2/otf into `Resources/Fonts/`, register via Bundle. `.font(Tokens.Typography.body)` across views.
 
-1. **Create `Sources/VoiceType/Views/DesignSystem/Tokens.swift`** with `Spacing`,
-   `Radius`, `Palette`, `Typography`, `WindowSize`, `Motion` enums.
-2. **Replace literals in `Views/Shared/WindowChrome.swift`** with token references.
-3. **Replace literals in `Views/Recording/WaveformView.swift`** with capsule
-   tokens, change palette from cyan/blue/purple → opaque dark + red tally,
-   migrate to three-zone layout with RU/EN chip.
-4. **Remove hero header from `SettingsView.swift` tabs** (Departure 2). Keep
-   only the small uppercase section label.
-5. **Replace Language Picker in `SettingsView.swift` General tab** with segmented
-   control (Departure 3).
-6. **Add `inserted` micro-state** to `VoiceTypeIndicatorView` (400ms cyan-to-teal
-   flash), with corresponding `setContent(state:)` update in `RecordingWindow`.
-7. **Vendor Geist + Geist Mono woff2/otf** into `Resources/Fonts/` and register
-   via Bundle. Add `.font(Tokens.Typography.body)` etc. across all views.
-
-Sequence per the v1.1 roadmap: this Tier A refactor lands as one or two PRs
-during Weekend 3-4 (Track 1 polish weekends), AFTER the hotwords feature lands
-on Weekend 1 (Track 2). Hotwords are insertion-only; they don't depend on the
-new design tokens.
+Sequence per v1.1 roadmap:
+- Weekend 1 (Track 2): hotwords — unblocked, no token dependency
+- Weekend 3-4 (Track 1): Tier A steps 1-8
+- Weekend 3-4 extended: steps 9-14 (History, Error Log, Focus Return, a11y, Reduced Motion)
+- If Tier A runs long: History can split to Weekend 5 as self-contained module
 
 ---
 
@@ -370,12 +579,35 @@ new design tokens.
 
 | Date       | Decision                                                            | Rationale |
 |------------|---------------------------------------------------------------------|-----------|
-| 2026-04-24 | Initial design system created via /design-consultation              | Three voices (Claude main + Codex + Claude subagent UI Designer) converged on Linear/Raycast neighborhood, Geist family, opaque capsule, no glassmorphism, content-first Settings. |
-| 2026-04-24 | Memorable thing finalized in English: "A tool for people who just build things, with the polish of commercial software." | Originally captured in Russian during /office-hours; translated and tightened for the design system compass — single source of truth, English so it travels through the codebase, README, and any future contributor docs. |
-| 2026-04-24 | Recording dot color: RED `#E8423A` (over Codex's cyan `#36C8FF`)     | Tally light cultural reference (camera, studio mic, hardware indicator). Unclaimed in category. Subagent's argument won on differentiation and screenshot-ability. |
-| 2026-04-24 | Base palette: cool ink-steel (Codex's) over warm paper (subagent's)  | Aligns with macOS-native feel and electric cyan accent. "Machined precision" matches the builder-tool framing more cleanly than hand-crafted dotfiles vibe. |
-| 2026-04-24 | Capsule size: 300×44 hybrid (between subagent's 220×36 and Codex's 392×64) | Three-zone structure (Codex) for RU/EN chip visibility, but tighter dimensions and smaller radius (subagent) for instrument-not-bubble feel. |
-| 2026-04-24 | Capsule material: solid opaque, no .ultraThinMaterial (subagent's)   | The signature object should be confident, not borrow Control Center frosted glass. |
-| 2026-04-24 | Three departures from category locked: silent waveform, no Settings hero, bilingual visible | Each departure independently serves the memorable thing: "tool for builders, with commercial polish." Each is technically honest. |
-| 2026-04-24 | Bilingual RU/EN promoted to first-class UI element (Codex's)         | The product exists because of code-switching. Burying it in a dropdown denies the unique value proposition. |
-| 2026-04-24 | Apple App Store hero pattern explicitly removed from Settings tabs   | Linear / Raycast convention: settings open to content. The `WindowHeroHeader` stays in About only. |
+| 2026-04-24 | Initial design system created via /design-consultation              | Three voices (Claude main + Codex + Claude subagent UI Designer) converged on Linear/Raycast neighborhood, Geist family, opaque capsule, no glassmorphism. |
+| 2026-04-24 | Compass in English: "A tool for people who just build things, with the polish of commercial software." | Originally captured in Russian during /office-hours; translated and tightened. |
+| 2026-04-24 | Recording dot color: RED `#E8423A` (over Codex's cyan)              | Tally-light cultural reference. Unclaimed in category. |
+| 2026-04-24 | Base palette: cool ink-steel (Codex's) over warm paper (subagent's) | macOS-native feel. User confirmed visually via `v1-cool-inksteel.html` vs `v2-warm-paper.html` in /plan-design-review. |
+| 2026-04-24 | Capsule size: 300×44 hybrid                                         | Three-zone structure (Codex) + tighter dims (subagent). |
+| 2026-04-24 | Capsule material: solid opaque, no .ultraThinMaterial              | Signature object should be confident. |
+| 2026-04-24 | Three departures locked                                             | Silent waveform, no Settings hero, bilingual visible. |
+| 2026-04-24 | Bilingual RU/EN promoted to first-class UI element                  | Product exists because of code-switching. |
+| 2026-04-24 | Apple App Store hero pattern removed from Settings                  | Linear/Raycast convention. Artwork stays in About. |
+| 2026-04-24 | **Native rows (not boxed cards) in Settings and About**             | Codex hard rejection via /plan-design-review: boxed cards ship web-dashboard look. System Settings / Linear / Raycast use grouped rows + meta-labels + 1px dividers. Cards only for discrete interactions. |
+| 2026-04-24 | **Settings tab order: General → Models → Shortcuts → Advanced, default = General** | Frequency-ordered per macOS convention. Permissions inline (mic in General, accessibility in Shortcuts). |
+| 2026-04-24 | **About order: BUILD → CURRENT SETUP → PRIVACY**                   | Version check → config check → privacy reassurance exit. |
+| 2026-04-24 | **MenuBar IA: Status + Record + Settings + About + divider + Quit** | Record stays for users who don't remember hotkey. No mini-control-panel (don't duplicate Settings). |
+| 2026-04-24 | **Capsule transcribing state added**                                | Fills 1-8s gap between hotkey release and insert. Was missing. |
+| 2026-04-24 | **Error UI: hybrid (inline solvable / toast long-form) + persistent error log** | Inline for quick fixes. Toast for explanations. All errors to `~/Library/Logs/VoiceType/errors.log` daily rotation. User concern: "don't lose errors" → solved by always-log. |
+| 2026-04-24 | **Empty-result: "Nothing heard" 400ms flash**                       | Not silent dismiss — confirms app ran when hotkey fired accidentally. |
+| 2026-04-24 | **First-launch: 4-step checklist window + menubar mirror**          | Mic + Accessibility + Model + Hotkey. Accessibility promoted to blocker (without it, insertion fails silently). Menubar mirrors remaining steps as safety net. |
+| 2026-04-24 | **Inserted state: "Inserted · N chars → AppName"**                  | Subagent recommendation. Catches wrong-window-focus bugs. |
+| 2026-04-24 | **Contrast fix: restrict text/muted to meta-labels only**           | text/muted on bg/window = 4.1:1 fails AA body. Subtitles use text/secondary (11.5:1 AAA). |
+| 2026-04-24 | **Colorblind secondary signal: "REC" text label**                   | Red tally loses contrast under protanopia. Geist Mono "REC" in left zone. Triple-encoding. |
+| 2026-04-24 | **VoiceOver announcements locked**                                  | Capsule invisible to screen readers without explicit posts. All transitions announced. |
+| 2026-04-24 | **Multi-screen v1.0: screen of focused window, NSScreen.main fallback** | Zero ambiguity. v1.2 adds preferences + mid-recording-screen-change. |
+| 2026-04-24 | **Menubar icon: red when recording, no pulse**                      | Glanceable. Consistent with capsule. No animation avoids notification-anxiety. |
+| 2026-04-24 | **RU/EN chip: display only (v1.1)**                                 | Capsule is recording UI, not control. Switching via Settings only. |
+| 2026-04-24 | **Language change: next recording only**                            | Predictable. Protects whisper decoder from mid-buffer switches. |
+| 2026-04-24 | **Post-insert focus return mandatory**                              | Capture previousApp + previousWindow on hotkey; restore on dismiss. The reason VoiceType exists. |
+| 2026-04-24 | **Transcription History in v1.1 scope (Departure 4)**               | User pain: current build loses transcriptions on focus change. Storage in history.jsonl (100 entries rolling), Settings → Advanced, in-app sheet Copy/Re-insert/Delete. Not deferred. |
+| 2026-04-24 | **Motion tokens named: `Motion.micro/short/medium/long = 100/200/300/500ms`** | Pre-empts magic-number drift. `waveformActivationThreshold = 0.15` tokenized. |
+| 2026-04-24 | **Reduced Motion: opacity-only, no scale, static red dot**          | Respects macOS accessibility preference. |
+| 2026-04-24 | **Token hygiene:** removed `2xs 2px`; assigned `accent/strong` to capsule-border-emphasis + hover; `stroke/strong` to active-section-edge + focus-ring | Unused tokens drift. Assigned or removed. |
+| 2026-04-24 | **Button padding 7px 14px as locked off-scale exception**           | Battle-tested rhythm. `Tokens.ButtonPadding` with Decisions Log entry so future maintainers know it's intentional. |
+| 2026-04-24 | **Prefs-row padding: lg 16px horizontal, md 12px vertical, min-height 40px** | Replaces ambiguous "20-24px depending on density". Single rhythm. |
