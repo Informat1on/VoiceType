@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import CoreText
 
 enum AppState: String {
     case idle
@@ -65,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("[AppDelegate] === Launching VoiceType ===")
         AppLog.app.notice("Application launching")
+        registerEmbeddedFonts()
         NSApp.setActivationPolicy(.accessory)
 
         voiceTypeWindow = VoiceTypeWindow(audioService: audioCaptureService)
@@ -151,6 +153,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         firstLaunchWindow?.deminiaturize(nil)
         firstLaunchWindow?.makeKeyAndOrderFront(nil)
         firstLaunchWindow?.orderFrontRegardless()
+    }
+
+    // MARK: - Font Registration
+
+    /// Register Geist and Geist Mono TTFs bundled in Resources/Fonts/ so that
+    /// `Font.custom("Geist", ...)` and `Font.custom("Geist Mono", ...)` in
+    /// Tokens.swift resolve to the actual typeface instead of falling back to
+    /// San Francisco. Must be called BEFORE any SwiftUI view renders.
+    /// DESIGN.md § Typography. Tier A Step 14 (accelerated to Step 6).
+    private func registerEmbeddedFonts() {
+        let fontNames = [
+            "Geist-Regular",
+            "Geist-Medium",
+            "Geist-SemiBold",
+            "GeistMono-Regular",
+            "GeistMono-Medium"
+        ]
+        for name in fontNames {
+            guard let url = Bundle.main.url(forResource: name, withExtension: "ttf") else {
+                print("[AppDelegate] Font not found in bundle: \(name).ttf")
+                AppLog.app.error("Embedded font missing: \(name, privacy: .public).ttf")
+                continue
+            }
+            var error: Unmanaged<CFError>?
+            let registered = CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error)
+            if registered {
+                print("[AppDelegate] Font registered: \(name)")
+            } else if let err = error?.takeRetainedValue() {
+                // kCTFontManagerErrorAlreadyRegistered (code 105) is benign — hot-reload.
+                let code = CFErrorGetCode(err)
+                if code == 105 {
+                    print("[AppDelegate] Font already registered (benign): \(name)")
+                } else {
+                    print("[AppDelegate] Font registration failed: \(name) — \(err)")
+                    AppLog.app.error("Font registration failed: \(name, privacy: .public)")
+                }
+            }
+        }
     }
 
     // MARK: - Setup
