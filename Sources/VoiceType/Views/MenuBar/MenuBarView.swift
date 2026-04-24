@@ -120,8 +120,8 @@ struct MenuBarView: View {
                 .padding(.horizontal, Spacing.md)
                 .padding(.vertical, Spacing.sm)
 
-            Divider()
-                .overlay(Palette.divider)
+            // 1px divider below status line. DESIGN.md § MenuBar dropdown layout.
+            Palette.divider.frame(height: 1)
 
             stateContent
         }
@@ -135,6 +135,9 @@ struct MenuBarView: View {
             }
             elapsed = Date().timeIntervalSince(start)
         }
+        // NOTE: single-parameter onChange is the macOS 13 API. The two-parameter
+        // form (onChange(of:initial:_:)) requires macOS 14+. Deployment target
+        // is macOS 13 (Package.swift), so keep this form until the target bumps.
         .onChange(of: appDelegate.appState) { newState in
             if newState != .recording {
                 elapsed = 0
@@ -164,18 +167,18 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private func notReadyContent(missingMic: Bool, missingA11y: Bool, missingModel: Bool) -> some View {
+        // Task rows flow without inter-row dividers per MenuBar IA: dropdown is
+        // compact, rows are visually distinct via the "→" prefix + padding.
         VStack(spacing: 0) {
             if missingMic {
                 SetupTaskRow(label: "Grant microphone access") {
                     permissionManager.requestMicrophonePermission()
                 }
-                Divider().overlay(Palette.divider)
             }
             if missingA11y {
                 SetupTaskRow(label: "Grant accessibility access") {
                     permissionManager.requestAccessibilityPermission(prompt: true)
                 }
-                Divider().overlay(Palette.divider)
             }
             if missingModel {
                 // openFirstLaunchWindow chosen over openSettings: the FirstLaunchWindow
@@ -183,7 +186,6 @@ struct MenuBarView: View {
                 SetupTaskRow(label: "Download model") {
                     appDelegate.openFirstLaunchWindow()
                 }
-                Divider().overlay(Palette.divider)
             }
         }
         .padding(.vertical, Spacing.xs)
@@ -192,31 +194,30 @@ struct MenuBarView: View {
     // MARK: Idle content
 
     private var idleContent: some View {
+        // IA per DESIGN.md Decisions Log: "Start · Settings · About · divider · Quit".
+        // "Run setup checklist" is required by DESIGN.md § First launch:
+        // "Reopenable via menubar → Run setup checklist". Placed before the
+        // Quit-divider so the one canonical separator stays on the destructive action.
         VStack(spacing: 0) {
             MenuActionRow(label: "Start recording", trailingHint: currentHotkeyString) {
                 appDelegate.startRecordingFromMenu()
             }
 
-            Divider().overlay(Palette.divider)
-
             MenuActionRow(label: "Open Settings\u{2026}", keyboardShortcut: (",", .command)) {
                 appDelegate.openSettings()
             }
-
-            Divider().overlay(Palette.divider)
 
             MenuActionRow(label: "About") {
                 appDelegate.openAbout()
             }
 
-            Divider().overlay(Palette.divider)
-
-            // Kept from Step 4 brief: re-openable setup checklist
             MenuActionRow(label: "Run setup checklist") {
                 appDelegate.openFirstLaunchWindow()
             }
 
-            Divider().overlay(Palette.divider)
+            // Canonical IA separator — DESIGN.md "About · divider · Quit".
+            Palette.divider.frame(height: 1)
+                .padding(.vertical, Spacing.xs)
 
             MenuActionRow(label: "Quit VoiceType", keyboardShortcut: ("q", .command)) {
                 NSApplication.shared.terminate(nil)
