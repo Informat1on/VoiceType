@@ -512,6 +512,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    // MARK: - Silence / hallucination filters
+
+    /// RMS + peak threshold check. Returns true if audio is effectively silent
+    /// and we should skip Whisper (which will hallucinate on quiet input).
+    /// Thresholds empirically calibrated for typical laptop mic at ~30cm.
+    nonisolated static func samplesAreSilent(_ samples: [Float]) -> Bool {
+        guard !samples.isEmpty else { return true }
+        // Peak: any single sample above 0.03 counts as potential speech.
+        var peak: Float = 0
+        var sumSq: Double = 0
+        for s in samples {
+            let a = abs(s)
+            if a > peak { peak = a }
+            sumSq += Double(a) * Double(a)
+        }
+        let rms = (sumSq / Double(samples.count)).squareRoot()
+        // Quiet breath room noise RMS ≈ 0.002-0.005. Speech RMS starts ~0.01+.
+        // Peak-only gate catches "one loud cough" but we want speech → both.
+        return peak < 0.03 || rms < 0.008
+    }
+
+    /// Known Whisper hallucinations on silence / music / noise. Language-agnostic
+    /// pattern matching — normalize to lowercased + stripped of punctuation.
+    nonisolated static func isHallucination(_ text: String) -> Bool {
+        let normalized = text
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .filter { !"!.,?\"()[]—…".contains($0) }
+        // Very short "transcriptions" on silence are almost always garbage.
+        if normalized.count < 3 { return true }
+        // Curated list — common Whisper outputs on silence/music.
+        let phrases: Set<String> = [
+            "thanks for watching",
+            "thank you for watching",
+            "thanks for watching!",
+            "subscribe",
+            "please subscribe",
+            "like and subscribe",
+            "продолжение следует",
+            "спасибо за просмотр",
+            "подписывайтесь",
+            "ставьте лайк",
+            "♪",
+            "music",
+            "[music]",
+            "музыка",
+            "[музыка]",
+            "you",
+            "yeah",
+            "uh",
+            "um",
+            "hmm",
+            "."
+        ]
+        if phrases.contains(normalized) { return true }
+        // Contains any banned phrase as substring (handles surrounding whitespace/caps).
+        for phrase in phrases where normalized.contains(phrase) && normalized.count < phrase.count + 10 {
+            return true
+        }
+        return false
+    }
+
+    /// Flash .emptyResult capsule for 800ms then hide. Shared by both silence gates.
+    private func flashEmptyResult() {
+        voiceTypeWindow?.show(state: .emptyResult)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(800))
+            self?.voiceTypeWindow?.hide()
+        }
+    }
+
     /// Force-reset state to idle. Called when hotkey service detects a press but AppDelegate is out of sync.
     func forceResetToIdle() {
         print("[AppDelegate] forceResetToIdle called, was: \(appState.rawValue)")
@@ -528,6 +599,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func transcribeAndInject(samples: [Float]) async {
         print("[AppDelegate] transcribeAndInject: \(samples.count) samples")
+
+        // Silence gate #1 — pre-transcribe. Whisper hallucinates on near-silent
+        // audio ("Thanks for watching!", "Продолжение следует", etc). Check RMS
+        // and peak: if neither crosses speech threshold, skip Whisper entirely.
+        if Self.samplesAreSilent(samples) {
+            print("[AppDelegate] Pre-transcribe silence gate triggered — skipping Whisper")
+            AppLog.transcription.notice("Silence gate: skipped transcription")
+            flashEmptyResult()
+            appState = .idle
+            return
+        }
 
         var transcriptionText: String?
 
@@ -555,20 +637,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return
         }
 
-        guard let text = transcriptionText,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            print("[AppDelegate] Empty transcription result")
-            AppLog.transcription.notice("Transcription produced no text")
-            // Flash "Nothing heard" emptyResult for 800ms, then hide.
-            // 800ms > 400ms prototype because users need time to read the text.
-            voiceTypeWindow?.show(state: .emptyResult)
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(800))
-                self?.voiceTypeWindow?.hide()
-            }
+        // Silence gate #2 — post-transcribe hallucination filter.
+        let trimmed = transcriptionText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty || Self.isHallucination(trimmed) {
+            print("[AppDelegate] Post-transcribe gate: \(trimmed.isEmpty ? "empty" : "hallucination"): \(trimmed.prefix(80))")
+            AppLog.transcription.notice("Transcription produced no usable text")
+            flashEmptyResult()
             appState = .idle
             return
         }
+        let text = trimmed
 
         appState = .injecting
 
