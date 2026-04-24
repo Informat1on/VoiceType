@@ -2,6 +2,15 @@
 
 Lightweight macOS menu bar voice typing app powered by `whisper.cpp`, optimized for Apple Silicon.
 
+## Health Stack
+
+- typecheck: swift build -c debug
+- test: swift test
+- shell: shellcheck *.sh
+
+(Lint and dead-code are intentionally not configured yet — see
+`docs/decisions/2026-04-26-views-inventory.md` Tier A for SwiftLint plan.)
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. The
