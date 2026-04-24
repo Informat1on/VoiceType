@@ -15,13 +15,14 @@ Design-debt и follow-up items, вынесенные из `/plan-design-review` 
 - **Context:** предлагаемые значения для старта: 5 bars, 3px width, 2px gap, height 4-20px, RMS mapping с peak-decay 200ms. Проверить визуально в v1/v3 HTML превью.
 - **Depends on:** решение перед Tier A W3.
 
-## T2 — SwiftLint setup перед Tier A
+## T2 — SwiftLint setup перед Tier A ✅ DONE (2026-04-24, commit `e73cac4`)
 
 - **What:** `brew install swiftlint && swiftlint init`, добавить `.swiftlint.yml` с правилами: запрет inline Color literals (`Color(red:...)`), запрет inline spacing magic numbers (регексп `\.padding\(\d+\)`), force-brackets для token-access.
 - **Why:** Tier A мигрирует ~30 цветов + ~50 spacing values + ~10 radii на токены. Без линтера легко пропустить какое-то место; после v1.1 drift начнётся моментально.
 - **Pros:** Health score enforcement после Tier A; новый код не может обойти токены; CI-gate (см. CLAUDE.md `## Health Stack`).
 - **Cons:** ~30-60 мин настройки + возможные 50-100 исправлений в существующем коде (но это делаем в Tier A в любом случае).
 - **Depends on:** установка до начала Tier A шагов 1-8.
+- **Outcome:** SwiftLint 0.63.2 installed. `.swiftlint.yml` with 5 custom rules (`inline_color_rgb`, `inline_color_hex`, `inline_nscolor_rgb`, `ultra_thin_material_on_capsule`, `nsalert_runmodal`) — all WARNING until Tokens.swift lands. Spacing-magic-number rule deferred to Tier A (too noisy pre-Tokens.swift). Baseline: 54 warnings, 0 errors. Violations map 1:1 to tracked refactor items.
 
 ## T3 — Light mode visual QA после Tier A
 
