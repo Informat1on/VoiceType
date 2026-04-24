@@ -13,10 +13,11 @@ final class TokensTests: XCTestCase {
         XCTAssertEqual(Spacing.xxxxl, 64, "Spacing.xxxxl (4xl) must be 64px")
     }
 
-    // MARK: 2 — Derived spacing: windowPadding == xl (value identity)
+    // MARK: 2 — Derived spacing: windowPadding == xl (value identity) + absolute value
 
     func testDerivedSpacingConstants() {
         XCTAssertEqual(Spacing.windowPadding, Spacing.xl, "Spacing.windowPadding must equal Spacing.xl (both 24px)")
+        XCTAssertEqual(Spacing.windowPadding, 24, "window padding absolute value must be 24px per DESIGN.md line 153")
         XCTAssertEqual(Spacing.prefsRowHorizontal, Spacing.lg, "Spacing.prefsRowHorizontal must equal Spacing.lg (both 16px)")
         XCTAssertEqual(Spacing.prefsRowVertical, Spacing.md, "Spacing.prefsRowVertical must equal Spacing.md (both 12px)")
         XCTAssertEqual(Spacing.sectionGap, Spacing.xxl, "Spacing.sectionGap must equal Spacing.xxl (both 32px)")
@@ -82,6 +83,17 @@ final class TokensTests: XCTestCase {
         XCTAssertEqual(srgb.greenComponent, CGFloat(0x10) / 255, accuracy: 0.001, "Green channel of #0B1015 must be 0x10/255")
         XCTAssertEqual(srgb.blueComponent, CGFloat(0x15) / 255, accuracy: 0.001, "Blue channel of #0B1015 must be 0x15/255")
         XCTAssertEqual(srgb.alphaComponent, 1.0, accuracy: 0.001, "Alpha of a 6-digit hex must be 1.0")
+    }
+
+    func testHexColorParserEightCharAlpha() {
+        // Guards against byte-mask swaps in the 8-char RRGGBBAA branch.
+        let withAlpha = NSColor(hex: "#0B101580")
+        var r = CGFloat(0), g = CGFloat(0), b = CGFloat(0), a = CGFloat(0)
+        withAlpha.getRed(&r, green: &g, blue: &b, alpha: &a)
+        XCTAssertEqual(r, 0x0B / 255.0, accuracy: 0.001)
+        XCTAssertEqual(g, 0x10 / 255.0, accuracy: 0.001)
+        XCTAssertEqual(b, 0x15 / 255.0, accuracy: 0.001)
+        XCTAssertEqual(a, 0x80 / 255.0, accuracy: 0.001)
     }
 
     // MARK: Additional sanity — capsule horizontal padding and prefs row min-height

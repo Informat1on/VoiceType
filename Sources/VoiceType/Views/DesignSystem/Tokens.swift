@@ -14,14 +14,12 @@ import SwiftUI
 // MARK: - NSColor hex convenience
 
 extension NSColor {
-    /// Accepts "#RRGGBB" or "#RRGGBBAA". Crashes on invalid input — caller guarantees correctness.
+    /// Accepts exactly "#RRGGBB" or "#RRGGBBAA". No 0x prefix, no shorthand, no whitespace.
+    /// Crashes (fatalError) on invalid input in both debug and release — caller guarantees correctness.
     convenience init(hex: String) {
         let trimmed = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
-        var value: UInt64 = 0
-        guard Scanner(string: trimmed).scanHexInt64(&value) else {
-            assertionFailure("Invalid hex color: \(hex)")
-            self.init(white: 0, alpha: 1)
-            return
+        guard let value = UInt64(trimmed, radix: 16) else {
+            fatalError("Invalid hex color: \(hex)")
         }
         let red, green, blue, alpha: CGFloat
         if trimmed.count == 8 {
@@ -35,9 +33,7 @@ extension NSColor {
             blue = CGFloat(value & 0x0000FF) / 255
             alpha = 1
         } else {
-            assertionFailure("Unsupported hex length: \(hex)")
-            self.init(white: 0, alpha: 1)
-            return
+            fatalError("Unsupported hex length (expected 6 or 8 hex digits): \(hex)")
         }
         self.init(srgbRed: red, green: green, blue: blue, alpha: alpha)
     }
@@ -139,7 +135,9 @@ enum Motion {
     /// 500ms — rare, cross-surface transitions only. DESIGN.md line 350.
     static let long: Double = 0.5
 
-    /// Audio RMS threshold to trigger recording-dot pulse.
+    /// Audio RMS amplitude threshold (range 0.0-1.0, UNITLESS, not a time duration)
+    /// to trigger the recording-dot pulse. Lives under Motion alongside
+    /// duration constants because DESIGN.md line 356 pins the reference path.
     /// DESIGN.md line 356: "audio crosses Tokens.Motion.waveformActivationThreshold = 0.15".
     static let waveformActivationThreshold: Double = 0.15
 }
@@ -151,30 +149,47 @@ enum Motion {
 // and register via CTFontManagerRegisterFonts (or Bundle.main.url + NSFont registration)
 // so Font.custom("Geist", ...) resolves to the actual typeface instead of falling back
 // to the system font. Until then, calls below compile and behave gracefully at runtime.
+//
+// LINE HEIGHT USAGE: SwiftUI has no direct lineHeight modifier. Apply line heights via
+// .lineSpacing(XLineHeight - pointSize) on Text, or wrap in a fixed-height frame:
+//   Text("…").font(Typography.display).frame(height: Typography.displayLineHeight)
+// The *LineHeight constants below capture the second number in DESIGN.md's "size/lineHeight"
+// notation so call-site authors do not need to re-derive them from the spec.
 
 enum Typography {
     /// Geist 23pt Medium. Window titles / display text. DESIGN.md line 56.
     static let display = Font.custom("Geist", size: 23).weight(.medium)
+    /// Line height for display text. DESIGN.md line 56: "23/28".
+    static let displayLineHeight: CGFloat = 28
 
     /// Geist 15pt Medium. Settings section headers. DESIGN.md line 57.
     static let sectionTitle = Font.custom("Geist", size: 15).weight(.medium)
+    /// Line height for section titles. DESIGN.md line 57: "15/20".
+    static let sectionTitleLineHeight: CGFloat = 20
 
     /// Geist 13pt Regular. Body copy, row labels. DESIGN.md line 58.
     static let body = Font.custom("Geist", size: 13).weight(.regular)
+    /// Line height for body copy. DESIGN.md line 58: "13/18".
+    static let bodyLineHeight: CGFloat = 18
 
     /// Geist 12pt Medium. Button labels. DESIGN.md line 59.
     static let buttonLabel = Font.custom("Geist", size: 12).weight(.medium)
+    /// Line height for button labels. DESIGN.md line 59: "12/16".
+    static let buttonLabelLineHeight: CGFloat = 16
 
     /// Geist 11pt Medium. Meta labels — callers apply .textCase(.uppercase)
     /// and .tracking(metaLabelTracking). DESIGN.md line 60.
     static let metaLabel = Font.custom("Geist", size: 11).weight(.medium)
-
     /// Tracking value for meta labels: 0.04em × 11pt ≈ 0.44. DESIGN.md line 60.
     static let metaLabelTracking: CGFloat = 0.44
+    /// Line height for meta labels. DESIGN.md line 60: "11/14".
+    static let metaLabelLineHeight: CGFloat = 14
 
     /// Geist Mono 12pt Medium. Timers, hotkeys, model IDs.
     /// Call .monospacedDigit() at use sites for tabular figures. DESIGN.md line 61.
     static let mono = Font.custom("Geist Mono", size: 12).weight(.medium)
+    /// Line height for mono text. DESIGN.md line 61: "12/16".
+    static let monoLineHeight: CGFloat = 16
 }
 
 // MARK: - Palette
