@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var pendingModelLoadRequest: ModelLoadRequest?
     private var settingsWindow: NSWindow?
     private var aboutWindow: NSWindow?
+    private var firstLaunchWindow: FirstLaunchWindow?
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - NSApplicationDelegate
@@ -67,6 +68,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupHotkeyCallbacks()
         setupBindings()
         preloadModelIfNeeded()
+
+        // Show first-launch checklist on first run. Placed after preloadModelIfNeeded()
+        // so ModelManager state is queryable when the window opens.
+        // DESIGN.md § Implementation Plan Step 4 / Decisions Log D8.
+        if !OnboardingState.hasCompleted {
+            openFirstLaunchWindow()
+        }
 
         print("[AppDelegate] === Ready. Hotkey: \(modifiersToString(AppSettings.shared.hotkeyModifiers))\(keyCodeToString(AppSettings.shared.hotkeyKey)) ===")
         AppLog.app.notice("Application ready")
@@ -128,11 +136,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         aboutWindow?.orderFrontRegardless()
     }
 
+    func openFirstLaunchWindow() {
+        print("[AppDelegate] openFirstLaunchWindow() called")
+        if firstLaunchWindow == nil {
+            firstLaunchWindow = FirstLaunchWindow(permissionManager: permissionManager)
+            firstLaunchWindow?.delegate = self
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        firstLaunchWindow?.deminiaturize(nil)
+        firstLaunchWindow?.makeKeyAndOrderFront(nil)
+        firstLaunchWindow?.orderFrontRegardless()
+    }
+
     // MARK: - Setup
 
     private func setupServices() {
         permissionManager.refreshPermissions()
-        permissionManager.requestInitialPermissionsIfNeeded()
+        // requestInitialPermissionsIfNeeded() removed — FirstLaunchWindow is the
+        // sole onboarding surface. See DESIGN.md Decisions Log D8 / Step 4.
     }
 
     private func setupHotkeyCallbacks() {

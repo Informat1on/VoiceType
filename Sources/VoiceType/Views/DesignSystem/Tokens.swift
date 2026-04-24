@@ -196,6 +196,12 @@ enum Typography {
     static let caption = Font.custom("Geist", size: 11).weight(.regular)
     /// Line height for caption text. Matches metaLabel at 14pt for vertical rhythm.
     static let captionLineHeight: CGFloat = 14
+
+    /// Geist Mono 10pt Semibold. Numbered badges in FirstLaunchWindow.
+    /// DESIGN.md § First launch: "numbered badge (Geist Mono 10/14 600 cyan-soft bg)".
+    static let badge = Font.custom("Geist Mono", size: 10).weight(.semibold)
+    /// Line height for badge text. DESIGN.md: "10/14".
+    static let badgeLineHeight: CGFloat = 14
 }
 
 // MARK: - Palette

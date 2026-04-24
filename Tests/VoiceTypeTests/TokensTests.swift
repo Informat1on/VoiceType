@@ -102,6 +102,17 @@ final class TokensTests: XCTestCase {
         XCTAssertEqual(Spacing.capsuleHorizontal, 14, "Spacing.capsuleHorizontal must be 14px (off-scale lock)")
         XCTAssertEqual(Spacing.prefsRowMinHeight, 40, "Spacing.prefsRowMinHeight must be 40px")
     }
+
+    // MARK: 10 — Typography.badge (Step 4 FirstLaunchWindow numbered badges)
+
+    func testTypographyBadgeExists() {
+        // Regression: verify badge font is Geist Mono 10pt Semibold per DESIGN.md
+        // § First launch: "numbered badge (Geist Mono 10/14 600 cyan-soft bg)".
+        // Font.custom returns a valid value even if the typeface isn't registered
+        // at test time — guard the token exists and line-height constant is correct.
+        _ = Typography.badge // must compile and not crash
+        XCTAssertEqual(Typography.badgeLineHeight, 14, "Typography.badgeLineHeight must be 14pt per DESIGN.md")
+    }
 }
 
 // swiftlint:enable inline_color_hex

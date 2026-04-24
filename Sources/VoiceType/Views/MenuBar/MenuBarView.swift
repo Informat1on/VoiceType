@@ -11,6 +11,14 @@ struct MenuBarView: View {
 
     var body: some View {
         Button {
+            appDelegate?.openFirstLaunchWindow()
+        } label: {
+            Label("Run setup checklist", systemImage: "checklist")
+        }
+
+        Divider()
+
+        Button {
             openSettings()
         } label: {
             Label("Settings", systemImage: "gearshape")
