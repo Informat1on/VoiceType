@@ -1,4 +1,10 @@
 import SwiftUI
+// Tier A Step 2 partial migration (2026-04-24):
+// - Safe Spacing token substitutions applied.
+// - Inline Color RGB gradient tints removed (out-of-DESIGN.md).
+// - cornerRadius 22/26, .thinMaterial, .regularMaterial, Color.white.opacity,
+//   font literals remain as design-debt — Step 3 rewrites this file entirely
+//   (native rows, no boxed cards, no hero header).
 
 struct WindowSurface<Content: View>: View {
     let title: String
@@ -30,7 +36,7 @@ struct WindowSurface<Content: View>: View {
                     WindowHeroHeader(title: title, subtitle: subtitle, symbol: symbol, chips: chips)
                     content
                 }
-                .padding(24)
+                .padding(Spacing.windowPadding)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
             .scrollIndicators(.hidden)
@@ -41,27 +47,11 @@ struct WindowSurface<Content: View>: View {
 
 private struct WindowBackground: View {
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color(nsColor: .windowBackgroundColor), Color(nsColor: .underPageBackgroundColor)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            RadialGradient(
-                colors: [Color(red: 0.38, green: 0.70, blue: 0.95).opacity(0.14), .clear],
-                center: .topLeading,
-                startRadius: 10,
-                endRadius: 360
-            )
-
-            RadialGradient(
-                colors: [Color(red: 0.53, green: 0.84, blue: 0.78).opacity(0.12), .clear],
-                center: .bottomTrailing,
-                startRadius: 10,
-                endRadius: 340
-            )
-        }
+        LinearGradient(
+            colors: [Color(nsColor: .windowBackgroundColor), Color(nsColor: .underPageBackgroundColor)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
         .ignoresSafeArea()
     }
 }
@@ -73,7 +63,7 @@ struct WindowHeroHeader: View {
     let chips: [String]
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
+        HStack(alignment: .top, spacing: Spacing.lg) {
             VoiceTypeArtwork(size: 86)
 
             VStack(alignment: .leading, spacing: 10) {
@@ -86,7 +76,7 @@ struct WindowHeroHeader: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if !chips.isEmpty {
-                    FlowLayout(spacing: 8) {
+                    FlowLayout(spacing: Spacing.sm) {
                         ForEach(chips, id: \.self) { chip in
                             InfoChip(text: chip)
                         }
@@ -121,8 +111,8 @@ struct SettingsSectionCard<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Spacing.lg) {
+            VStack(alignment: .leading, spacing: Spacing.xs) {
                 Text(title)
                     .font(.headline)
 
@@ -156,11 +146,11 @@ struct SettingsValueRow<Value: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 16) {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.lg) {
             Text(title)
                 .foregroundStyle(.secondary)
 
-            Spacer(minLength: 16)
+            Spacer(minLength: Spacing.lg)
 
             value
                 .multilineTextAlignment(.trailing)
@@ -230,7 +220,7 @@ private struct FlowLayout<Content: View>: View {
     let spacing: CGFloat
     @ViewBuilder let content: Content
 
-    init(spacing: CGFloat = 8, @ViewBuilder content: () -> Content) {
+    init(spacing: CGFloat = Spacing.sm, @ViewBuilder content: () -> Content) {
         self.spacing = spacing
         self.content = content()
     }
