@@ -607,6 +607,7 @@ private struct ModelRow: View {
     let model: TranscriptionModel
     let isSelected: Bool
     let onSelect: () -> Void
+    @ObservedObject private var modelManager = ModelManager.shared
 
     var body: some View {
         Button(action: onSelect) {
@@ -628,6 +629,8 @@ private struct ModelRow: View {
                 }
 
                 Spacer(minLength: Spacing.md)
+
+                downloadStateBadge
             }
             .padding(.horizontal, Spacing.prefsRowHorizontal)
             .padding(.vertical, Spacing.prefsRowVertical)
@@ -636,7 +639,20 @@ private struct ModelRow: View {
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .accessibilityLabel(model.displayName)
-        .accessibilityValue("\(model.estimatedSize), Speed \(model.speedRating), Quality \(model.qualityRating)")
+        .accessibilityValue("\(downloadStateAccessibilityValue), \(model.estimatedSize), Speed \(model.speedRating), Quality \(model.qualityRating)")
+    }
+
+    @ViewBuilder
+    private var downloadStateBadge: some View {
+        if modelManager.isModelDownloaded(model: model) {
+            StatusBadge("Downloaded", tone: .positive)
+        } else {
+            StatusBadge("Not downloaded")
+        }
+    }
+
+    private var downloadStateAccessibilityValue: String {
+        modelManager.isModelDownloaded(model: model) ? "Downloaded" : "Not downloaded"
     }
 }
 
