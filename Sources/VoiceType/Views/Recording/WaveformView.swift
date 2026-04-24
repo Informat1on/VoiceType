@@ -154,14 +154,15 @@ struct CapsuleIndicatorView: View {
     // MARK: - Recording: three zones
 
     private var recordingZones: some View {
-        HStack(spacing: 0) {
-            // Zone 1 — leading: tally + REC label + RU/EN chip
+        // Prototype: zone-left flex-shrink:0, zone-center flex:1 (fills remaining
+        // space, centered content), zone-right flex-shrink:0. Gap 12 between zones.
+        HStack(spacing: 12) {
+            // Zone 1 — leading: tally + lang-chip (NO "REC" text per prototype).
             leadingZone
 
-            // Zone 2 — center: audio waveform (silent at rest)
-            Spacer(minLength: 8)
+            // Zone 2 — center: audio waveform, flex-fill centered
             waveformZone
-            Spacer(minLength: 8)
+                .frame(maxWidth: .infinity)
 
             // Zone 3 — trailing: MM:SS timer
             timerZone
@@ -171,39 +172,19 @@ struct CapsuleIndicatorView: View {
     // MARK: Zone 1: leading
 
     private var leadingZone: some View {
-        HStack(spacing: 5) {
-            // Tally dot — 8pt, recording red, audio-threshold pulse
+        // Prototype spec: 8px gap, 8px tally + flat lang-chip text (NO border, NO REC).
+        HStack(spacing: 8) {
             Circle()
                 .fill(Palette.Capsule.recording)
                 .frame(width: MenuBar.tallyDotSize, height: MenuBar.tallyDotSize)
                 .scaleEffect(tallyScale)
 
-            // REC label — Geist Mono 10/14 Semibold uppercase tracked
-            // Colorblind secondary signal. DESIGN.md § Colorblind.
-            Text("REC")
+            // Flat lang-chip — Geist Mono 10pt Medium, capsule.text color, no border.
+            Text(chipLabel)
                 .font(Typography.badge)
-                .foregroundStyle(Palette.Capsule.recording)
-                .textCase(.uppercase)
-                .tracking(0.88)  // 0.08em × 10pt = 0.8 ≈ 0.88 visual match
-
-            // RU/EN chip — display only in v1.1 (not clickable)
-            ruEnChip
+                .foregroundStyle(Palette.Capsule.text)
+                .tracking(0.6)   // 0.06em × 10pt = 0.6
         }
-    }
-
-    private var ruEnChip: some View {
-        let chipText = chipLabel
-
-        return Text(chipText)
-            .font(Typography.badge)
-            .foregroundStyle(Palette.Capsule.timer)
-            .tracking(0.6)   // 0.06em × 10pt = 0.6
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .overlay(
-                Capsule()
-                    .strokeBorder(Palette.Capsule.borderIdle, lineWidth: 1)
-            )
     }
 
     private var chipLabel: String {
@@ -311,37 +292,43 @@ struct CapsuleIndicatorView: View {
 
 // MARK: - CapsuleWaveformView
 
-/// Audio-driven waveform bars. Silent at rest (Departure 1).
-/// Bars animate only when audioLevel > Motion.waveformActivationThreshold.
+/// Audio-driven waveform bars. Matches prototype v1-cool-inksteel CSS spec:
+/// - 5 bars, 3×20pt each, 2pt gap (was 12 bars — cluttered)
+/// - Silent: all bars 4pt tall, muted timer color
+/// - Active: bars follow level via spec heights pattern [8/14/18/12/6]
+///   scaled by recent audio-level peak, cream capsule.text color
 struct CapsuleWaveformView: View {
     let history: [Float]
     let level: Float
 
-    private let barCount = 12
-    private let barWidth: CGFloat = 2.5
-    private let spacing: CGFloat = 1.5
+    private let barCount = 5
+    private let barWidth: CGFloat = 3
+    private let spacing: CGFloat = 2
+    private let maxHeight: CGFloat = 20
+
+    /// Prototype active bar heights: tall-peaked pattern mimicking waveform.
+    private let activeHeights: [CGFloat] = [8, 14, 18, 12, 6]
 
     var body: some View {
+        let recentPeak = max(level, history.suffix(4).max() ?? 0)
+        let isActive = Double(recentPeak) > Motion.waveformActivationThreshold
+
         HStack(spacing: spacing) {
             ForEach(0..<barCount, id: \.self) { idx in
-                let sampleIndex = max(0, history.count - barCount + idx)
-                let rawValue = sampleIndex < history.count ? history[sampleIndex] : 0
-                // Suppress bars below threshold — honest waveform (Departure 1)
-                let isActive = Double(rawValue) > Motion.waveformActivationThreshold
-                let barHeight: CGFloat = isActive ? max(4, CGFloat(rawValue) * (CapsuleSize.height * 0.55)) : 3
+                // Active: spec heights × normalized peak (min 50% so bars
+                // don't collapse at low level). Silent: flat 4pt.
+                let scale = CGFloat(recentPeak)
+                let activeH = activeHeights[idx] * max(0.5, min(1.0, scale * 2.5))
+                let barHeight: CGFloat = isActive ? max(4, activeH) : 4
 
-                // Active bars: cream Palette.Capsule.text per HTML prototype
-                // v1-cool-inksteel (var(--capsule-text)). Silent bars: muted
-                // timer at 40% opacity. Red bars would make recording feel
-                // alarming — off-white matches the designed visual language.
-                // Found by code review P2-A.
                 RoundedRectangle(cornerRadius: 1)
                     .fill(isActive
-                        ? Palette.Capsule.text.opacity(0.85)
+                        ? Palette.Capsule.text
                         : Palette.Capsule.timer.opacity(0.40))
                     .frame(width: barWidth, height: barHeight)
                     .animation(.easeInOut(duration: 0.08), value: barHeight)
             }
         }
+        .frame(height: maxHeight)
     }
 }
