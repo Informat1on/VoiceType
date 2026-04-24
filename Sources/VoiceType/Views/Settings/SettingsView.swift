@@ -225,6 +225,22 @@ struct SettingsView: View {
                 }
             }
 
+            // TODO Tier A: move Custom Vocabulary to Advanced tab (DESIGN.md D3).
+            SettingsSectionCard(title: "Custom Vocabulary", description: "Terms the model should recognize — applied as an initial prompt to whisper.cpp.") {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextEditor(text: $settings.customVocabulary)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minHeight: 80, maxHeight: 120)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
+                        )
+                    Text("Comma- or newline-separated: tool names, APIs, jargon, names. Applied on the next recording.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             SettingsSectionCard(title: "Permissions", description: "VoiceType needs microphone and accessibility access to capture speech and insert text back into your focused app.") {
                 SettingsValueRow("Microphone") {
                     permissionStatus(permissionManager.hasMicrophonePermission)

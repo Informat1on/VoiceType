@@ -155,6 +155,10 @@ final class AppSettings: ObservableObject {
         didSet { save() }
     }
 
+    @Published var customVocabulary: String {
+        didSet { save() }
+    }
+
     @Published var indicatorStyle: IndicatorStyle {
         didSet { save() }
     }
@@ -191,6 +195,8 @@ final class AppSettings: ObservableObject {
         }
         defaults.removeObject(forKey: "preferredLanguage")
 
+        self.customVocabulary = defaults.string(forKey: "customVocabulary") ?? ""
+
         self.indicatorStyle = IndicatorStyle(rawValue: defaults.string(forKey: "indicatorStyle") ?? "") ?? .dot
         self.textInjectionMode = TextInjectionMode(rawValue: defaults.string(forKey: "textInjectionMode") ?? "") ?? .paste
     }
@@ -202,6 +208,7 @@ final class AppSettings: ObservableObject {
         defaults.set(hotkeyKey, forKey: "hotkeyKey")
         defaults.set(autoEnterAfterInsert, forKey: "autoEnterAfterInsert")
         defaults.set(language.rawValue, forKey: "language")
+        defaults.set(customVocabulary, forKey: "customVocabulary")
         defaults.set(indicatorStyle.rawValue, forKey: "indicatorStyle")
         defaults.set(textInjectionMode.rawValue, forKey: "textInjectionMode")
     }
