@@ -35,7 +35,11 @@ enum CapsuleState: Equatable {
 /// 6 capsule states without window teardown overhead.
 /// DESIGN.md Decisions Log D2: single NSHostingView + @Published CapsuleState.
 final class CapsuleStateModel: ObservableObject {
-    @Published var state: CapsuleState = .recording
+    /// Initial value MUST NOT be `.recording` — otherwise `CapsuleIndicatorView.onAppear`
+    /// starts the timer anchor at app launch, and the first user recording shows
+    /// stale elapsed time (e.g. "0:14"). `.transcribing` is a safe transient:
+    /// `onChange` fires when AppDelegate calls `show(.recording)`, resetting the anchor.
+    @Published var state: CapsuleState = .transcribing
 
     // MARK: - A7: errorInline auto-dismiss
 

@@ -533,32 +533,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         } catch {
             print("[AppDelegate] Transcription error: \(error)")
             AppLog.transcription.error("Transcription failed")
-            voiceTypeWindow?.hide()
+            voiceTypeWindow?.show(state: .errorInline(message: "Transcription failed"))
             appState = .idle
-            print("[AppDelegate] State reset to idle (error)")
             showError("Transcription failed: \(error.localizedDescription)")
             return
         }
-
-        voiceTypeWindow?.hide()
 
         guard let text = transcriptionText,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             print("[AppDelegate] Empty transcription result")
             AppLog.transcription.notice("Transcription produced no text")
+            // Flash "Nothing heard" emptyResult for 400ms, then hide.
+            voiceTypeWindow?.show(state: .emptyResult)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(800))
+                self?.voiceTypeWindow?.hide()
+            }
             appState = .idle
-            print("[AppDelegate] State reset to idle (empty result)")
             return
         }
 
         appState = .injecting
-        print("[AppDelegate] State: transcribing → injecting")
+
+        // Capture target app name BEFORE injection — injection may shift focus.
+        let targetAppName = NSWorkspace.shared.frontmostApplication?.localizedName ?? "app"
+        let charCount = text.count
 
         // Keep the app busy until the text is fully inserted, so the next hotkey
         // press cannot race with the paste/typing sequence.
-        injectText(text, mode: AppSettings.shared.textInjectionMode)
+        let injectionSucceeded = injectText(text, mode: AppSettings.shared.textInjectionMode)
         appState = .idle
-        print("[AppDelegate] State reset to idle (success)")
+
+        if injectionSucceeded {
+            // Flash `.inserted` for ~500ms, then hide.
+            voiceTypeWindow?.show(state: .inserted(charCount: charCount, targetAppName: targetAppName))
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(500))
+                self?.voiceTypeWindow?.hide()
+            }
+        } else {
+            voiceTypeWindow?.hide()
+        }
     }
 
     private func ensureModelLoaded() async throws {
@@ -583,7 +598,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         try await transcriptionService.loadModel(at: modelURL, language: language, model: model)
     }
 
-    private func injectText(_ text: String, mode: TextInjectionMode) {
+    /// Returns `true` on successful injection, `false` on failure. Callers use
+    /// the result to decide whether to flash the `.inserted` capsule or route
+    /// through the error path.
+    @discardableResult
+    private func injectText(_ text: String, mode: TextInjectionMode) -> Bool {
         permissionManager.checkAllPermissions()
 
         print("[AppDelegate] Injecting text (mode: \(mode.rawValue), characters: \(text.count))")
@@ -595,6 +614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             )
             print("[AppDelegate] Text injected successfully")
             AppLog.insertion.notice("Text insertion completed")
+            return true
         } catch {
             print("[AppDelegate] Text injection failed: \(error)")
             AppLog.insertion.error("Text insertion failed")
@@ -604,6 +624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
 
             showError("Failed to insert text: \(error.localizedDescription)")
+            return false
         }
     }
 

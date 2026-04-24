@@ -75,12 +75,10 @@ struct CapsuleIndicatorView: View {
         .frame(width: VoiceTypeCapsuleMetrics.totalWidth, height: VoiceTypeCapsuleMetrics.totalHeight)
         .onReceive(levelTimer) { _ in
             guard state == .recording else { return }
-            let level = audioService.audioLevel
-            waveHistory.append(level)
+            waveHistory.append(audioService.audioLevel)
             if waveHistory.count > 16 { waveHistory.removeFirst() }
-            // Tally pulse: bumps to 1.15 when speech crosses threshold, else 1.0.
-            let threshold = Motion.waveformActivationThreshold
-            tallyScale = Double(level) > threshold ? 1.15 : 1.0
+            // Tally stays static — user prefers reactive waveform, not a
+            // pulsing dot. Leave tallyScale at 1.0.
         }
         .onReceive(tickTimer) { _ in
             guard state == .recording else { return }
@@ -390,29 +388,30 @@ struct CapsuleWaveformView: View {
 
     var body: some View {
         // Each bar maps to its OWN sample from the tail of history → running
-        // waveform instead of all-bars-scale-together. Gives visible
-        // left-to-right motion while the user speaks.
+        // waveform instead of all-bars-scale-together. Bars always show live
+        // amplitude (no binary active/silent gate) — silent breath is just
+        // very short bars at muted color.
         let tail = history.suffix(barCount)
         let samples: [Float] = Array(repeating: 0, count: max(0, barCount - tail.count)) + Array(tail)
         let recentPeak = samples.max() ?? 0
-        let isActive = Double(recentPeak) > Motion.waveformActivationThreshold
+        let isLoud = Double(recentPeak) > Motion.waveformActivationThreshold
 
         HStack(spacing: spacing) {
             ForEach(0..<barCount, id: \.self) { idx in
                 let sample = CGFloat(samples[idx])
-                // Amplify audioLevel (typical speech 0.05-0.30) into 0..1 range.
-                let normalized = min(1.0, sample * 3.5)
-                // Blend prototype spec heights with live audio: 40% spec arc
-                // (keeps the waveform "shape" even at max), 60% per-bar live.
-                let blended = activeHeights[idx] * (0.4 + 0.6 * max(0.15, normalized))
-                let barHeight: CGFloat = isActive ? max(4, blended) : 4
+                // Aggressive 8× amplification — typical speech audioLevel is
+                // 0.03-0.20, so ×8 maps to 0.24-1.6 clamped into visible range.
+                let amplified = min(1.0, sample * 8.0)
+                // Always reactive height: 2pt floor (silent) to maxHeight at 1.0.
+                // No gate — amplitude drives every frame.
+                let barHeight: CGFloat = max(2, amplified * maxHeight)
 
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(isActive
+                    .fill(isLoud
                         ? Palette.Capsule.text
-                        : Palette.Capsule.timer.opacity(0.40))
+                        : Palette.Capsule.timer.opacity(0.55))
                     .frame(width: barWidth, height: barHeight)
-                    .animation(.easeInOut(duration: 0.08), value: barHeight)
+                    .animation(.easeInOut(duration: 0.05), value: barHeight)
             }
         }
         .frame(height: maxHeight)

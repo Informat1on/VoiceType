@@ -21,9 +21,11 @@ final class RecordingWindowTests: XCTestCase {
 
     // MARK: - CapsuleStateModel — initial state
 
-    func testCapsuleStateModelDefaultStateIsRecording() {
+    func testCapsuleStateModelDefaultStateIsTranscribing() {
+        // Default MUST NOT be .recording — see RecordingWindow.swift comment.
+        // Starting anchor at app launch would cause "first take shows 0:14" bug.
         let model = CapsuleStateModel()
-        XCTAssertEqual(model.state, .recording, "CapsuleStateModel default state must be .recording")
+        XCTAssertEqual(model.state, .transcribing, "Default must be safe transient, not .recording")
     }
 
     // MARK: - CapsuleStateModel — state mutation publishes
