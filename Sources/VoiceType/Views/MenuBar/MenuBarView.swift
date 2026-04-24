@@ -235,7 +235,7 @@ struct MenuBarView: View {
 
             // Canonical IA separator — DESIGN.md "About · divider · Quit".
             Palette.divider.frame(height: 1)
-                .padding(.vertical, Spacing.dividerGap)
+                .padding(.vertical, MenuBar.dividerGap)
 
             MenuActionRow(label: "Quit VoiceType", keyboardShortcut: ("q", .command)) {
                 NSApplication.shared.terminate(nil)

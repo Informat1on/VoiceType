@@ -12,13 +12,15 @@ import SwiftUI
 // MARK: - ChecklistPrimaryButtonStyle
 
 /// Filled-background button for blocker checklist rows (mic, accessibility, model).
-/// Background: Palette.accent. Text: white (WCAG AA on dark accent, verified).
+/// Background: Palette.accent. Text: black — white on accent is 1.90:1 dark /
+/// 3.04:1 light, both fail WCAG AA. Black gives ~12:1 dark / ~9.8:1 light — AAA.
+/// Found by code review P1-B.
 /// Radius: Radius.control (8pt). Padding: ButtonPadding.medium (7×14pt).
 struct ChecklistPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Typography.buttonLabel)
-            .foregroundStyle(Color.white)
+            .foregroundStyle(Color.black)
             .padding(.horizontal, ButtonPadding.horizontal)
             .padding(.vertical, ButtonPadding.vertical)
             .background(
@@ -34,8 +36,7 @@ struct ChecklistPrimaryButtonStyle: ButtonStyle {
 // MARK: - ChecklistLinkButtonStyle
 
 /// Text-only accent button for optional checklist rows (hotkey customization).
-/// Identical to the original ChecklistButtonStyle — kept as a renamed alias
-/// so call sites can express intent explicitly.
+/// No background, no border — pressed state shifts to accentStrong.
 struct ChecklistLinkButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label

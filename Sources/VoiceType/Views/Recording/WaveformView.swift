@@ -89,9 +89,11 @@ struct CapsuleIndicatorView: View {
                 .padding(.horizontal, Spacing.capsuleHorizontal)
         }
         .frame(width: CapsuleSize.width, height: CapsuleSize.height)
-        // Shadow per DESIGN.md: 0 2px 8px rgba(0,0,0,0.5), 0 0 16px recording-glow
+        // Base shadow always on; colored glow only when state warrants it.
+        // Red glow bleeding into inserted/error/empty states was a visual bug
+        // found by code review P2-C.
         .shadow(color: Color.black.opacity(0.50), radius: 4, x: 0, y: 2)
-        .shadow(color: Palette.Capsule.recordingGlow, radius: 8, x: 0, y: 0)
+        .shadow(color: glowColor, radius: 8, x: 0, y: 0)
         .animation(.easeInOut(duration: Motion.short), value: state)
     }
 
@@ -99,9 +101,22 @@ struct CapsuleIndicatorView: View {
 
     private var borderColor: Color {
         switch state {
-        case .recording:              return Palette.Capsule.borderRec
+        case .recording:                return Palette.Capsule.borderRec
         case .errorInline, .errorToast: return Palette.Capsule.borderErr
-        default:                      return Palette.Capsule.borderIdle
+        case .inserted:                 return Palette.Capsule.borderOk
+        default:                        return Palette.Capsule.borderIdle
+        }
+    }
+
+    /// Ambient glow — state-specific per HTML prototype atlas.
+    /// Recording = red (active mic). Inserted = green (success). Error = red-pink.
+    /// Transcribing/emptyResult = no glow. Found by code review P2-C.
+    private var glowColor: Color {
+        switch state {
+        case .recording:                return Palette.Capsule.recordingGlow
+        case .inserted:                 return Palette.success.opacity(0.30)
+        case .errorInline, .errorToast: return Palette.Capsule.borderErr.opacity(0.60)
+        default:                        return Color.clear
         }
     }
 
@@ -117,22 +132,21 @@ struct CapsuleIndicatorView: View {
             transcribingContent
                 .transition(.opacity.combined(with: .scale(scale: 0.97)))
         case let .inserted(charCount, appName):
-            centeredLabel("Inserted \u{00B7} \(charCount) chars \u{2192} \(appName)")
-                .foregroundStyle(Palette.success)
-                .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            centeredLabel(
+                "Inserted \u{00B7} \(charCount) chars \u{2192} \(appName)",
+                color: Palette.success
+            )
+            .transition(.opacity.combined(with: .scale(scale: 0.97)))
         case let .errorInline(message):
-            centeredLabel(message)
-                .foregroundStyle(Palette.Capsule.borderErr)
+            centeredLabel(message, color: Palette.Capsule.borderErr)
                 .transition(.opacity.combined(with: .scale(scale: 0.97)))
         case let .errorToast(title, _):
             // TODO: Step 7 — render as separate toast NSWindow.
             // For now: inline error treatment.
-            centeredLabel(title)
-                .foregroundStyle(Palette.Capsule.borderErr)
+            centeredLabel(title, color: Palette.Capsule.borderErr)
                 .transition(.opacity.combined(with: .scale(scale: 0.97)))
         case .emptyResult:
-            centeredLabel("Nothing heard")
-                .foregroundStyle(Palette.Capsule.timer)
+            centeredLabel("Nothing heard", color: Palette.Capsule.timer)
                 .transition(.opacity.combined(with: .scale(scale: 0.97)))
         }
     }
@@ -262,12 +276,17 @@ struct CapsuleIndicatorView: View {
 
     // MARK: - Centered single-line label (inserted / error / emptyResult)
 
-    private func centeredLabel(_ text: String) -> some View {
+    /// Accepts an explicit `color` so state-specific colors (success green,
+    /// error red, muted cream for emptyResult) actually propagate. An
+    /// unconditional `.foregroundStyle` on the inner Text would be dead code —
+    /// SwiftUI does NOT inherit foregroundStyle from parent containers when
+    /// the child Text already has one set. Found by code review P1-A.
+    private func centeredLabel(_ text: String, color: Color = Palette.Capsule.text) -> some View {
         HStack {
             Spacer()
             Text(text)
                 .font(Typography.metaLabel)
-                .foregroundStyle(Palette.Capsule.text)
+                .foregroundStyle(color)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             Spacer()
@@ -311,8 +330,15 @@ struct CapsuleWaveformView: View {
                 let isActive = Double(rawValue) > Motion.waveformActivationThreshold
                 let barHeight: CGFloat = isActive ? max(4, CGFloat(rawValue) * (CapsuleSize.height * 0.55)) : 3
 
+                // Active bars: cream Palette.Capsule.text per HTML prototype
+                // v1-cool-inksteel (var(--capsule-text)). Silent bars: muted
+                // timer at 40% opacity. Red bars would make recording feel
+                // alarming — off-white matches the designed visual language.
+                // Found by code review P2-A.
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(Palette.Capsule.recording.opacity(isActive ? 0.85 : 0.25))
+                    .fill(isActive
+                        ? Palette.Capsule.text.opacity(0.85)
+                        : Palette.Capsule.timer.opacity(0.40))
                     .frame(width: barWidth, height: barHeight)
                     .animation(.easeInOut(duration: 0.08), value: barHeight)
             }

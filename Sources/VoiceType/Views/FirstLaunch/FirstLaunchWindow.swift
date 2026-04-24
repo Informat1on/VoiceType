@@ -398,22 +398,3 @@ struct StepBadge: View {
         return Palette.accent
     }
 }
-
-// MARK: - ChecklistButtonStyle
-
-/// Compact link-style button for checklist action items.
-/// Uses Typography.buttonLabel + accent color. No background, no border.
-struct ChecklistButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Typography.buttonLabel)
-            .foregroundStyle(
-                configuration.isPressed ? Palette.accentStrong : Palette.accent
-            )
-            .padding(.horizontal, ButtonPadding.horizontal)
-            .padding(.vertical, ButtonPadding.vertical)
-            .contentShape(Rectangle())
-            .opacity(configuration.isPressed ? 0.7 : 1)
-            .animation(.easeInOut(duration: Motion.micro), value: configuration.isPressed)
-    }
-}

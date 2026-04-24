@@ -144,11 +144,10 @@ enum MenuBar {
     static let statusTopPadding: CGFloat = 10
     /// Status line bottom padding (asymmetric). Prototype: bottom=12px.
     static let statusBottomPadding: CGFloat = 12
-}
-
-extension Spacing {
-    /// Divider gap — 2pt total vertical. Tighter than Spacing.xs (4pt).
-    /// DESIGN.md MenuBar dropdown: dividers sit flush, 4pt total was too airy.
+    /// Divider vertical padding. 2pt top + 2pt bottom = 4pt total gap.
+    /// Prototype `.mb-divider { margin: 4px 0 }`; Spacing.xs (4pt) on each
+    /// side was too airy. Lives in MenuBar (menubar-specific, not a global
+    /// spacing concept). Found by code review P2-E.
     static let dividerGap: CGFloat = 2
 }
 
@@ -227,9 +226,13 @@ enum Typography {
     /// Line height for caption text. Matches metaLabel at 14pt for vertical rhythm.
     static let captionLineHeight: CGFloat = 14
 
-    /// Geist Mono 10pt Semibold. Numbered badges in FirstLaunchWindow.
-    /// DESIGN.md § First launch: "numbered badge (Geist Mono 10/14 600 cyan-soft bg)".
-    static let badge = Font.custom("Geist Mono", size: 10).weight(.semibold)
+    /// Geist Mono 10pt Medium. DESIGN.md spec is "600 Semibold" but only
+    /// GeistMono-Regular + GeistMono-Medium are bundled (vendor/geist-font
+    /// raw TTF set). CTFont resolves .semibold → Medium at runtime anyway;
+    /// declaring .medium explicitly makes the fallback visible in code.
+    /// Upgrade path: bundle GeistMono-SemiBold.ttf + register + bump back.
+    /// Found by code review P2-B.
+    static let badge = Font.custom("Geist Mono", size: 10).weight(.medium)
     /// Line height for badge text. DESIGN.md: "10/14".
     static let badgeLineHeight: CGFloat = 14
 }
@@ -369,6 +372,11 @@ enum Palette {
 
         /// Border on error. rgba(255,122,107,0.50). Channels: 255=1.0, 122=0.478431, 107=0.419608.
         static let borderErr = Color(nsColor: NSColor(srgbRed: 1.000000, green: 0.478431, blue: 0.419608, alpha: 0.50))
+
+        /// Border on insertion success. rgba(39,183,164,0.40) per v3-states-atlas
+        /// `.capsule.ok` spec. Channels: 39=0.152941, 183=0.717647, 164=0.643137.
+        /// Found by code review P2-D.
+        static let borderOk = Color(nsColor: NSColor(srgbRed: 0.152941, green: 0.717647, blue: 0.643137, alpha: 0.40))
     }
 }
 
