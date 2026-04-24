@@ -241,8 +241,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func loadModel(for request: ModelLoadRequest) async {
         let model = request.model
 
-        let language = AppSettings.shared.language.whisperLanguage?.rawValue
-        print("[AppDelegate] Reloading model: \(model.rawValue) with language: \(language ?? "auto")")
+        let language = AppSettings.shared.language
+        print("[AppDelegate] Reloading model: \(model.rawValue) with language: \(language.rawValue)")
         AppLog.models.notice("Reloading model \(model.rawValue, privacy: .public)")
 
         if !modelManager.isModelDownloaded(model: model) {
@@ -291,12 +291,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    private func applyInitialPrompt() {
+        // TODO post-merge: replace with AppSettings.shared.customVocabulary (0b is in parallel).
+        let userVocabulary: String = ""
+        transcriptionService.setInitialPrompt(userVocabulary.isEmpty ? nil : userVocabulary)
+    }
+
     private func preloadModelIfNeeded() {
         let model = AppSettings.shared.selectedModel
-        let language = AppSettings.shared.language.whisperLanguage?.rawValue
-        print("[AppDelegate] Preload model: \(model.rawValue), language: \(language ?? "auto")")
+        let language = AppSettings.shared.language
+        print("[AppDelegate] Preload model: \(model.rawValue), language: \(language.rawValue)")
         print("[AppDelegate] Main model downloaded: \(modelManager.isModelDownloaded(model: model))")
         print("[AppDelegate] CoreML support: \(model.hasCoreMLSupport), downloaded: \(modelManager.isCoreMLModelDownloaded(model: model))")
+        applyInitialPrompt()
         scheduleModelLoad(model, downloadCoreMLIfNeeded: true)
     }
 
@@ -424,11 +431,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             try await ensureModelLoaded()
             print("[AppDelegate] Model ready, starting transcription")
 
-            let language = AppSettings.shared.language.whisperLanguage?.rawValue
-
             let text = try await transcriptionService.transcribe(
                 audio: samples,
-                language: language
+                language: AppSettings.shared.language
             )
 
             transcriptionText = text
@@ -476,14 +481,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
 
         let model = AppSettings.shared.selectedModel
-        let language = AppSettings.shared.language.whisperLanguage?.rawValue
+        let language = AppSettings.shared.language
         guard modelManager.isModelDownloaded(model: model) else {
             print("[AppDelegate] Model not downloaded: \(model.rawValue)")
             throw TranscriptionError.modelNotLoaded
         }
 
         let modelURL = modelManager.modelURL(for: model)
-        print("[AppDelegate] Loading model on-demand: \(modelURL.lastPathComponent) with language: \(language ?? "auto")")
+        print("[AppDelegate] Loading model on-demand: \(modelURL.lastPathComponent) with language: \(language.rawValue)")
         try await transcriptionService.loadModel(at: modelURL, language: language, model: model)
     }
 

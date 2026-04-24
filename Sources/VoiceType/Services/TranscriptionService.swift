@@ -41,6 +41,8 @@ final class TranscriptionService: ObservableObject {
     private var modelURL: URL?
     private var currentLanguage: String?
     private var currentModelName: String?
+    private var _initialPrompt: UnsafeMutablePointer<CChar>?
+    var currentInitialPromptText: String?
 
     private var recommendedThreadCount: Int32 {
         let availableCores = max(1, ProcessInfo.processInfo.activeProcessorCount)
@@ -58,40 +60,40 @@ final class TranscriptionService: ObservableObject {
         currentModelName
     }
 
-    private func normalizedLanguage(_ language: String?) -> String? {
-        guard let language, language != "auto" else {
-            return nil
+    func setInitialPrompt(_ text: String?) {
+        if let existing = _initialPrompt {
+            free(existing)
+            _initialPrompt = nil
         }
-
-        return language
+        currentInitialPromptText = text.flatMap { $0.isEmpty ? nil : $0 }
+        guard let text, !text.isEmpty else {
+            whisper?.params.initial_prompt = nil
+            return
+        }
+        guard let ptr = strdup(text) else { return }
+        _initialPrompt = ptr
+        whisper?.params.initial_prompt = UnsafePointer(ptr)
     }
 
-    private func whisperLanguage(for language: String?) -> WhisperLanguage {
-        guard let language = normalizedLanguage(language) else {
-            return .auto
-        }
-
-        return WhisperLanguage(rawValue: language) ?? .auto
-    }
-
-    private func applyRuntimeConfiguration(language: String?) {
+    private func applyRuntimeConfiguration(language: Language) {
         guard let whisper else { return }
-
-        let normalizedLanguage = normalizedLanguage(language)
-        let whisperLanguage = whisperLanguage(for: normalizedLanguage)
-
-        whisper.params.language = whisperLanguage
-        whisper.params.detect_language = normalizedLanguage == nil
+        let resolvedWhisperLang = language.whisperLanguage
+        whisper.params.language = resolvedWhisperLang ?? .auto
+        whisper.params.detect_language = (resolvedWhisperLang == nil)
         whisper.params.n_threads = recommendedThreadCount
-
-        currentLanguage = normalizedLanguage
-
+        currentLanguage = resolvedWhisperLang?.rawValue
         print(
-            "[TranscriptionService] Runtime config: language=\(whisperLanguage.rawValue), detectLanguage=\(normalizedLanguage == nil), threads=\(recommendedThreadCount)"
+            "[TranscriptionService] Runtime config: language=\(language.rawValue) → whisper=\((resolvedWhisperLang?.rawValue) ?? "auto"), detectLanguage=\(resolvedWhisperLang == nil), threads=\(recommendedThreadCount), usesBilingualPrompt=\(language.usesBilingualPrompt)"
         )
     }
 
-    func loadModel(at url: URL, language: String? = nil, model: TranscriptionModel? = nil) async throws {
+    deinit {
+        if let existing = _initialPrompt {
+            free(existing)
+        }
+    }
+
+    func loadModel(at url: URL, language: Language = .auto, model: TranscriptionModel? = nil) async throws {
         print("[TranscriptionService] Loading model from \(url.lastPathComponent)")
         AppLog.models.notice("Loading model \(url.lastPathComponent, privacy: .public)")
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -100,15 +102,13 @@ final class TranscriptionService: ObservableObject {
             throw TranscriptionError.modelLoadFailed(nil)
         }
 
-        let normalizedLanguage = normalizedLanguage(language)
-        let whisperLanguage = whisperLanguage(for: normalizedLanguage)
-
-        let shouldDetectLanguage = normalizedLanguage == nil
+        let resolvedWhisperLang = language.whisperLanguage
+        let shouldDetectLanguage = resolvedWhisperLang == nil
         let threadCount = recommendedThreadCount
-        let whisperLanguageRawValue = whisperLanguage.rawValue
+        let whisperLanguageRawValue = (resolvedWhisperLang ?? .auto).rawValue
 
         modelURL = url
-        currentLanguage = normalizedLanguage
+        currentLanguage = resolvedWhisperLang?.rawValue
         currentModelName = url.lastPathComponent.replacingOccurrences(of: "ggml-", with: "").replacingOccurrences(of: ".bin", with: "")
 
         // Use ModelManager's authoritative CoreML URL instead of fragile string replacement
@@ -117,7 +117,7 @@ final class TranscriptionService: ObservableObject {
         print("[TranscriptionService] CoreML encoder available: \(hasCoreML) at \(coreMLURL?.lastPathComponent ?? "N/A")")
 
         print(
-            "[TranscriptionService] Loading model: \(currentModelName ?? "unknown") (lang: \(whisperLanguage.rawValue), detectLanguage: \(shouldDetectLanguage), threads: \(threadCount))"
+            "[TranscriptionService] Loading model: \(currentModelName ?? "unknown") (lang: \(whisperLanguageRawValue), detectLanguage: \(shouldDetectLanguage), threads: \(threadCount))"
         )
         let startTime = CFAbsoluteTimeGetCurrent()
         let newWhisper: Whisper = await withCheckedContinuation { continuation in
@@ -140,10 +140,16 @@ final class TranscriptionService: ObservableObject {
         AppLog.models.notice("Model load finished")
 
         whisper = newWhisper
-        applyRuntimeConfiguration(language: normalizedLanguage)
+        applyRuntimeConfiguration(language: language)
+
+        // Re-apply initial prompt so a model reload never silently erases user vocabulary.
+        // (The params object is freshly created above, so any previously-set pointer is gone.)
+        if let text = currentInitialPromptText {
+            setInitialPrompt(text)
+        }
     }
 
-    func transcribe(audio: [Float], language: String?) async throws -> String {
+    func transcribe(audio: [Float], language: Language = .auto) async throws -> String {
         guard let whisper else {
             print("[TranscriptionService] ERROR: Model not loaded")
             AppLog.transcription.error("Transcription requested without a loaded model")
@@ -157,7 +163,7 @@ final class TranscriptionService: ObservableObject {
         }
 
         print("[TranscriptionService] Starting transcription with model: \(currentModelName ?? "unknown")")
-        print("[TranscriptionService] Audio samples: \(audio.count), duration: \(String(format: "%.2f", Double(audio.count) / 16000.0))s, language: \(language ?? "auto")")
+        print("[TranscriptionService] Audio samples: \(audio.count), duration: \(String(format: "%.2f", Double(audio.count) / 16000.0))s, language: \(language.rawValue)")
 
         applyRuntimeConfiguration(language: language)
 
