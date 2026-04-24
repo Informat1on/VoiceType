@@ -6,10 +6,15 @@ Lightweight macOS menu bar voice typing app powered by `whisper.cpp`, optimized 
 
 - typecheck: swift build -c debug
 - test: swift test
+- lint: swiftlint lint (config: `.swiftlint.yml`)
 - shell: shellcheck *.sh
 
-(Lint and dead-code are intentionally not configured yet — see
-`docs/decisions/2026-04-26-views-inventory.md` Tier A for SwiftLint plan.)
+SwiftLint is live as of 2026-04-24 with custom rules guarding DESIGN.md token
+discipline (Color/NSColor literals, glassmorphism on capsule, NSAlert.runModal
+for errors). All custom rules are WARNING severity until `Tokens.swift` lands
+in Tier A (Weekend 3-4); bump to ERROR after. Baseline: 54 warnings, 0 errors.
+
+Dead-code detection (periphery) is intentionally not configured yet.
 
 ## Design System
 
