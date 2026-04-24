@@ -396,7 +396,7 @@ struct CapsuleWaveformView: View {
         let tail = history.suffix(barCount)
         let samples: [Float] = Array(repeating: 0, count: max(0, barCount - tail.count)) + Array(tail)
         let recentPeak = samples.max() ?? 0
-        let isLoud = Double(recentPeak) > Motion.waveformActivationThreshold
+        let isLoud = Double(recentPeak) >= Motion.waveformActivationThreshold
 
         HStack(spacing: spacing) {
             ForEach(0..<barCount, id: \.self) { idx in

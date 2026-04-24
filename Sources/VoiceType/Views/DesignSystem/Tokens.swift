@@ -164,13 +164,15 @@ enum Motion {
     /// 500ms — rare, cross-surface transitions only. DESIGN.md line 350.
     static let long: Double = 0.5
 
-    /// Audio RMS amplitude threshold (range 0.0-1.0, UNITLESS, not a time duration)
-    /// to trigger the recording-dot pulse. Lives under Motion alongside
-    /// duration constants because DESIGN.md line 356 pins the reference path.
-    /// DESIGN.md line 356: "audio crosses Tokens.Motion.waveformActivationThreshold".
+    /// Minimum normalized audio amplitude for the waveform to animate.
+    /// Whispered speech measures ~0.01–0.03 normalized; keeping this well below
+    /// typical whisper RMS ensures quiet voices still get visual feedback while
+    /// truly silent input (0.0) stays flat.
     /// Phase 1 A9: lowered from 0.15 → 0.03 so conversational speech at 30cm
     /// mic distance activates isActive for most of the recording duration.
-    static let waveformActivationThreshold: Double = 0.03
+    /// 0.03 → 0.008 so even faint whispers (~0.01) register as visible motion;
+    /// true silence (0.0) stays flat.
+    static let waveformActivationThreshold: Double = 0.008
 }
 
 // MARK: - Typography
