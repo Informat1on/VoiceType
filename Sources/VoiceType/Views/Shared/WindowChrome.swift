@@ -192,19 +192,19 @@ struct StatusBadge: View {
 
         var fill: Color {
             switch self {
-            case .neutral: return Color.secondary.opacity(0.14)
-            case .positive: return Color.green.opacity(0.16)
-            case .warning: return Color.orange.opacity(0.18)
-            case .accent: return Color.accentColor.opacity(0.18)
+            case .neutral:  return Palette.textSecondary.opacity(0.14)
+            case .positive: return Palette.success.opacity(0.16)
+            case .warning:  return Palette.warning.opacity(0.18)
+            case .accent:   return Palette.accent.opacity(0.18)
             }
         }
 
         var foreground: Color {
             switch self {
-            case .neutral: return .secondary
-            case .positive: return .green
-            case .warning: return .orange
-            case .accent: return .accentColor
+            case .neutral:  return Palette.textSecondary
+            case .positive: return Palette.success
+            case .warning:  return Palette.warning
+            case .accent:   return Palette.accent
             }
         }
     }

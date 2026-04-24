@@ -180,7 +180,7 @@ enum Typography {
     /// Geist 11pt Medium. Meta labels — callers apply .textCase(.uppercase)
     /// and .tracking(metaLabelTracking). DESIGN.md line 60.
     static let metaLabel = Font.custom("Geist", size: 11).weight(.medium)
-    /// Tracking value for meta labels: 0.04em × 11pt ≈ 0.44. DESIGN.md line 60.
+    /// Tracking value for meta labels: 0.04em × 11pt = 0.44. DESIGN.md line 60.
     static let metaLabelTracking: CGFloat = 0.44
     /// Line height for meta labels. DESIGN.md line 60: "11/14".
     static let metaLabelLineHeight: CGFloat = 14
@@ -190,6 +190,12 @@ enum Typography {
     static let mono = Font.custom("Geist Mono", size: 12).weight(.medium)
     /// Line height for mono text. DESIGN.md line 61: "12/16".
     static let monoLineHeight: CGFloat = 16
+
+    /// Non-uppercase secondary caption text (row subtitles, metadata descriptions).
+    /// Geist 11pt Regular. Distinct from metaLabel (Medium, uppercase-tracked).
+    static let caption = Font.custom("Geist", size: 11).weight(.regular)
+    /// Line height for caption text. Matches metaLabel at 14pt for vertical rhythm.
+    static let captionLineHeight: CGFloat = 14
 }
 
 // MARK: - Palette

@@ -1,5 +1,7 @@
 import Cocoa
 import Carbon
+// TODO: TextInjectionService.insertText must honor settings.trimWhitespaceAfterInsert
+// (AppSettings.shared.trimWhitespaceAfterInsert). Wiring deferred to a future Services step.
 
 struct KeyboardKeystroke: Equatable {
     let keyCode: CGKeyCode

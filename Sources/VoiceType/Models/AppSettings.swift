@@ -167,6 +167,10 @@ final class AppSettings: ObservableObject {
         didSet { save() }
     }
 
+    @Published var trimWhitespaceAfterInsert: Bool {
+        didSet { save() }
+    }
+
     private let defaults = UserDefaults.standard
 
     private init() {
@@ -199,6 +203,7 @@ final class AppSettings: ObservableObject {
 
         self.indicatorStyle = IndicatorStyle(rawValue: defaults.string(forKey: "indicatorStyle") ?? "") ?? .dot
         self.textInjectionMode = TextInjectionMode(rawValue: defaults.string(forKey: "textInjectionMode") ?? "") ?? .paste
+        self.trimWhitespaceAfterInsert = defaults.object(forKey: "trimWhitespaceAfterInsert") as? Bool ?? true
     }
 
     private func save() {
@@ -211,6 +216,7 @@ final class AppSettings: ObservableObject {
         defaults.set(customVocabulary, forKey: "customVocabulary")
         defaults.set(indicatorStyle.rawValue, forKey: "indicatorStyle")
         defaults.set(textInjectionMode.rawValue, forKey: "textInjectionMode")
+        defaults.set(trimWhitespaceAfterInsert, forKey: "trimWhitespaceAfterInsert")
     }
 }
 

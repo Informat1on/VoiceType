@@ -38,7 +38,7 @@ private struct PrefsRow<Control: View>: View {
                     .foregroundStyle(Palette.textPrimary)
                 if let subtitle {
                     Text(subtitle)
-                        .font(Typography.metaLabel)  // 11/14 per DESIGN.md line 181
+                        .font(Typography.caption)  // non-uppercase regular caption per FIX 8
                         .foregroundStyle(Palette.textSecondary)
                 }
             }
@@ -57,6 +57,13 @@ private struct RowDivider: View {
         Rectangle()
             .fill(Palette.divider)
             .frame(height: 1)
+    }
+}
+
+/// Vertical gap between row-groups. DESIGN.md § Spacing line 155.
+private struct SectionGap: View {
+    var body: some View {
+        Color.clear.frame(height: Spacing.sectionGap)
     }
 }
 
@@ -161,7 +168,7 @@ struct SettingsView: View {
                 }
                 RowDivider()
 
-                Spacer().frame(height: Spacing.sectionGap)
+                SectionGap()
 
                 // MARK: INSERTION group
                 GroupHeader(title: "Insertion")
@@ -179,6 +186,12 @@ struct SettingsView: View {
                         .labelsHidden()
                 }
                 RowDivider()
+                PrefsRow("Trim whitespace",
+                         subtitle: "Remove leading/trailing whitespace before insertion") {
+                    Toggle("", isOn: $settings.trimWhitespaceAfterInsert)
+                        .labelsHidden()
+                }
+                RowDivider()
                 PrefsRow("Paste method") {
                     Picker("Paste method", selection: $settings.textInjectionMode) {
                         ForEach(TextInjectionMode.allCases, id: \.self) { mode in
@@ -189,7 +202,7 @@ struct SettingsView: View {
                 }
                 RowDivider()
 
-                Spacer().frame(height: Spacing.sectionGap)
+                SectionGap()
 
                 // MARK: MICROPHONE group — inline permission hint per DESIGN.md line 185 / 256-258
                 GroupHeader(title: "Microphone")
@@ -212,42 +225,16 @@ struct SettingsView: View {
                 // MARK: MODEL group
                 GroupHeader(title: "Model")
                 RowDivider()
-                PrefsRow("Model") {
-                    Picker("Model", selection: $settings.selectedModel) {
-                        ForEach(TranscriptionModel.allCases, id: \.self) { model in
-                            Text(model.displayName).tag(model)
-                        }
-                    }
-                    .accessibilityLabel(settings.selectedModel.displayName)
-                    .accessibilityValue("\(settings.selectedModel.estimatedSize)")
+                ForEach(TranscriptionModel.allCases, id: \.self) { model in
+                    ModelRow(
+                        model: model,
+                        isSelected: settings.selectedModel == model,
+                        onSelect: { settings.selectedModel = model }
+                    )
+                    RowDivider()
                 }
-                RowDivider()
-                PrefsRow("Size") {
-                    Text(settings.selectedModel.estimatedSize)
-                        .font(Typography.body)
-                        .foregroundStyle(Palette.textSecondary)
-                }
-                RowDivider()
-                PrefsRow("Speed") {
-                    Text(settings.selectedModel.speedRating)
-                        .font(Typography.body)
-                        .foregroundStyle(Palette.textSecondary)
-                }
-                RowDivider()
-                PrefsRow("Quality") {
-                    Text(settings.selectedModel.qualityRating)
-                        .font(Typography.body)
-                        .foregroundStyle(Palette.textSecondary)
-                }
-                RowDivider()
-                PrefsRow("Best for") {
-                    Text(settings.selectedModel.recommendedFor)
-                        .font(Typography.body)
-                        .foregroundStyle(Palette.textSecondary)
-                }
-                RowDivider()
 
-                Spacer().frame(height: Spacing.sectionGap)
+                SectionGap()
 
                 // MARK: CORE ML group
                 GroupHeader(title: "Core ML")
@@ -320,13 +307,22 @@ struct SettingsView: View {
 
                 // Hotkey chip row
                 PrefsRow("Shortcut") {
-                    // Hotkey chip — Geist Mono, surfaceInset Capsule background
-                    Text("\(modifiersToString(settings.hotkeyModifiers))\(keyCodeToString(settings.hotkeyKey))")
-                        .font(Typography.mono)
-                        .foregroundStyle(Palette.textPrimary)
-                        .padding(.horizontal, Spacing.md)
-                        .padding(.vertical, Spacing.sm)
-                        .background(Palette.surfaceInset, in: Capsule(style: .continuous))
+                    HStack(spacing: Spacing.sm) {
+                        // Hotkey chip — Geist Mono, surfaceInset Capsule background
+                        Text("\(modifiersToString(settings.hotkeyModifiers))\(keyCodeToString(settings.hotkeyKey))")
+                            .font(Typography.mono)
+                            .foregroundStyle(Palette.textPrimary)
+                            .padding(.horizontal, Spacing.md)
+                            .padding(.vertical, Spacing.sm)
+                            .background(Palette.surfaceInset, in: Capsule(style: .continuous))
+                        Button("Record New Shortcut") {
+                            recordedModifiers = 0
+                            recordedKey = 0
+                            isRecordingHotkey = true
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 }
                 RowDivider()
                 PrefsRow("Mode") {
@@ -367,21 +363,9 @@ struct SettingsView: View {
                     }
                     .padding(.horizontal, Spacing.prefsRowHorizontal)
                     .padding(.vertical, Spacing.prefsRowVertical)
-                } else {
-                    HStack {
-                        Spacer()
-                        Button("Record New Shortcut") {
-                            recordedModifiers = 0
-                            recordedKey = 0
-                            isRecordingHotkey = true
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    .padding(.horizontal, Spacing.prefsRowHorizontal)
-                    .padding(.vertical, Spacing.prefsRowVertical)
                 }
 
-                Spacer().frame(height: Spacing.sectionGap)
+                SectionGap()
 
                 // MARK: ACCESSIBILITY group — inline permission per DESIGN.md line 193 / 256-258
                 GroupHeader(title: "Accessibility")
@@ -420,7 +404,7 @@ struct SettingsView: View {
                     .padding(.bottom, Spacing.prefsRowVertical)
                 RowDivider()
 
-                Spacer().frame(height: Spacing.sectionGap)
+                SectionGap()
 
                 // TODO Tier A Step 9 / W2: wire HistoryStore here (DESIGN.md line 191).
                 // MARK: TRANSCRIPTION HISTORY group
@@ -438,14 +422,14 @@ struct SettingsView: View {
                 }
                 RowDivider()
 
-                Spacer().frame(height: Spacing.sectionGap)
+                SectionGap()
 
                 // TODO Step 7: wire ErrorLogger here (DESIGN.md line 191).
                 // MARK: DIAGNOSTICS group
                 GroupHeader(title: "Diagnostics")
                 RowDivider()
                 PrefsRow("Error log", subtitle: "~/Library/Logs/VoiceType/errors.log") {
-                    Button("Reveal in Finder") {}
+                    Button("Open Log") {}
                         .disabled(true)
                 }
                 RowDivider()
@@ -480,7 +464,7 @@ struct SettingsView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 } else {
-                    Button("Request") {
+                    Button("Grant Access") {
                         permissionManager.requestMicrophonePermission()
                     }
                     .buttonStyle(.borderedProminent)
@@ -614,6 +598,45 @@ struct SettingsView: View {
     private func openMicrophonePrivacySettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+// MARK: - Model Row
+
+private struct ModelRow: View {
+    let model: TranscriptionModel
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(alignment: .center, spacing: Spacing.md) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Palette.accent : Palette.textMuted)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.displayName)
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.textPrimary)
+                    Text("\(model.estimatedSize) · Speed \(model.speedRating) · Quality \(model.qualityRating)")
+                        .font(Typography.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                    Text(model.recommendedFor)
+                        .font(Typography.caption)
+                        .foregroundStyle(Palette.textMuted)
+                }
+
+                Spacer(minLength: Spacing.md)
+            }
+            .padding(.horizontal, Spacing.prefsRowHorizontal)
+            .padding(.vertical, Spacing.prefsRowVertical)
+            .frame(minHeight: Spacing.prefsRowMinHeight)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .accessibilityLabel(model.displayName)
+        .accessibilityValue("\(model.estimatedSize), Speed \(model.speedRating), Quality \(model.qualityRating)")
     }
 }
 
