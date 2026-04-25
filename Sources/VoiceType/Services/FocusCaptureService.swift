@@ -177,7 +177,7 @@ final class FocusCaptureService {
             kAXFocusedWindowAttribute as String,
             as: AXUIElement.self
         ) else {
-            AppLog.app.notice("AX focused-window attribute missing or not AXUIElement; skipping window info")
+            AppLog.permissions.notice("AX focused-window attribute missing or not AXUIElement; skipping window info")
             return (nil, nil)
         }
 
