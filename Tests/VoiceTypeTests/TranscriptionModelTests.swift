@@ -11,6 +11,17 @@ final class TranscriptionModelTests: XCTestCase {
             model.downloadURL,
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
         )
+        // Both the .bin URL above and the CoreML zip URL below derive from the same
+        // rawValue, but checking each independently catches a future override of
+        // either property.
+        XCTAssertEqual(
+            model.coreMLZipFileName,
+            "ggml-large-v3-turbo-encoder.mlmodelc.zip"
+        )
+        XCTAssertEqual(
+            model.coreMLDownloadURL,
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-encoder.mlmodelc.zip"
+        )
     }
 
     func testLargeV3TurboHasCoreMLSupport() {
