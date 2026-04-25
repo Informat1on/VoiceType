@@ -44,6 +44,12 @@ final class TranscriptionService: ObservableObject {
     private var _initialPrompt: UnsafeMutablePointer<CChar>?
     var currentInitialPromptText: String?
 
+    // Double-optional sentinel for deferred prompt updates during transcription.
+    // .none           → no pending update
+    // .some(nil)      → pending clear (setInitialPrompt(nil) was called while busy)
+    // .some("text")   → pending prompt text to apply after transcription completes
+    private var _pendingPrompt: String??
+
     private var recommendedThreadCount: Int32 {
         let availableCores = max(1, ProcessInfo.processInfo.activeProcessorCount)
         let tunedCores = availableCores <= 4
@@ -71,6 +77,20 @@ final class TranscriptionService: ObservableObject {
         "Запушь этот commit в main. Проверь auth middleware в handler. Это работает."
 
     func setInitialPrompt(_ text: String?) {
+        // Guard against UAF: if whisper_full is currently running on a background thread
+        // it holds a raw pointer into _initialPrompt via the value-copy of whisper_full_params.
+        // Freeing that buffer now would be a C-level use-after-free.
+        // Defer the update instead; _flushPendingPrompt() applies it once transcription ends.
+        if isTranscribing {
+            _pendingPrompt = .some(text)
+            AppLog.transcription.notice("setInitialPrompt deferred: transcription in progress")
+            return
+        }
+        _applyPromptNow(text)
+    }
+
+    /// Unconditionally installs a new prompt buffer. Must only be called when NOT transcribing.
+    private func _applyPromptNow(_ text: String?) {
         if let existing = _initialPrompt {
             free(existing)
             _initialPrompt = nil
@@ -83,6 +103,21 @@ final class TranscriptionService: ObservableObject {
         guard let ptr = strdup(text) else { return }
         _initialPrompt = ptr
         whisper?.params.initial_prompt = UnsafePointer(ptr)
+    }
+
+    /// Called after transcription completes to flush any prompt change that was deferred.
+    private func _flushPendingPrompt() {
+        guard let pending = _pendingPrompt else { return }
+        _pendingPrompt = nil
+        _applyPromptNow(pending)
+        AppLog.transcription.notice("Deferred initial prompt applied after transcription")
+    }
+
+    /// Test seam: allows unit tests to trigger _flushPendingPrompt without running
+    /// a real whisper transcription.  Not part of the public API; production code
+    /// reaches this path only through the defer block in transcribe().
+    func _testFlushPendingPrompt() {
+        _flushPendingPrompt()
     }
 
     /// Build and apply the initial prompt from the current language + custom vocabulary.
@@ -216,6 +251,9 @@ final class TranscriptionService: ObservableObject {
 
         defer {
             isTranscribing = false
+            // Apply any prompt change that was deferred while whisper_full was running.
+            // isTranscribing is already false here, so _applyPromptNow will not re-defer.
+            _flushPendingPrompt()
         }
 
         do {
