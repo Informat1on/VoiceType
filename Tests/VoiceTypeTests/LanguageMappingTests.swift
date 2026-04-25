@@ -194,16 +194,14 @@ final class LanguageMappingTests: XCTestCase {
             "Language.auto.whisperLanguage must be nil to trigger detect_language=true"
         )
 
-        // The fallback used when whisperLanguage is nil must be WhisperLanguage.auto
-        // (rawValue = "auto"), which whisper.cpp accepts as auto-detect.
-        let fallback = Language.auto.whisperLanguage ?? .auto
+        // Document the fallback wiring: applyRuntimeConfiguration uses
+        //   resolvedWhisperLang ?? .auto
+        // and the rawValue of that fallback must be "auto" — the literal string
+        // whisper.cpp:3907 recognises via strcmp(params.language, "auto").
+        // (The == .auto check used to live here, but `nil ?? .auto == .auto` is
+        // tautological; rawValue is the actually-meaningful contract.)
         XCTAssertEqual(
-            fallback,
-            .auto,
-            "Fallback for nil whisperLanguage must be WhisperLanguage.auto"
-        )
-        XCTAssertEqual(
-            fallback.rawValue,
+            WhisperLanguage.auto.rawValue,
             "auto",
             "WhisperLanguage.auto.rawValue must be \"auto\" — the string whisper.cpp recognizes"
         )
