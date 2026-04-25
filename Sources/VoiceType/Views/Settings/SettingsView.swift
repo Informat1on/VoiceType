@@ -4,7 +4,7 @@ import AppKit
 // MARK: - Row Primitives
 
 /// Uppercase meta-label group header.
-/// DESIGN.md line 180: 11/14 Medium, letter-spacing 0.04em, textMuted. 8px gap below.
+/// DESIGN.md line 180: 11/14 Medium, letter-spacing 0.08em, textMuted. 8px gap below.
 private struct GroupHeader: View {
     let title: String
     var body: some View {
@@ -19,6 +19,7 @@ private struct GroupHeader: View {
 
 /// Native prefs row: left label + optional subtitle, right control.
 /// Min-height 40, horizontal padding lg, vertical padding md. DESIGN.md line 181.
+/// Prototype: `.prefs-row { padding: 12px 0; min-height: 40px; }`
 private struct PrefsRow<Control: View>: View {
     let label: String
     let subtitle: String?
@@ -87,6 +88,245 @@ private struct PermissionDot: View {
     }
 }
 
+// MARK: - Custom Segmented Control
+//
+// Replaces native Picker(.segmented). Matches prototype CSS exactly:
+// v1-cool-inksteel.html lines 273-287:
+//   .seg { background:var(--surface-inset); border-radius:8px;
+//          padding:2px; border:1px solid var(--stroke-subtle); }
+//   .seg button { padding:4px 10px; font-size:12px; font-weight:500;
+//                 color:var(--text-muted); border-radius:6px; transition:all 120ms; }
+//   .seg button[aria-pressed="true"] { background:var(--bg-window);
+//                                      color:var(--text-primary);
+//                                      box-shadow:0 1px 2px rgba(0,0,0,0.12); }
+
+private struct SegmentedControl<T: Hashable>: View {
+    let options: [(label: String, value: T)]
+    @Binding var selection: T
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, option in
+                segButton(option)
+            }
+        }
+        // Outer container: surfaceInset bg, 8pt radius, 2px inner padding, strokeSubtle border
+        .padding(2)
+        .background(Palette.surfaceInset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Palette.strokeSubtle, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func segButton(_ option: (label: String, value: T)) -> some View {
+        let isSelected = selection == option.value
+        Button {
+            selection = option.value
+        } label: {
+            Text(option.label)
+                .font(Typography.buttonLabel)  // 12pt Medium — prototype font-size:12px weight:500
+                .foregroundStyle(isSelected ? Palette.textPrimary : Palette.textMuted)
+                .padding(.horizontal, 10)  // prototype: padding 4px 10px
+                .padding(.vertical, 4)
+                .background(
+                    Group {
+                        if isSelected {
+                            // Selected: bg-window + subtle shadow
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Palette.bgWindow)
+                                .shadow(color: .black.opacity(0.12), radius: 1, x: 0, y: 1)
+                        } else {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.clear)
+                        }
+                    }
+                )
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .animation(.easeInOut(duration: 0.12), value: isSelected)  // transition:120ms per prototype
+    }
+}
+
+// MARK: - Permission Hint Panel
+//
+// Replaces plain PrefsRow for permission rows. Matches prototype CSS exactly:
+// v1-cool-inksteel.html lines 325-337:
+//   .perm-hint { margin-top:6px; padding:10px 12px;
+//                background:var(--accent-soft); border-radius:8px;
+//                font-size:12px; color:var(--text-secondary);
+//                display:flex; align-items:center; gap:10px;
+//                border-left:2px solid var(--accent); }
+//   .perm-hint.denied { background:rgba(255,122,107,0.10);
+//                       border-left-color:var(--error); }
+//   .perm-hint .perm-action { margin-left:auto; color:var(--accent);
+//                             font-weight:500; cursor:pointer; }
+
+private struct PermHintPanel: View {
+    enum PermState { case granted, denied, notRequested }
+    let state: PermState
+    let title: String
+    let actionLabel: String
+    let onAction: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {  // gap:10px per prototype
+            PermissionDot(state: dotState)
+
+            Text(title)
+                .font(Typography.caption)  // 12pt — matches prototype font-size:12px
+                .foregroundStyle(Palette.textSecondary)
+
+            Spacer()
+
+            // .perm-action: margin-left:auto; color:var(--accent); font-weight:500
+            Button(action: onAction) {
+                Text(actionLabel)
+                    .font(Typography.buttonLabel)  // 12pt Medium — font-weight:500
+                    .foregroundStyle(actionColor)
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+        }
+        .padding(.vertical, 10)   // prototype: padding 10px 12px
+        .padding(.horizontal, 12)
+        .background(panelBg, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+        .overlay(alignment: .leading) {
+            // 2pt left accent bar — prototype border-left:2px solid var(--accent)
+            RoundedRectangle(cornerRadius: 1, style: .continuous)
+                .fill(borderColor)
+                .frame(width: 2)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+        .padding(.top, 6)  // prototype: margin-top:6px
+    }
+
+    private var dotState: PermissionDot.DotState {
+        switch state {
+        case .granted:      return .granted
+        case .denied:       return .denied
+        case .notRequested: return .notRequested
+        }
+    }
+
+    // granted/notRequested = accentSoft; denied = error-tinted rgba(255,122,107,0.10)
+    // Prototype line 336: .perm-hint.denied { background: rgba(255,122,107,0.10) }
+    // Uses Color.dynamic (Tokens.swift) — no new literal color values beyond Tokens.swift pattern.
+    // Light: #D95C4F@0.10 = sRGB(0.850,0.361,0.310,0.10)
+    // Dark:  #FF7A6B@0.10 = sRGB(1.000,0.478,0.420,0.10)
+    // swiftlint:disable inline_nscolor_rgb
+    private var panelBg: Color {
+        switch state {
+        case .granted, .notRequested:
+            return Palette.accentSoft
+        case .denied:
+            return Color.dynamic(
+                light: NSColor(srgbRed: 0.850196, green: 0.360784, blue: 0.309804, alpha: 0.10),
+                dark: NSColor(srgbRed: 1.000000, green: 0.478431, blue: 0.419608, alpha: 0.10)
+            )
+        }
+    }
+    // swiftlint:enable inline_nscolor_rgb
+
+    private var borderColor: Color {
+        switch state {
+        case .granted, .notRequested: return Palette.accent
+        case .denied:                 return Palette.error
+        }
+    }
+
+    private var actionColor: Color {
+        switch state {
+        case .granted, .notRequested: return Palette.accent
+        case .denied:                 return Palette.error
+        }
+    }
+}
+
+// MARK: - Sidebar Item
+//
+// Replaces NavigationSplitView List rows. Matches prototype CSS exactly:
+// v1-cool-inksteel.html lines 227-243:
+//   .sidebar-item { display:flex; align-items:center; gap:8px;
+//                   padding:6px 10px; border-radius:6px;
+//                   font-size:13px; color:var(--text-secondary);
+//                   transition:background-color 120ms; }
+//   .sidebar-item:hover { background:var(--sidebar-hover); }
+//   .sidebar-item.active { background:var(--sidebar-active);
+//                          color:var(--text-primary); font-weight:500; }
+//   .sidebar-item.active::before { content:""; width:2px; height:16px;
+//                                  background:var(--accent); border-radius:1px;
+//                                  margin-left:-10px; margin-right:4px; }
+
+private struct SidebarItem: View {
+    let label: String
+    let systemImage: String
+    let isActive: Bool
+    let onTap: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(alignment: .center, spacing: 0) {
+                // Active indicator bar — CSS ::before pseudo-element equivalent.
+                // width:2px; height:16px; accent color; border-radius:1px;
+                // Offset to leading edge of padding zone.
+                if isActive {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(Palette.accent)
+                        .frame(width: 2, height: 16)
+                        .offset(x: -6)
+                        .padding(.trailing, -2)
+                } else {
+                    Color.clear.frame(width: 2, height: 16)
+                        .offset(x: -6)
+                        .padding(.trailing, -2)
+                }
+
+                HStack(alignment: .center, spacing: 8) {  // gap:8px per prototype
+                    Image(systemName: systemImage)
+                        .font(.system(size: 13, weight: .regular))
+                        .frame(width: 14, height: 14)  // svg 14x14 per prototype line 243
+                        .foregroundStyle(isActive ? Palette.accent : Palette.textSecondary)
+
+                    Text(label)
+                        .font(isActive
+                              ? Font.custom("Geist", size: 13).weight(.medium)  // font-weight:500
+                              : Typography.body)
+                        .foregroundStyle(isActive ? Palette.textPrimary : Palette.textSecondary)
+
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 10)  // prototype: padding:6px 10px
+            .padding(.vertical, 6)
+            .background(
+                Group {
+                    if isActive {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Palette.sidebarActive)
+                    } else if isHovered {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Palette.sidebarHover)
+                    } else {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.clear)
+                    }
+                }
+            )
+            .animation(.easeInOut(duration: 0.12), value: isActive)   // transition:120ms
+            .animation(.easeInOut(duration: 0.12), value: isHovered)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .onDisappear { isHovered = false }
+    }
+}
+
 // MARK: - SettingsView
 
 struct SettingsView: View {
@@ -97,7 +337,7 @@ struct SettingsView: View {
     @State private var recordedModifiers = 0
     @State private var recordedKey = 0
 
-    /// Sidebar tab enum — order is tab order per DESIGN.md line 176.
+    /// Sidebar tab enum — order is tab order per DESIGN.md line 176 / prototype line 574.
     private enum Tab: String, CaseIterable, Identifiable, Hashable {
         case general, models, shortcuts, advanced
         var id: String { rawValue }
@@ -123,16 +363,43 @@ struct SettingsView: View {
     @State private var selectedTab: Tab = .general
 
     var body: some View {
-        NavigationSplitView {
-            List(Tab.allCases, selection: $selectedTab) { tab in
-                Label(tab.displayName, systemImage: tab.symbolName)
-                    .tag(tab)
-            }
-            .navigationSplitViewColumnWidth(160)  // off-scale: sidebar column width per DESIGN.md line 177
-        } detail: {
+        // Flat HStack layout per prototype .settings-window { display:flex }
+        // Replaces NavigationSplitView + List (codex audit P1).
+        HStack(alignment: .top, spacing: 0) {
+            sidebar
+            // 1px border-right: prototype line 224 border-right:1px solid var(--divider)
+            Rectangle()
+                .fill(Palette.divider)
+                .frame(width: 1)
             tabContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: WindowSize.settings.width, height: WindowSize.settings.height)
+        .background(Palette.bgWindow)
+    }
+
+    // MARK: - Sidebar
+    //
+    // Prototype .settings-sidebar: width:160px; flex-shrink:0; padding:12px 8px;
+    // border-right:1px solid var(--divider); background:var(--bg-window).
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Tab.allCases) { tab in
+                SidebarItem(
+                    label: tab.displayName,
+                    systemImage: tab.symbolName,
+                    isActive: selectedTab == tab
+                ) {
+                    selectedTab = tab
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 8)   // prototype: padding:12px 8px
+        .padding(.vertical, 12)
+        .frame(width: 160)          // prototype: width:160px
+        .background(Palette.bgWindow)
     }
 
     // MARK: - Tab Router
@@ -156,13 +423,14 @@ struct SettingsView: View {
                 // MARK: LANGUAGE group
                 GroupHeader(title: "Language")
                 RowDivider()
-                PrefsRow("Language") {
-                    Picker("Language", selection: $settings.language) {
-                        ForEach(Language.allCases, id: \.self) { lang in
-                            Text(lang.displayName).tag(lang)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                // SegmentedControl replaces Picker(.segmented) — codex audit P1.
+                // Prototype lines 606-614: custom .seg inside .prefs-row.
+                PrefsRow("Preferred language",
+                         subtitle: "Promoted to first-class: code-switching is why this exists.") {
+                    SegmentedControl(
+                        options: Language.allCases.map { (label: $0.displayName, value: $0) },
+                        selection: $settings.language
+                    )
                     .accessibilityLabel("Preferred language")
                     .accessibilityValue(settings.language.displayName)
                 }
@@ -179,6 +447,9 @@ struct SettingsView: View {
                             Text(mode.displayName).tag(mode)
                         }
                     }
+                    // NOTE P2: Prototype shows "Insert into focused app" toggle (switch)
+                    // but spec has ActivationMode enum Picker. Per task constraints:
+                    // keep existing ActivationMode Picker — flag as P2 follow-up.
                 }
                 RowDivider()
                 PrefsRow("Press Enter after insertion") {
@@ -204,7 +475,7 @@ struct SettingsView: View {
 
                 SectionGap()
 
-                // MARK: MICROPHONE group — inline permission hint per DESIGN.md line 185 / 256-258
+                // MARK: MICROPHONE group — perm-hint panel per prototype lines 644-661
                 GroupHeader(title: "Microphone")
                 RowDivider()
                 microphonePermissionRow
@@ -367,7 +638,7 @@ struct SettingsView: View {
 
                 SectionGap()
 
-                // MARK: ACCESSIBILITY group — inline permission per DESIGN.md line 193 / 256-258
+                // MARK: ACCESSIBILITY group — perm-hint panel per prototype pattern
                 GroupHeader(title: "Accessibility")
                 RowDivider()
                 accessibilityPermissionRow
@@ -447,30 +718,30 @@ struct SettingsView: View {
     }
 
     // MARK: - Permission Rows
+    //
+    // Prototype lines 644-661: perm-hint panel replaces plain PrefsRow for permissions.
 
-    /// Microphone permission row — inline in General tab. DESIGN.md lines 254-258.
+    /// Microphone permission row — General tab. DESIGN.md lines 254-258.
     private var microphonePermissionRow: some View {
-        PrefsRow("Microphone access",
-                 subtitle: permissionManager.hasMicrophonePermission ? nil : "Required to capture your voice") {
-            HStack(spacing: Spacing.sm) {
-                PermissionDot(state: microphoneDotState)
-                if permissionManager.hasMicrophonePermission {
-                    Text("Granted")
-                        .font(Typography.body)
-                        .foregroundStyle(Palette.success)
-                    Button("Open Privacy") {
+        VStack(alignment: .leading, spacing: 0) {
+            PrefsRow("Microphone access", subtitle: nil) {
+                EmptyView()
+            }
+            // perm-hint panel per prototype lines 325-337, 656-660
+            PermHintPanel(
+                state: microphonePermState,
+                title: microphonePermTitle,
+                actionLabel: permissionManager.hasMicrophonePermission ? "Open Privacy…" : "Grant Access",
+                onAction: {
+                    if permissionManager.hasMicrophonePermission {
                         openMicrophonePrivacySettings()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else {
-                    Button("Grant Access") {
+                    } else {
                         permissionManager.requestMicrophonePermission()
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
                 }
-            }
+            )
+            .padding(.horizontal, Spacing.prefsRowHorizontal)
+            .padding(.bottom, Spacing.prefsRowVertical)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
@@ -480,42 +751,47 @@ struct SettingsView: View {
         )
     }
 
-    /// Accessibility permission row — inline in Shortcuts tab. DESIGN.md lines 254-258 / line 193.
+    /// Accessibility permission row — Shortcuts tab. DESIGN.md lines 254-258 / line 193.
     private var accessibilityPermissionRow: some View {
-        PrefsRow("Accessibility access",
-                 subtitle: "Required for synthesized ⌘V") {
-            HStack(spacing: Spacing.sm) {
-                PermissionDot(state: accessibilityDotState)
-                if permissionManager.hasAccessibilityPermission {
-                    Text("Granted")
-                        .font(Typography.body)
-                        .foregroundStyle(Palette.success)
-                    Button("Open Privacy") {
+        VStack(alignment: .leading, spacing: 0) {
+            PrefsRow("Accessibility access",
+                     subtitle: "Required for synthesized ⌘V") {
+                EmptyView()
+            }
+            // perm-hint panel per prototype lines 325-337
+            PermHintPanel(
+                state: accessibilityPermState,
+                title: accessibilityPermTitle,
+                actionLabel: permissionManager.hasAccessibilityPermission ? "Open Privacy…" : "Grant Access",
+                onAction: {
+                    if permissionManager.hasAccessibilityPermission {
                         permissionManager.openAccessibilitySettings()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else {
-                    Button("Grant Access") {
+                    } else {
                         permissionManager.requestAccessibilityPermission()
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                }
+            )
+            .padding(.horizontal, Spacing.prefsRowHorizontal)
+            .padding(.bottom, Spacing.prefsRowVertical)
 
+            // Refresh + Restart App buttons — only when permission not granted
+            if !permissionManager.hasAccessibilityPermission {
+                HStack(spacing: Spacing.sm) {
                     Button("Refresh") {
                         permissionManager.refreshPermissions()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
 
-                    // macOS caches Accessibility state per-process. Full restart needed
-                    // when user granted in System Settings but app was running before.
+                    // macOS caches Accessibility state per-process. Full restart needed.
                     Button("Restart App") {
                         permissionManager.restartAppForAccessibility()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
+                .padding(.horizontal, Spacing.prefsRowHorizontal)
+                .padding(.bottom, Spacing.prefsRowVertical)
             }
         }
         .accessibilityElement(children: .combine)
@@ -526,14 +802,41 @@ struct SettingsView: View {
         )
     }
 
-    // MARK: - Permission Dot State Helpers
+    // MARK: - Permission State Helpers
 
-    private var microphoneDotState: PermissionDot.DotState {
+    // TODO(perm-3-state): PermissionManager currently exposes Bool (granted | not),
+    // collapsing `notDetermined` into `.denied`. The prototype's `.perm-hint`
+    // (v1-cool-inksteel.html line ~325) renders accent-soft for the not-yet-asked
+    // state vs error-tinted for explicit denial. Three-state requires extending
+    // PermissionManager.checkMicrophonePermission to return an enum. Tracked as
+    // follow-up chunk; first-launch UX is functionally equivalent to the prior
+    // modal-alert behavior, just visually red instead of system alert.
+    private var microphonePermState: PermHintPanel.PermState {
+        // hasMicrophonePermission is Bool — .notRequested not surfaced at this level.
         permissionManager.hasMicrophonePermission ? .granted : .denied
     }
 
-    private var accessibilityDotState: PermissionDot.DotState {
+    private var microphonePermTitle: String {
+        permissionManager.hasMicrophonePermission
+            ? "Microphone access granted"
+            : "Microphone access required to capture your voice"
+    }
+
+    // TODO(perm-3-state): PermissionManager currently exposes Bool (granted | not),
+    // collapsing `notDetermined` into `.denied`. The prototype's `.perm-hint`
+    // (v1-cool-inksteel.html line ~325) renders accent-soft for the not-yet-asked
+    // state vs error-tinted for explicit denial. Three-state requires extending
+    // PermissionManager.checkAccessibilityPermission to return an enum. Tracked as
+    // follow-up chunk; first-launch UX is functionally equivalent to the prior
+    // modal-alert behavior, just visually red instead of system alert.
+    private var accessibilityPermState: PermHintPanel.PermState {
         permissionManager.hasAccessibilityPermission ? .granted : .denied
+    }
+
+    private var accessibilityPermTitle: String {
+        permissionManager.hasAccessibilityPermission
+            ? "Accessibility access granted"
+            : "Accessibility access required for synthesized ⌘V"
     }
 
     // MARK: - Model Status Badges (logic preserved verbatim)
