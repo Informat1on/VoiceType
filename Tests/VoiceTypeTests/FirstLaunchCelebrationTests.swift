@@ -9,6 +9,53 @@ import XCTest
 
 final class FirstLaunchCelebrationTests: XCTestCase {
 
+    // MARK: - justFlippedHighest (badge bounce targeting)
+
+    /// P2-1 from chunk X review: when model was already satisfied and the user
+    /// just granted accessibility, the bounce must target step 2 (a11y), NOT
+    /// step 3 (model) just because model has the highest number.
+    func testJustFlippedHighestPrefersStepInDiffOverHighestSatisfied() {
+        // Model already done (step 3); user just granted a11y (step 2).
+        let previous: Set<Int> = [3]
+        let current: Set<Int> = [2, 3]
+        XCTAssertEqual(
+            FirstLaunchCelebrationViewModel.justFlippedHighest(previous: previous, current: current),
+            2,
+            "Bounce must target the just-flipped step (a11y=2), not the highest currently satisfied (model=3)"
+        )
+    }
+
+    func testJustFlippedHighestReturnsHighestOfMultipleFlips() {
+        // Pathological case: two blockers flip in the same cycle.
+        let previous: Set<Int> = [3]
+        let current: Set<Int> = [1, 2, 3]
+        XCTAssertEqual(
+            FirstLaunchCelebrationViewModel.justFlippedHighest(previous: previous, current: current),
+            2,
+            "When multiple flips happen at once, the highest just-flipped step bounces"
+        )
+    }
+
+    func testJustFlippedHighestFallsBackToCurrentMaxWhenNoDiff() {
+        // Re-call with no change (e.g., redundant checkBlockers) — fall back
+        // to the highest currently-satisfied step so the badge still has a
+        // sensible target if the celebration is somehow re-triggered.
+        let previous: Set<Int> = [1, 2, 3]
+        let current: Set<Int> = [1, 2, 3]
+        XCTAssertEqual(
+            FirstLaunchCelebrationViewModel.justFlippedHighest(previous: previous, current: current),
+            3,
+            "With no diff, fall back to the highest currently-satisfied step"
+        )
+    }
+
+    func testJustFlippedHighestReturnsNilForEmptyCurrent() {
+        XCTAssertNil(
+            FirstLaunchCelebrationViewModel.justFlippedHighest(previous: [], current: []),
+            "Nothing satisfied yet → no badge to bounce"
+        )
+    }
+
     // MARK: - Helpers
 
     /// Returns a ViewModel wired with a synchronous scheduler and

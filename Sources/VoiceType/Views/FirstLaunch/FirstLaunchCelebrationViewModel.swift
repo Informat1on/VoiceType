@@ -99,6 +99,17 @@ final class FirstLaunchCelebrationViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Just-flipped step targeting
+
+    /// Returns the step number that should bounce when blockers transition.
+    /// Prefers a step in `current \ previous` (the step the user JUST satisfied).
+    /// Falls back to the highest currently-satisfied step when there's no diff
+    /// (e.g., the very first call when previous == current).
+    /// Pure function — testable without AppKit/SwiftUI.
+    static func justFlippedHighest(previous: Set<Int>, current: Set<Int>) -> Int? {
+        current.subtracting(previous).max() ?? current.max()
+    }
+
     // MARK: - Timing query (used by tests)
 
     /// Returns the total delay from handleBlockersSatisfied() to onDismiss() call.

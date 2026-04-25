@@ -116,6 +116,12 @@ struct FirstLaunchView: View {
     // Tracks which badge number just flipped to done (for targeted bounce)
     @State private var lastSatisfiedStep: Int?
 
+    // Set of step numbers that were already satisfied at the previous checkBlockers
+    // call. We compute the "just flipped" step as current \ previous so the bounce
+    // targets the actual step the user completed, not the highest-numbered satisfied
+    // step (which could be stale if model was already done and a11y was satisfied last).
+    @State private var previouslySatisfiedSet: Set<Int> = []
+
     // Reduced-motion environment
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -234,7 +240,34 @@ struct FirstLaunchView: View {
             celebration.recordOpenState(allBlockersSatisfiedAtOpen: allDone)
             celebration.reduceMotion = reduceMotion
             celebration.onDismiss = { onAllBlockersDone() }
+            // Seed the diff baseline so the first checkBlockers() doesn't claim
+            // every already-satisfied step "just flipped".
+            var seed: Set<Int> = []
+            if hasMic { seed.insert(1) }
+            if hasA11y { seed.insert(2) }
+            if hasModel { seed.insert(3) }
+            previouslySatisfiedSet = seed
             checkBlockers()
+        }
+        // Keep the ViewModel's reduceMotion mirror in sync if the user toggles
+        // the system preference while the window is open (rare but possible — they
+        // might be in System Settings granting permissions).
+        .onChange(of: reduceMotion) { newValue in
+            celebration.reduceMotion = newValue
+        }
+        // VoiceOver announcement when the celebration text appears. Sighted users
+        // see the text fade in; without this, VO users would have to navigate to it.
+        .onChange(of: celebration.showCelebration) { visible in
+            guard visible else { return }
+            let target: NSObject = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp
+            NSAccessibility.post(
+                element: target,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: "All set. Option Space to start typing with your voice.",
+                    .priority: NSAccessibilityPriorityLevel.high.rawValue
+                ]
+            )
         }
     }
 
@@ -437,13 +470,22 @@ struct FirstLaunchView: View {
             hasAccessibilityPermission: hasA11y,
             hasAnyDownloadedModel: hasModel
         )
+
+        // Diff against the previous satisfied set so the bounce targets the step
+        // the user actually JUST completed — not whichever happens to have the
+        // highest number (e.g., model done first, then a11y last).
+        var currentSet: Set<Int> = []
+        if hasMic { currentSet.insert(1) }
+        if hasA11y { currentSet.insert(2) }
+        if hasModel { currentSet.insert(3) }
         if ready {
-            // Identify which step number just turned green for targeted badge bounce.
-            // Pick the highest-numbered blocker that is now satisfied — that's the
-            // step the user just completed. Steps: 1=mic, 2=a11y, 3=model.
-            lastSatisfiedStep = hasModel ? 3 : (hasA11y ? 2 : 1)
+            lastSatisfiedStep = FirstLaunchCelebrationViewModel.justFlippedHighest(
+                previous: previouslySatisfiedSet,
+                current: currentSet
+            )
             celebration.handleBlockersSatisfied()
         }
+        previouslySatisfiedSet = currentSet
     }
 }
 
