@@ -44,6 +44,24 @@
 // If AppDelegate is refactored to accept injectable window/state seams, add
 // XCTestExpectation-based async tests here.
 //
+// NOTE — P2 round-4/5: stop-time mic-denied suppress-restore fix
+//
+// Round 5 fix: suppressNextRestore() is now called BEFORE the initial
+// voiceTypeWindow?.hide() in handleRecordingStopped(). Prior to this fix,
+// hide() triggered restore() which pulled focus back from System Settings
+// before suppressNextRestore() had a chance to run.
+//
+// Manual QA: trigger empty-recording mic-denied path → verify Settings stays
+// in front 4 seconds after the inline error appears (no auto-pull-back).
+// Steps:
+//   1. Revoke Microphone permission for VoiceType in System Settings → Privacy.
+//   2. Press and hold the hotkey briefly without speaking, then release.
+//   3. VoiceType should open Microphone Settings and show the inline error.
+//   4. Settings must remain frontmost for the full ~4s error-dismiss window —
+//      the captured app must NOT steal focus back during that time.
+//   5. Also verify across Spaces / fullscreen apps — the previous symptom was
+//      especially disruptive when the captured app was on a different Space.
+//
 // NOTE — P2-1 and P2-2 codex fixes (persistent toast VoiceOver + ErrorLogger in catch):
 //
 // Manual QA checklist (no injectable seam available for unit tests):

@@ -449,11 +449,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func handleRecordingStarted() {
         print("[AppDelegate] handleRecordingStarted, currentState: \(appState.rawValue)")
-        
+
         guard appState == .idle else {
             print("[AppDelegate] Ignoring start, not idle")
             return
         }
+
+        // Capture previous app + screen BEFORE showing the capsule so that
+        // VoiceType has not yet become frontmost. DESIGN.md § Focus Return.
+        FocusCaptureService.shared.capture()
 
         permissionManager.checkAllPermissions()
         let recordingReadiness = Self.recordingReadiness(
@@ -464,6 +468,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             AppLog.permissions.error("Blocked recording start because microphone permission is missing")
             permissionManager.requestMicrophonePermission()
             ErrorLogger.shared.log(message: "Recording blocked: microphone permission missing", category: "permissions")
+            // User has been directed to System Settings to grant permission. Don't
+            // auto-pull focus back to the captured app on errorInline auto-dismiss.
+            FocusCaptureService.shared.suppressNextRestore()
             voiceTypeWindow?.show(state: .errorInline(message: "Mic denied · Open Privacy"))
             voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss()
             appState = .idle
@@ -510,6 +517,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func handleRecordingStopped() {
         print("[AppDelegate] handleRecordingStopped, currentState: \(appState.rawValue)")
         recordingStartedAt = nil
+
+        // Pre-hide permission check: if mic permission has been revoked and we
+        // captured no audio, we are about to open System Settings. Suppress focus
+        // restore BEFORE the initial hide() so that hide() → restore() does not
+        // yank focus away from System Settings.
+        //
+        // Ordering invariant: suppressNextRestore() MUST run before the first
+        // voiceTypeWindow?.hide() call on any path that opens System Settings.
+        //
+        // We check permission here rather than waiting for the empty-samples guard
+        // below because we need the suppress flag set before hide() fires restore().
+        // The empty-samples guard confirms the actual audio outcome; this early
+        // check satisfies the suppress-before-hide ordering requirement.
+        permissionManager.checkAllPermissions()
+        if appState == .recording, !permissionManager.hasMicrophonePermission {
+            FocusCaptureService.shared.suppressNextRestore()
+        }
+
         voiceTypeWindow?.hide()
         // Sync HotkeyService.isRecording defensively — covers paths that stop via
         // menu / forceReset / error, not just hotkey-triggered stop.
@@ -529,8 +554,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             guard !samples.isEmpty else {
                 print("[AppDelegate] No audio samples")
                 AppLog.app.notice("Recording stopped with no audio")
-                permissionManager.checkAllPermissions()
+                // permissionManager.checkAllPermissions() was already called above (pre-hide).
                 if !permissionManager.hasMicrophonePermission {
+                    // suppressNextRestore() was already called above, before hide().
+                    // Open System Settings so the user can grant microphone permission.
                     permissionManager.requestMicrophonePermission()
                 }
                 ErrorLogger.shared.log(
@@ -708,6 +735,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             ErrorLogger.shared.log(error, category: "insertion")
             if case TextInjectionService.TextInjectionError.missingAccessibilityPermission = error {
                 permissionManager.openAccessibilitySettings()
+                // User has been directed to System Settings to grant permission. Don't
+                // auto-pull focus back to the captured app on errorInline auto-dismiss.
+                FocusCaptureService.shared.suppressNextRestore()
                 voiceTypeWindow?.show(state: .errorInline(message: "Accessibility denied · Open"))
             } else {
                 voiceTypeWindow?.show(state: .errorInline(message: "Text insertion failed · Retry"))

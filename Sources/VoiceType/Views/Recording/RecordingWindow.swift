@@ -188,6 +188,10 @@ final class VoiceTypeWindow: NSWindow {
     }
 
     func hide() {
+        // Restore focus to the previously-captured app before hiding the capsule.
+        // Called on every terminal state (inserted, emptyResult, errorInline,
+        // error paths). Single hookpoint per DESIGN.md § Focus Return.
+        FocusCaptureService.shared.restore()
         orderOut(nil)
     }
 
@@ -204,7 +208,10 @@ final class VoiceTypeWindow: NSWindow {
     }
 
     private func positionAtTopCenter() {
-        guard let screen = NSScreen.main else { return }
+        // Use the screen where the user's focused window lives (captured at hotkey
+        // press) so the capsule appears where they are looking. Falls back to
+        // NSScreen.main when no capture exists. DESIGN.md § Focus Return.
+        let screen = FocusCaptureService.shared.preferredScreen
         let screenFrame = screen.frame
         let topOffset: CGFloat = 80
 
