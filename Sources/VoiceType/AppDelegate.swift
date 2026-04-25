@@ -661,6 +661,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         // Capture target app name BEFORE injection — injection may shift focus.
         let targetAppName = NSWorkspace.shared.frontmostApplication?.localizedName ?? "app"
+        let targetBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let charCount = text.count
 
         // Keep the app busy until the text is fully inserted, so the next hotkey
@@ -668,6 +669,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         let injectionSucceeded = injectText(text, mode: AppSettings.shared.textInjectionMode)
 
         if injectionSucceeded {
+            // Record to history BEFORE the inserted flash so the entry lands
+            // even if the user dismisses the capsule quickly. Best-effort:
+            // flush failures are logged to ErrorLogger but never surface to the user.
+            // DESIGN.md § Transcription History. Step 9.
+            let historyEntry = HistoryStore.Entry(
+                text: text,
+                targetAppName: targetAppName,
+                targetAppBundleID: targetBundleID,
+                language: AppSettings.shared.language.rawValue
+            )
+            HistoryStore.shared.append(historyEntry)
+
             // Flash `.inserted` for 400ms (per v5-inserted-state.html), then hide.
             // appState stays non-idle during the flash so a hotkey press mid-flash
             // cannot pass canStartRecording() and start a new recording.

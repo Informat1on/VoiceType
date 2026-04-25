@@ -20,7 +20,8 @@ private struct GroupHeader: View {
 /// Native prefs row: left label + optional subtitle, right control.
 /// Min-height 40, horizontal padding lg, vertical padding md. DESIGN.md line 181.
 /// Prototype: `.prefs-row { padding: 12px 0; min-height: 40px; }`
-private struct PrefsRow<Control: View>: View {
+// internal: used by HistorySection (same module)
+struct PrefsRow<Control: View>: View {
     let label: String
     let subtitle: String?
     let control: Control
@@ -53,7 +54,7 @@ private struct PrefsRow<Control: View>: View {
 }
 
 /// 1px divider. DESIGN.md line 182 / Palette.divider.
-private struct RowDivider: View {
+struct RowDivider: View {
     var body: some View {
         Rectangle()
             .fill(Palette.divider)
@@ -62,14 +63,14 @@ private struct RowDivider: View {
 }
 
 /// Vertical gap between row-groups. DESIGN.md § Spacing line 155.
-private struct SectionGap: View {
+struct SectionGap: View {
     var body: some View {
         Color.clear.frame(height: Spacing.sectionGap)
     }
 }
 
 /// Colored dot for permission state rows. DESIGN.md lines 256-258.
-private struct PermissionDot: View {
+struct PermissionDot: View {
     enum DotState { case granted, denied, notRequested }
     let state: DotState
 
@@ -677,20 +678,10 @@ struct SettingsView: View {
 
                 SectionGap()
 
-                // TODO Tier A Step 9 / W2: wire HistoryStore here (DESIGN.md line 191).
-                // MARK: TRANSCRIPTION HISTORY group
+                // MARK: TRANSCRIPTION HISTORY group — Step 9
                 GroupHeader(title: "Transcription History")
                 RowDivider()
-                PrefsRow("Open history", subtitle: "Coming in a later update") {
-                    Button("Open history") {}
-                        .disabled(true)
-                }
-                RowDivider()
-                PrefsRow("Entries") {
-                    Text("0")
-                        .font(Typography.mono)
-                        .foregroundStyle(Palette.textSecondary)
-                }
+                HistorySection()
                 RowDivider()
 
                 SectionGap()
