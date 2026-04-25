@@ -55,13 +55,13 @@ struct AboutView: View {
                                 .font(Typography.mono)
                                 .foregroundStyle(Palette.textSecondary)
                         }
-                        aboutDivider
+                        RowDivider()
                         aboutRow("Bundle") {
                             Text(Bundle.main.bundleIdentifier ?? "VoiceType")
                                 .font(Typography.mono)
                                 .foregroundStyle(Palette.textSecondary)
                         }
-                        aboutDivider
+                        RowDivider()
                         aboutRow("Platform") {
                             Text("macOS 13+")
                                 .font(Typography.mono)
@@ -74,19 +74,19 @@ struct AboutView: View {
                         aboutRow("Hotkey") {
                             hotkeyChip
                         }
-                        aboutDivider
+                        RowDivider()
                         aboutRow("Model") {
                             Text(settings.selectedModel.displayName)
                                 .font(Typography.mono)
                                 .foregroundStyle(Palette.textSecondary)
                         }
-                        aboutDivider
+                        RowDivider()
                         aboutRow("Language") {
                             Text(languageLabel)
                                 .font(Typography.mono)
                                 .foregroundStyle(Palette.textSecondary)
                         }
-                        aboutDivider
+                        RowDivider()
                         aboutRow("Insertion") {
                             Text(settings.textInjectionMode.displayName)
                                 .font(Typography.mono)
@@ -99,7 +99,7 @@ struct AboutView: View {
                         aboutRow("Microphone") {
                             permissionBadge(permissionManager.hasMicrophonePermission)
                         }
-                        aboutDivider
+                        RowDivider()
                         aboutRow("Accessibility") {
                             permissionBadge(permissionManager.hasAccessibilityPermission)
                         }
@@ -130,9 +130,9 @@ struct AboutView: View {
                 }
             }
             // Prototype: .about-content { padding: 28px 28px 24px }
-            // xxl=32 is the nearest token above 28; windowPadding=24 is exact for bottom.
+            // aboutContentTop=28 (top), windowPadding=24 (horizontal), xl=24 (bottom).
             .padding(.horizontal, Spacing.windowPadding)
-            .padding(.top, Spacing.xxl)
+            .padding(.top, Spacing.aboutContentTop)   // was Spacing.xxl (32)
             .padding(.bottom, Spacing.xl)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
@@ -158,7 +158,7 @@ struct AboutView: View {
                 .foregroundStyle(Palette.textMuted)
                 .padding(.bottom, Spacing.sm)   // group-label: margin-bottom 8px
 
-            aboutDivider   // top border per prototype .group-rows
+            RowDivider()   // top border per prototype .group-rows
             rows()
         }
     }
@@ -180,14 +180,6 @@ struct AboutView: View {
         .padding(.horizontal, Spacing.prefsRowHorizontal)
         .padding(.vertical, Spacing.prefsRowVertical)
         .frame(minHeight: Spacing.prefsRowMinHeight)
-    }
-
-    /// 1px row divider. Local to AboutView — SettingsView's RowDivider is private.
-    /// Both implement the same visual using Palette.divider.
-    private var aboutDivider: some View {
-        Rectangle()
-            .fill(Palette.divider)
-            .frame(height: 1)
     }
 
     /// Hotkey display chip — RoundedRectangle 5pt per prototype.

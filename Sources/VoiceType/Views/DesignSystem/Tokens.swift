@@ -82,6 +82,11 @@ enum Spacing {
     static let sectionGap: CGFloat = xxl
     /// Capsule horizontal padding — locked off-scale. DESIGN.md § Spacing line 157.
     static let capsuleHorizontal: CGFloat = 14
+    /// AboutView content top inset. Matches v1-cool-inksteel.html
+    /// `.about-content { padding: 28px 28px 24px }` — distinct from
+    /// generic `windowPadding` (24) because About has slightly more breathing
+    /// room for the artwork header.
+    static let aboutContentTop: CGFloat = 28
 }
 
 // MARK: - Radius
