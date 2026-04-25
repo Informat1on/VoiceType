@@ -54,6 +54,13 @@ final class FontRegistrationTests: XCTestCase {
         )
     }
 
+    func testGeistMonoSemiBoldIsBundled() {
+        XCTAssertNotNil(
+            voiceTypeResourceBundle().url(forResource: "GeistMono-SemiBold", withExtension: "ttf"),
+            "GeistMono-SemiBold.ttf must be present in VoiceType resource bundle"
+        )
+    }
+
     // MARK: - Registration + family resolution
 
     /// Register all bundled fonts for the test process, then assert that
@@ -90,12 +97,19 @@ final class FontRegistrationTests: XCTestCase {
         XCTAssertNotNil(font, "NSFont(name:\"GeistMono-Medium\", size:12) must return non-nil after registration")
     }
 
+    func testGeistMonoSemiBoldResolvesAfterRegistration() {
+        registerFontsForTesting()
+
+        let font = NSFont(name: "GeistMono-SemiBold", size: 12)
+        XCTAssertNotNil(font, "NSFont(name:\"GeistMono-SemiBold\", size:12) must return non-nil after registration")
+    }
+
     // MARK: - File size sanity (guards against HTML redirect pages being saved as .ttf)
 
     func testFontFileSizesAreReasonable() throws {
         let fontNames = [
             "Geist-Regular", "Geist-Medium", "Geist-SemiBold",
-            "GeistMono-Regular", "GeistMono-Medium"
+            "GeistMono-Regular", "GeistMono-Medium", "GeistMono-SemiBold"
         ]
         let bundle = voiceTypeResourceBundle()
         for name in fontNames {
@@ -126,7 +140,7 @@ final class FontRegistrationTests: XCTestCase {
     private func registerFontsForTesting() {
         let fontNames = [
             "Geist-Regular", "Geist-Medium", "Geist-SemiBold",
-            "GeistMono-Regular", "GeistMono-Medium"
+            "GeistMono-Regular", "GeistMono-Medium", "GeistMono-SemiBold"
         ]
         let bundle = voiceTypeResourceBundle()
         for name in fontNames {

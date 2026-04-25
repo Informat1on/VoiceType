@@ -246,10 +246,10 @@ enum Typography {
     /// Line height for caption text. Matches metaLabel at 14pt for vertical rhythm.
     static let captionLineHeight: CGFloat = 14
 
-    /// Geist Mono 10pt Medium — via PostScript name (see `mono` comment).
-    /// DESIGN.md spec is "600 Semibold" but only GeistMono-Regular + Medium
-    /// TTFs are bundled. Upgrade path: bundle GeistMono-SemiBold.ttf.
-    static let badge = Font.custom("GeistMono-Medium", size: 10)
+    /// Geist Mono 10pt SemiBold — via PostScript name (see `mono` comment).
+    /// DESIGN.md § Typography line 60 spec: "10/14 600 Semibold".
+    /// v6-a11y.html `.rec-label { font-weight:600 }` confirms REC label intent.
+    static let badge = Font.custom("GeistMono-SemiBold", size: 10)
     /// Line height for badge text. DESIGN.md: "10/14".
     static let badgeLineHeight: CGFloat = 14
 

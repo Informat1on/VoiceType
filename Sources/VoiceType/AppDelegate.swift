@@ -189,7 +189,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             "Geist-Medium",
             "Geist-SemiBold",
             "GeistMono-Regular",
-            "GeistMono-Medium"
+            "GeistMono-Medium",
+            "GeistMono-SemiBold"
         ]
         for name in fontNames {
             guard let url = Bundle.main.url(forResource: name, withExtension: "ttf") else {
