@@ -30,10 +30,10 @@ struct GroupHeader: View {
     }
 }
 
+// internal: used by HistorySection (same module)
 /// Native prefs row: left label + optional subtitle, right control.
 /// Min-height 40, horizontal padding lg, vertical padding md. DESIGN.md line 181.
 /// Prototype: `.prefs-row { padding: 12px 0; min-height: 40px; }`
-// internal: used by HistorySection (same module)
 struct PrefsRow<Control: View>: View {
     let label: String
     let subtitle: String?
