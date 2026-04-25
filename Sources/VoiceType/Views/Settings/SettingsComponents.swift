@@ -1,0 +1,342 @@
+// SettingsComponents.swift — VoiceType
+//
+// Reusable presentational primitives used by SettingsView and its tab subviews.
+// Extracted from SettingsView.swift (Chunk S) to keep that file under
+// the file_length lint threshold and to make these components easier to
+// discover and test.
+//
+// All components are pure: no @StateObject, no @ObservedObject, no
+// AppDelegate references. They take their state via @Binding or plain
+// let parameters. SettingsView wires them up to AppSettings.shared.
+//
+// Prototype source of truth: v1-cool-inksteel.html (lines cited per
+// component). DESIGN.md § Layout / Color / Typography for tokens.
+
+import SwiftUI
+
+// MARK: - Row Primitives
+
+/// Uppercase meta-label group header.
+/// DESIGN.md line 180: 11/14 Medium, letter-spacing 0.08em, textMuted. 8px gap below.
+struct GroupHeader: View {
+    let title: String
+    var body: some View {
+        Text(title)
+            .font(Typography.metaLabel)
+            .tracking(Typography.metaLabelTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(Palette.textMuted)
+            .padding(.bottom, Spacing.sm)  // 8px per DESIGN.md line 180
+    }
+}
+
+/// Native prefs row: left label + optional subtitle, right control.
+/// Min-height 40, horizontal padding lg, vertical padding md. DESIGN.md line 181.
+/// Prototype: `.prefs-row { padding: 12px 0; min-height: 40px; }`
+// internal: used by HistorySection (same module)
+struct PrefsRow<Control: View>: View {
+    let label: String
+    let subtitle: String?
+    let control: Control
+
+    init(_ label: String, subtitle: String? = nil, @ViewBuilder control: () -> Control) {
+        self.label = label
+        self.subtitle = subtitle
+        self.control = control()
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Spacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(Typography.body)
+                    .foregroundStyle(Palette.textPrimary)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(Typography.caption)  // non-uppercase regular caption per FIX 8
+                        .foregroundStyle(Palette.textSecondary)
+                }
+            }
+            Spacer(minLength: Spacing.md)
+            control
+        }
+        .padding(.horizontal, Spacing.prefsRowHorizontal)
+        .padding(.vertical, Spacing.prefsRowVertical)
+        .frame(minHeight: Spacing.prefsRowMinHeight)
+    }
+}
+
+/// 1px divider. DESIGN.md line 182 / Palette.divider.
+struct RowDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Palette.divider)
+            .frame(height: 1)
+    }
+}
+
+/// Vertical gap between row-groups. DESIGN.md § Spacing line 155.
+struct SectionGap: View {
+    var body: some View {
+        Color.clear.frame(height: Spacing.sectionGap)
+    }
+}
+
+/// Colored dot for permission state rows. DESIGN.md lines 256-258.
+struct PermissionDot: View {
+    enum DotState { case granted, denied, notRequested }
+    let state: DotState
+
+    var body: some View {
+        Circle()
+            .fill(dotColor)
+            .frame(width: 8, height: 8)
+    }
+
+    private var dotColor: Color {
+        switch state {
+        case .granted:      return Palette.success
+        case .denied:       return Palette.error
+        case .notRequested: return Palette.textMuted
+        }
+    }
+}
+
+// MARK: - Custom Segmented Control
+//
+// Replaces native Picker(.segmented). Matches prototype CSS exactly:
+// v1-cool-inksteel.html lines 273-287:
+//   .seg { background:var(--surface-inset); border-radius:8px;
+//          padding:2px; border:1px solid var(--stroke-subtle); }
+//   .seg button { padding:4px 10px; font-size:12px; font-weight:500;
+//                 color:var(--text-muted); border-radius:6px; transition:all 120ms; }
+//   .seg button[aria-pressed="true"] { background:var(--bg-window);
+//                                      color:var(--text-primary);
+//                                      box-shadow:0 1px 2px rgba(0,0,0,0.12); }
+
+struct SegmentedControl<T: Hashable>: View {
+    let options: [(label: String, value: T)]
+    @Binding var selection: T
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, option in
+                segButton(option)
+            }
+        }
+        // Outer container: surfaceInset bg, 8pt radius, 2px inner padding, strokeSubtle border
+        .padding(2)
+        .background(Palette.surfaceInset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Palette.strokeSubtle, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func segButton(_ option: (label: String, value: T)) -> some View {
+        let isSelected = selection == option.value
+        Button {
+            selection = option.value
+        } label: {
+            Text(option.label)
+                .font(Typography.buttonLabel)  // 12pt Medium — prototype font-size:12px weight:500
+                .foregroundStyle(isSelected ? Palette.textPrimary : Palette.textMuted)
+                .padding(.horizontal, 10)  // prototype: padding 4px 10px
+                .padding(.vertical, 4)
+                .background(
+                    Group {
+                        if isSelected {
+                            // Selected: bg-window + subtle shadow
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Palette.bgWindow)
+                                .shadow(color: .black.opacity(0.12), radius: 1, x: 0, y: 1)
+                        } else {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.clear)
+                        }
+                    }
+                )
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .animation(.easeInOut(duration: 0.12), value: isSelected)  // transition:120ms per prototype
+    }
+}
+
+// MARK: - Permission Hint Panel
+//
+// Replaces plain PrefsRow for permission rows. Matches prototype CSS exactly:
+// v1-cool-inksteel.html lines 325-337:
+//   .perm-hint { margin-top:6px; padding:10px 12px;
+//                background:var(--accent-soft); border-radius:8px;
+//                font-size:12px; color:var(--text-secondary);
+//                display:flex; align-items:center; gap:10px;
+//                border-left:2px solid var(--accent); }
+//   .perm-hint.denied { background:rgba(255,122,107,0.10);
+//                       border-left-color:var(--error); }
+//   .perm-hint .perm-action { margin-left:auto; color:var(--accent);
+//                             font-weight:500; cursor:pointer; }
+
+struct PermHintPanel: View {
+    enum PermState { case granted, denied, notRequested }
+    let state: PermState
+    let title: String
+    let actionLabel: String
+    let onAction: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {  // gap:10px per prototype
+            PermissionDot(state: dotState)
+
+            Text(title)
+                .font(Typography.caption)  // 12pt — matches prototype font-size:12px
+                .foregroundStyle(Palette.textSecondary)
+
+            Spacer()
+
+            // .perm-action: margin-left:auto; color:var(--accent); font-weight:500
+            Button(action: onAction) {
+                Text(actionLabel)
+                    .font(Typography.buttonLabel)  // 12pt Medium — font-weight:500
+                    .foregroundStyle(actionColor)
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+        }
+        .padding(.vertical, 10)   // prototype: padding 10px 12px
+        .padding(.horizontal, 12)
+        .background(panelBg, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+        .overlay(alignment: .leading) {
+            // 2pt left accent bar — prototype border-left:2px solid var(--accent)
+            RoundedRectangle(cornerRadius: 1, style: .continuous)
+                .fill(borderColor)
+                .frame(width: 2)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+        .padding(.top, 6)  // prototype: margin-top:6px
+    }
+
+    private var dotState: PermissionDot.DotState {
+        switch state {
+        case .granted:      return .granted
+        case .denied:       return .denied
+        case .notRequested: return .notRequested
+        }
+    }
+
+    // granted/notRequested = accentSoft; denied = error-tinted rgba(255,122,107,0.10)
+    // Prototype line 336: .perm-hint.denied { background: rgba(255,122,107,0.10) }
+    // Uses Color.dynamic (Tokens.swift) — no new literal color values beyond Tokens.swift pattern.
+    // Light: #D95C4F@0.10 = sRGB(0.850,0.361,0.310,0.10)
+    // Dark:  #FF7A6B@0.10 = sRGB(1.000,0.478,0.420,0.10)
+    // swiftlint:disable inline_nscolor_rgb
+    private var panelBg: Color {
+        switch state {
+        case .granted, .notRequested:
+            return Palette.accentSoft
+        case .denied:
+            return Color.dynamic(
+                light: NSColor(srgbRed: 0.850196, green: 0.360784, blue: 0.309804, alpha: 0.10),
+                dark: NSColor(srgbRed: 1.000000, green: 0.478431, blue: 0.419608, alpha: 0.10)
+            )
+        }
+    }
+    // swiftlint:enable inline_nscolor_rgb
+
+    private var borderColor: Color {
+        switch state {
+        case .granted, .notRequested: return Palette.accent
+        case .denied:                 return Palette.error
+        }
+    }
+
+    private var actionColor: Color {
+        switch state {
+        case .granted, .notRequested: return Palette.accent
+        case .denied:                 return Palette.error
+        }
+    }
+}
+
+// MARK: - Sidebar Item
+//
+// Replaces NavigationSplitView List rows. Matches prototype CSS exactly:
+// v1-cool-inksteel.html lines 227-243:
+//   .sidebar-item { display:flex; align-items:center; gap:8px;
+//                   padding:6px 10px; border-radius:6px;
+//                   font-size:13px; color:var(--text-secondary);
+//                   transition:background-color 120ms; }
+//   .sidebar-item:hover { background:var(--sidebar-hover); }
+//   .sidebar-item.active { background:var(--sidebar-active);
+//                          color:var(--text-primary); font-weight:500; }
+//   .sidebar-item.active::before { content:""; width:2px; height:16px;
+//                                  background:var(--accent); border-radius:1px;
+//                                  margin-left:-10px; margin-right:4px; }
+
+struct SidebarItem: View {
+    let label: String
+    let systemImage: String
+    let isActive: Bool
+    let onTap: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(alignment: .center, spacing: 0) {
+                // Active indicator bar — CSS ::before pseudo-element equivalent.
+                // width:2px; height:16px; accent color; border-radius:1px;
+                // Offset to leading edge of padding zone.
+                if isActive {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(Palette.accent)
+                        .frame(width: 2, height: 16)
+                        .offset(x: -6)
+                        .padding(.trailing, -2)
+                } else {
+                    Color.clear.frame(width: 2, height: 16)
+                        .offset(x: -6)
+                        .padding(.trailing, -2)
+                }
+
+                HStack(alignment: .center, spacing: 8) {  // gap:8px per prototype
+                    Image(systemName: systemImage)
+                        .font(.system(size: 13, weight: .regular))
+                        .frame(width: 14, height: 14)  // svg 14x14 per prototype line 243
+                        .foregroundStyle(isActive ? Palette.accent : Palette.textSecondary)
+
+                    Text(label)
+                        .font(isActive
+                              ? Font.custom("Geist", size: 13).weight(.medium)  // font-weight:500
+                              : Typography.body)
+                        .foregroundStyle(isActive ? Palette.textPrimary : Palette.textSecondary)
+
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 10)  // prototype: padding:6px 10px
+            .padding(.vertical, 6)
+            .background(
+                Group {
+                    if isActive {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Palette.sidebarActive)
+                    } else if isHovered {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Palette.sidebarHover)
+                    } else {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.clear)
+                    }
+                }
+            )
+            .animation(.easeInOut(duration: 0.12), value: isActive)   // transition:120ms
+            .animation(.easeInOut(duration: 0.12), value: isHovered)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .onDisappear { isHovered = false }
+    }
+}
