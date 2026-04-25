@@ -18,6 +18,24 @@
 import AppKit
 import ApplicationServices
 
+// MARK: - AX type-safe helper
+
+/// Type-safe wrappers around the AX C API. Returns nil on type mismatch
+/// instead of crashing via `as!`. Apple's Accessibility API uses CFTypeRef
+/// which can hold any CF type; in practice we know the runtime type from the
+/// attribute, but a defensive cast is cheaper than a crash if anything drifts.
+enum AXAttr {
+    /// Read an attribute from `element` and conditionally cast to `T`
+    /// (e.g., `AXUIElement`, `AXValue`). Returns nil if the attribute is
+    /// missing, the AX call fails, or the runtime type doesn't match.
+    static func value<T>(_ element: AXUIElement, _ attribute: String, as type: T.Type) -> T? {
+        var raw: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &raw)
+        guard status == .success, let raw else { return nil }
+        return raw as? T
+    }
+}
+
 /// Captures the user's previous app + window at hotkey press so we can:
 /// 1. Position the capsule on the same screen as the focused window.
 /// 2. Restore focus to that app when the capsule dismisses.
@@ -154,39 +172,23 @@ final class FocusCaptureService {
         let pid = app.processIdentifier
         let appElement = AXUIElementCreateApplication(pid)
 
-        var focusedRef: CFTypeRef?
-        let focusResult = AXUIElementCopyAttributeValue(
+        guard let windowElement = AXAttr.value(
             appElement,
-            kAXFocusedWindowAttribute as CFString,
-            &focusedRef
-        )
-        guard focusResult == .success, let focused = focusedRef else { return (nil, nil) }
-        // swiftlint:disable:next force_cast
-        let windowElement = focused as! AXUIElement
+            kAXFocusedWindowAttribute as String,
+            as: AXUIElement.self
+        ) else {
+            AppLog.app.notice("AX focused-window attribute missing or not AXUIElement; skipping window info")
+            return (nil, nil)
+        }
 
-        var positionRef: CFTypeRef?
-        var sizeRef: CFTypeRef?
-        let posResult = AXUIElementCopyAttributeValue(
-            windowElement,
-            kAXPositionAttribute as CFString,
-            &positionRef
-        )
-        let sizeResult = AXUIElementCopyAttributeValue(
-            windowElement,
-            kAXSizeAttribute as CFString,
-            &sizeRef
-        )
-        guard posResult == .success, sizeResult == .success,
-              let posValue = positionRef, let sizeValue = sizeRef else { return (nil, nil) }
+        guard let posAX = AXAttr.value(windowElement, kAXPositionAttribute as String, as: AXValue.self),
+              let sizeAX = AXAttr.value(windowElement, kAXSizeAttribute as String, as: AXValue.self)
+        else { return (nil, nil) }
 
         var origin = CGPoint.zero
         var size = CGSize.zero
-        // AXValue force-casts are required by Apple's AX API design — the type tag
-        // is embedded in the AXValue opaque struct, not the Swift type system.
-        // swiftlint:disable:next force_cast
-        AXValueGetValue(posValue as! AXValue, .cgPoint, &origin)
-        // swiftlint:disable:next force_cast
-        AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
+        AXValueGetValue(posAX, .cgPoint, &origin)
+        AXValueGetValue(sizeAX, .cgSize, &size)
 
         // AX origin is top-left of the window in global screen space (top-left origin).
         // NSScreen.frame is bottom-left origin with primary screen starting at y=0.
