@@ -656,7 +656,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return
         }
 
-        let text = (transcriptionText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Trim is handled upstream by TranscriptionService.conditionallyTrim(_:),
+        // gated on AppSettings.shared.trimWhitespaceAfterInsert. No secondary trim here.
+        let text = transcriptionText ?? ""
         guard !text.isEmpty else {
             print("[AppDelegate] Transcription produced empty string — flashing emptyResult")
             AppLog.transcription.notice("Transcription produced empty text")

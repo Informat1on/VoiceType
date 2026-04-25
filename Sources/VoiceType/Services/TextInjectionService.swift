@@ -1,7 +1,8 @@
 import Cocoa
 import Carbon
-// TODO: TextInjectionService.insertText must honor settings.trimWhitespaceAfterInsert
-// (AppSettings.shared.trimWhitespaceAfterInsert). Wiring deferred to a future Services step.
+// Trim is handled by TranscriptionService.conditionallyTrim(_:), gated on
+// AppSettings.shared.trimWhitespaceAfterInsert. TextInjectionService receives
+// already-trimmed (or intentionally untrimmed) text — no secondary trim needed here.
 
 struct KeyboardKeystroke: Equatable {
     let keyCode: CGKeyCode

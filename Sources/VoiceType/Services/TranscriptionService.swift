@@ -232,7 +232,7 @@ final class TranscriptionService: ObservableObject {
                 "[TranscriptionService] Transcription completed in \(String(format: "%.2f", transcribeTime))s (\(String(format: "%.2fx", realtimeFactor)) realtime)"
             )
 
-            let trimmed = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            let trimmed = TranscriptionService.conditionallyTrim(text)
 
             progress = 1.0
             lastResult = trimmed
@@ -256,5 +256,17 @@ final class TranscriptionService: ObservableObject {
         currentModelName = nil
         lastResult = nil
         progress = 0.0
+    }
+
+    // MARK: - Trim helper
+
+    /// Gate trim on the user-facing toggle in Settings > General > Insertion.
+    /// Called from `transcribe(audio:language:)` — single source of truth.
+    /// Exposed `internal` so `TranscriptionServiceTrimToggleTests` can test it
+    /// without invoking whisper.cpp.
+    static func conditionallyTrim(_ text: String) -> String {
+        AppSettings.shared.trimWhitespaceAfterInsert
+            ? text.trimmingCharacters(in: .whitespacesAndNewlines)
+            : text
     }
 }
