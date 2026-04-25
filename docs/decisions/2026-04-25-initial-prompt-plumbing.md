@@ -2,8 +2,9 @@
 
 **Date:** 2026-04-25
 **Spike for:** v1.1 Track 2 Weekend 1 (hotwords / Custom Vocabulary)
-**Status:** RESOLVED
+**Status:** IMPLEMENTED
 **Verdict:** **Plumbed via `@dynamicMemberLookup` — works without modifying SwiftWhisper, but lifetime management is on us.**
+**Implemented in:** feat(language): bilingual prompt plumbing + default to .bilingualRuEn
 
 ---
 

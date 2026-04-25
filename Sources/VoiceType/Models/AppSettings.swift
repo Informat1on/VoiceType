@@ -200,14 +200,13 @@ final class AppSettings: ObservableObject {
             case "ru":   self.language = .ru
             case "en":   self.language = .en
             default:
-                print("[AppSettings] Unknown legacy preferredLanguage=\(legacyRaw), defaulting to .auto")
-                self.language = .auto
+                print("[AppSettings] Unknown legacy preferredLanguage=\(legacyRaw), defaulting to .bilingualRuEn")
+                self.language = .bilingualRuEn
             }
             defaults.removeObject(forKey: "preferredLanguage")
         } else {
-            self.language = .auto
+            self.language = .bilingualRuEn
         }
-        defaults.removeObject(forKey: "preferredLanguage")
 
         self.customVocabulary = defaults.string(forKey: "customVocabulary") ?? ""
 

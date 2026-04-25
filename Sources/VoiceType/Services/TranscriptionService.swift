@@ -60,6 +60,16 @@ final class TranscriptionService: ObservableObject {
         currentModelName
     }
 
+    // Bilingual seed prompt for .bilingualRuEn mode.
+    // Mixes Russian prose with inline English technical terms so the whisper.cpp
+    // decoder sees both scripts before audio decoding begins.  The seed is ~130
+    // chars — well within whisper.cpp's 224-token initial_prompt limit.
+    // Rationale: Week 0 validation showed language=auto picks English and mangles
+    // Cyrillic on code-switched speech.  Pinning language=ru plus this seed
+    // produces clean RU+EN output.  (See ADR 2026-04-24-ruen-language-mode.)
+    static let bilingualSeed =
+        "Запушь этот commit в main. Проверь auth middleware в handler. Это работает."
+
     func setInitialPrompt(_ text: String?) {
         if let existing = _initialPrompt {
             free(existing)
@@ -73,6 +83,20 @@ final class TranscriptionService: ObservableObject {
         guard let ptr = strdup(text) else { return }
         _initialPrompt = ptr
         whisper?.params.initial_prompt = UnsafePointer(ptr)
+    }
+
+    /// Build and apply the initial prompt from the current language + custom vocabulary.
+    /// Must be called:
+    ///   - on first model load / model reload (loadModel re-calls this after params reset)
+    ///   - when AppSettings.language changes
+    ///   - when AppSettings.customVocabulary changes
+    func applyInitialPrompt() {
+        let seed = AppSettings.shared.language.usesBilingualPrompt
+            ? Self.bilingualSeed
+            : ""
+        let user = AppSettings.shared.customVocabulary
+        let combined = [seed, user].filter { !$0.isEmpty }.joined(separator: " | ")
+        setInitialPrompt(combined.isEmpty ? nil : combined)
     }
 
     private func applyRuntimeConfiguration(language: Language) {
@@ -142,11 +166,10 @@ final class TranscriptionService: ObservableObject {
         whisper = newWhisper
         applyRuntimeConfiguration(language: language)
 
-        // Re-apply initial prompt so a model reload never silently erases user vocabulary.
-        // (The params object is freshly created above, so any previously-set pointer is gone.)
-        if let text = currentInitialPromptText {
-            setInitialPrompt(text)
-        }
+        // Re-apply initial prompt so a model reload never silently erases user vocabulary
+        // or the bilingual seed.  (The WhisperParams object is freshly created above, so
+        // any previously-set initial_prompt pointer is gone — must re-apply unconditionally.)
+        applyInitialPrompt()
     }
 
     func transcribe(audio: [Float], language: Language = .auto) async throws -> String {

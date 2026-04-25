@@ -288,6 +288,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 self?.scheduleModelLoad(newModel, downloadCoreMLIfNeeded: false)
             }
             .store(in: &cancellables)
+
+        // Re-apply initial prompt whenever language or custom vocabulary changes so the
+        // bilingual seed is added/removed immediately — without requiring a model reload.
+        Publishers.CombineLatest(
+            AppSettings.shared.$language,
+            AppSettings.shared.$customVocabulary
+        )
+        .removeDuplicates { $0 == $1 }
+        .dropFirst()
+        .sink { [weak self] _, _ in
+            self?.applyInitialPrompt()
+        }
+        .store(in: &cancellables)
     }
 
     private func registerHotkey(modifiers: Int, keyCode: Int, mode: ActivationMode) {
@@ -415,8 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func applyInitialPrompt() {
-        let userVocabulary = AppSettings.shared.customVocabulary
-        transcriptionService.setInitialPrompt(userVocabulary.isEmpty ? nil : userVocabulary)
+        transcriptionService.applyInitialPrompt()
     }
 
     private func preloadModelIfNeeded() {
