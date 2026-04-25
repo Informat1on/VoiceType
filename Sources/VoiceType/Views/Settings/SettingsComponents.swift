@@ -340,3 +340,61 @@ struct SidebarItem: View {
         .onDisappear { isHovered = false }
     }
 }
+
+// MARK: - Model Row
+//
+// Extracted from SettingsView.swift (Chunk T). Represents one selectable
+// model in the Models tab list. Module-internal (was private in SettingsView).
+
+struct ModelRow: View {
+    let model: TranscriptionModel
+    let isSelected: Bool
+    let onSelect: () -> Void
+    @ObservedObject private var modelManager = ModelManager.shared
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(alignment: .center, spacing: Spacing.md) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Palette.accent : Palette.textMuted)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.displayName)
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.textPrimary)
+                    Text("\(model.estimatedSize) · Speed \(model.speedRating) · Quality \(model.qualityRating)")
+                        .font(Typography.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                    Text(model.recommendedFor)
+                        .font(Typography.caption)
+                        .foregroundStyle(Palette.textMuted)
+                }
+
+                Spacer(minLength: Spacing.md)
+
+                downloadStateBadge
+            }
+            .padding(.horizontal, Spacing.prefsRowHorizontal)
+            .padding(.vertical, Spacing.prefsRowVertical)
+            .frame(minHeight: Spacing.prefsRowMinHeight)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .accessibilityLabel(model.displayName)
+        .accessibilityValue("\(downloadStateAccessibilityValue), \(model.estimatedSize), Speed \(model.speedRating), Quality \(model.qualityRating)")
+    }
+
+    @ViewBuilder
+    private var downloadStateBadge: some View {
+        if modelManager.isModelDownloaded(model: model) {
+            StatusBadge("Downloaded", tone: .positive)
+        } else {
+            StatusBadge("Not downloaded")
+        }
+    }
+
+    private var downloadStateAccessibilityValue: String {
+        modelManager.isModelDownloaded(model: model) ? "Downloaded" : "Not downloaded"
+    }
+}
