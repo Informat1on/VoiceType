@@ -69,15 +69,25 @@ final class CapsuleStateModel: ObservableObject {
 
     // MARK: - A7: errorInline auto-dismiss
 
+    /// Tracks the most-recent pending dismiss task so rapid errorInline transitions
+    /// can cancel the stale timer before scheduling a new one (P3 codex fix).
+    private var pendingDismissTask: Task<Void, Never>?
+
     /// Called when state transitions to .errorInline. After `seconds` the model
     /// posts .capsuleErrorInlineExpired so AppDelegate can hide the window.
     /// AppDelegate wiring (voiceTypeWindow?.hide()) is Phase 2 work.
     /// The callback is decoupled via NotificationCenter to avoid a direct
     /// AppDelegate import in this file.
+    ///
+    /// P3: cancels the previous pending task before scheduling a new one.
+    /// This ensures each errorInline message receives its own full display window:
+    /// without cancellation, a stale task can fire and hide a newer message early.
     func scheduleErrorInlineDismiss(after seconds: TimeInterval = 4) {
-        Task { @MainActor in
+        pendingDismissTask?.cancel()
+        pendingDismissTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
-            if case .errorInline = state {
+            guard !Task.isCancelled, let self else { return }
+            if case .errorInline = self.state {
                 NotificationCenter.default.post(name: .capsuleErrorInlineExpired, object: nil)
             }
         }

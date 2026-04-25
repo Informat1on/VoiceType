@@ -54,12 +54,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: - Windows
 
     private var voiceTypeWindow: VoiceTypeWindow?
+    private var errorToastWindow: ErrorToastWindow?
     private var modelLoadTask: Task<Void, Never>?
     private var pendingModelLoadRequest: ModelLoadRequest?
     private var settingsWindow: NSWindow?
     private var aboutWindow: NSWindow?
     private var firstLaunchWindow: FirstLaunchWindow?
     private var cancellables = Set<AnyCancellable>()
+
+    /// Set to `true` by `injectText` when it shows an `.errorInline` capsule state.
+    /// Cleared by `transcribeAndInject`'s else-branch so the capsule is NOT hidden
+    /// immediately after `injectText` already presented the inline error.
+    /// P2 review finding #1 (flag approach — less intrusive than enum return type).
+    private var pendingErrorInlineShown = false
 
     // MARK: - NSApplicationDelegate
 
@@ -70,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         NSApp.setActivationPolicy(.accessory)
 
         voiceTypeWindow = VoiceTypeWindow(audioService: audioCaptureService)
+        errorToastWindow = ErrorToastWindow()
 
         // Subscribe to .capsuleErrorInlineExpired so the 4s auto-dismiss
         // emitted by CapsuleStateModel actually hides the window.
@@ -212,6 +220,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         permissionManager.refreshPermissions()
         // requestInitialPermissionsIfNeeded() removed — FirstLaunchWindow is the
         // sole onboarding surface. See DESIGN.md Decisions Log D8 / Step 4.
+
+        // Wire PermissionManager → errorToast so permissions code never calls NSAlert.
+        permissionManager.onToastError = { [weak self] title, body in
+            self?.showErrorToast(title: title, body: body)
+        }
+        // Wire persistent-toast callbacks for the restart-required notification.
+        // P2 finding #3.
+        permissionManager.onShowPersistentToast = { [weak self] title, body in
+            guard let self else { return }
+            print("[AppDelegate] PERSISTENT TOAST — \(title): \(body)")
+            AppLog.app.error("Persistent toast: \(title, privacy: .public)")
+            ErrorLogger.shared.log(message: "\(title): \(body)", category: "app")
+            // Fire VoiceOver announcement — mirrors showErrorToast path.
+            // P2-1: persistent restart toast must announce via the same
+            // announcementCopy(for: .errorToast(...)) path as normal toasts.
+            // The user just performed a permission grant; restart fires ~600ms
+            // later — sufficient for VoiceOver to begin speaking.
+            let announcement = self.voiceTypeWindow?.stateModel.announcementCopy(
+                for: .errorToast(title: title, body: body)
+            ) ?? "\(title). \(body)."
+            self.voiceTypeWindow?.stateModel.announcer(announcement)
+            self.errorToastWindow?.show(title: title, body: body, persistent: true)
+        }
+        permissionManager.onHideToast = { [weak self] in
+            self?.errorToastWindow?.hide()
+        }
     }
 
     private func setupHotkeyCallbacks() {
@@ -334,7 +368,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             } catch {
                 print("[AppDelegate] Download failed: \(error)")
                 AppLog.models.error("Model download failed for \(model.rawValue, privacy: .public)")
-                showError("Failed to download model: \(error.localizedDescription)")
+                ErrorLogger.shared.log(error, category: "models", context: ["model": model.rawValue])
+                showErrorToast(
+                    title: "Model download failed",
+                    body: "Could not download \(model.rawValue). Check your connection and try again in Settings."
+                )
                 return
             }
         } else if request.downloadCoreMLIfNeeded && model.hasCoreMLSupport && !modelManager.isCoreMLModelDownloaded(model: model) {
@@ -347,6 +385,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             } catch {
                 print("[AppDelegate] CoreML download failed (non-critical): \(error)")
                 AppLog.models.error("CoreML download failed for \(model.rawValue, privacy: .public)")
+                // P2-2: log non-critical CoreML failure to file for diagnostics.
+                ErrorLogger.shared.log(error, category: "models", context: ["model": model.rawValue, "stage": "coreml"])
             }
         }
 
@@ -366,7 +406,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         } catch {
             print("[AppDelegate] Failed to reload model: \(error)")
             AppLog.models.error("Model reload failed for \(model.rawValue, privacy: .public)")
-            showError("Failed to load model: \(error.localizedDescription)")
+            ErrorLogger.shared.log(error, category: "models", context: ["model": model.rawValue])
+            showErrorToast(
+                title: "Model load failed",
+                body: "\(model.rawValue) could not be loaded. Try selecting it again in Settings."
+            )
         }
     }
 
@@ -419,7 +463,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         guard recordingReadiness == .ready else {
             AppLog.permissions.error("Blocked recording start because microphone permission is missing")
             permissionManager.requestMicrophonePermission()
-            showError(Self.microphonePermissionErrorMessage())
+            ErrorLogger.shared.log(message: "Recording blocked: microphone permission missing", category: "permissions")
+            voiceTypeWindow?.show(state: .errorInline(message: "Mic denied · Open Privacy"))
+            voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss()
             appState = .idle
             return
         }
@@ -434,7 +480,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         } catch {
             print("[AppDelegate] Failed to start recording: \(error)")
             AppLog.app.error("Recording failed to start")
-            showError("Failed to start recording: \(error.localizedDescription)")
+            ErrorLogger.shared.log(error, category: "app")
+            voiceTypeWindow?.show(state: .errorInline(message: "Failed to start recording"))
+            voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss()
             appState = .idle
         }
     }
@@ -485,9 +533,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 if !permissionManager.hasMicrophonePermission {
                     permissionManager.requestMicrophonePermission()
                 }
-                showError(Self.emptyCaptureErrorMessage(
-                    hasMicrophonePermission: permissionManager.hasMicrophonePermission
-                ))
+                ErrorLogger.shared.log(
+                    message: Self.emptyCaptureErrorMessage(
+                        hasMicrophonePermission: permissionManager.hasMicrophonePermission
+                    ),
+                    category: "app"
+                )
+                let inlineMsg = permissionManager.hasMicrophonePermission
+                    ? "No audio captured · Try again"
+                    : "Mic denied · Open Privacy"
+                voiceTypeWindow?.show(state: .errorInline(message: inlineMsg))
+                voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss()
                 appState = .idle
                 return
             }
@@ -507,7 +563,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         } catch {
             print("[AppDelegate] Failed to stop recording: \(error)")
             AppLog.app.error("Recording failed to stop cleanly")
-            showError("Failed to stop recording: \(error.localizedDescription)")
+            ErrorLogger.shared.log(error, category: "app")
+            voiceTypeWindow?.show(state: .errorInline(message: "Recording stopped with an error"))
+            voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss()
             appState = .idle
         }
     }
@@ -546,11 +604,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         } catch {
             print("[AppDelegate] Transcription error: \(error)")
             AppLog.transcription.error("Transcription failed")
+            // P2-2: log to file before showing inline error so the most common
+            // runtime failure path produces a diagnostic entry in errors.log.
+            ErrorLogger.shared.log(error, category: "transcription")
             // Inline capsule error only — no NSAlert. Blocking modal would
             // steal focus and double-notify the user. Codex review P1.
-            // The 4s auto-dismiss is wired via .capsuleErrorInlineExpired
-            // subscriber in applicationDidFinishLaunching.
+            // Schedule 4s auto-dismiss so the capsule does not hang indefinitely.
+            // P2 review finding #2.
             voiceTypeWindow?.show(state: .errorInline(message: "Transcription failed"))
+            voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss(after: 4)
             appState = .idle
             return
         }
@@ -589,7 +651,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 self?.appState = .idle
             }
         } else {
-            voiceTypeWindow?.hide()
+            // Only hide the capsule if injectText did NOT already show an inline error.
+            // If pendingErrorInlineShown is true, the capsule is displaying errorInline
+            // and the 4s scheduleErrorInlineDismiss will dismiss it. P2 finding #1.
+            if !pendingErrorInlineShown {
+                voiceTypeWindow?.hide()
+            }
+            pendingErrorInlineShown = false
             appState = .idle
         }
     }
@@ -637,26 +705,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             print("[AppDelegate] Text injection failed: \(error)")
             AppLog.insertion.error("Text insertion failed")
 
+            ErrorLogger.shared.log(error, category: "insertion")
             if case TextInjectionService.TextInjectionError.missingAccessibilityPermission = error {
                 permissionManager.openAccessibilitySettings()
+                voiceTypeWindow?.show(state: .errorInline(message: "Accessibility denied · Open"))
+            } else {
+                voiceTypeWindow?.show(state: .errorInline(message: "Text insertion failed · Retry"))
             }
-
-            showError("Failed to insert text: \(error.localizedDescription)")
+            voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss(after: 4)
+            // Signal to transcribeAndInject that the inline error is already displayed.
+            // Prevents the else-branch from hiding the capsule immediately. P2 finding #1.
+            pendingErrorInlineShown = true
             return false
         }
     }
 
     // MARK: - Error Handling
 
-    private func showError(_ message: String) {
-        print("[AppDelegate] ERROR: \(message)")
-        AppLog.app.error("User-facing error presented")
-        let alert = NSAlert()
-        alert.messageText = "VoiceType Error"
-        alert.informativeText = message
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+    /// Show an unsolvable error via the dedicated ErrorToastWindow (Step 7).
+    /// Also triggers the VoiceOver announcement by setting CapsuleStateModel.state,
+    /// which fires the didSet announcer without rendering the toast on the capsule.
+    /// The capsule is NOT shown — errorToastWindow is the only visible surface.
+    func showErrorToast(title: String, body: String) {
+        print("[AppDelegate] TOAST ERROR — \(title): \(body)")
+        AppLog.app.error("Error toast: \(title, privacy: .public)")
+        ErrorLogger.shared.log(message: "\(title): \(body)", category: "app")
+        // Fire VoiceOver announcement via the stateModel announcer (no capsule shown).
+        voiceTypeWindow?.stateModel.announcer(
+            voiceTypeWindow?.stateModel.announcementCopy(
+                for: .errorToast(title: title, body: body)
+            ) ?? "\(title). \(body)."
+        )
+        errorToastWindow?.show(title: title, body: body)
     }
 
     private func makeWindow<Content: View>(title: String, size: NSSize, content: Content) -> NSWindow {

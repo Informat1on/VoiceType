@@ -154,10 +154,10 @@ custom_rules:
   nsalert_runmodal:
     name: "NSAlert.runModal for errors"
     regex: 'NSAlert\(\)[^{]*\.runModal\(\)|\.runModal\(\)'
-    included: "Sources/VoiceType/Services/.*\\.swift"
+    included: "Sources/VoiceType/.*\\.swift"
     message: >
       DESIGN.md routes errors through CapsuleState.errorInline / .errorToast
       (see D9/D10). NSAlert.runModal() is removed in Tier A step 7.
-    severity: warning
+    severity: error
 
 reporter: "xcode"

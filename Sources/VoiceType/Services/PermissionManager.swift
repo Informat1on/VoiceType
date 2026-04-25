@@ -6,10 +6,23 @@ import AppKit
 
 @MainActor
 final class PermissionManager: ObservableObject {
-    
+
     @Published var hasMicrophonePermission: Bool = false
     @Published var hasAccessibilityPermission: Bool = false
-    
+
+    /// Called when PermissionManager needs to surface an unsolvable error toast.
+    /// AppDelegate wires this to `AppDelegate.showErrorToast(title:body:)`.
+    /// Title/body match DESIGN.md toast copy conventions.
+    var onToastError: ((_ title: String, _ body: String) -> Void)?
+    /// Called to show a persistent (non-auto-dismissing) toast. Used for the
+    /// restart-required notification. Wired by AppDelegate to
+    /// `errorToastWindow?.show(title:body:persistent:true)`. P2 finding #3.
+    var onShowPersistentToast: ((_ title: String, _ body: String) -> Void)?
+    /// Called with no arguments to hide an active persistent toast when the
+    /// accessibility-grant watcher triggers a restart. Wired by AppDelegate to
+    /// `errorToastWindow?.hide()`. P2 finding #3.
+    var onHideToast: (() -> Void)?
+
     private var cancellables = Set<AnyCancellable>()
     private var refreshTask: Task<Void, Never>?
     
@@ -119,7 +132,7 @@ final class PermissionManager: ObservableObject {
         if prompt {
             AppLog.permissions.notice("Accessibility not granted, opening System Settings")
             openAccessibilitySettings()
-            showAccessibilityInstructionsAlert()
+            showAccessibilityInstructionsToast()
         } else {
             self.hasAccessibilityPermission = false
             AppLog.permissions.notice("Accessibility permission denied")
@@ -127,28 +140,20 @@ final class PermissionManager: ObservableObject {
         }
     }
     
-    /// Show clear instructions for enabling Accessibility in System Settings
-    private func showAccessibilityInstructionsAlert() {
-        let alert = NSAlert()
-        alert.messageText = "Accessibility Permission Required"
-        alert.informativeText = """
-        VoiceType needs Accessibility permission to insert text.
-        
-        Please:
-        1. Find "VoiceType" in the Accessibility list
-        2. Enable the toggle (turn it ON)
-        3. Click "Restart App" below
-        
-        The app must be restarted for permissions to take effect.
-        """
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Restart App")
-        alert.addButton(withTitle: "I'll do it later")
-        
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            restartAppForAccessibility()
-        }
+    /// Surface accessibility instructions via the error toast (Step 7).
+    /// Replaces the old blocking alert modal (removed in Step 7). The toast shows a
+    /// 6s dismissable notification; the user then acts in System Settings. If they
+    /// grant access, watchForAccessibilityRestart() will fire restartApp().
+    private func showAccessibilityInstructionsToast() {
+        ErrorLogger.shared.log(
+            message: "Accessibility permission not granted — opened System Settings",
+            category: "permissions"
+        )
+        AppLog.permissions.notice("Showing accessibility instructions toast")
+        onToastError?(
+            "Accessibility permission required",
+            "Find VoiceType in System Settings → Privacy → Accessibility and enable the toggle."
+        )
     }
     
     func openAccessibilitySettings() {
@@ -178,44 +183,51 @@ final class PermissionManager: ObservableObject {
                 if AXIsProcessTrustedWithOptions(options) {
                     self.hasAccessibilityPermission = true
                     AppLog.permissions.notice("Accessibility permission detected after grant!")
-                    self.showRestartRequiredAlert()
+                    self.showRestartRequiredToast()
                     return
                 }
             }
         }
     }
 
-    /// Show alert asking user to restart the app. Accessibility permissions require
-    /// a full process restart on macOS — simply closing the window is not enough.
-    private func showRestartRequiredAlert() {
-        let alert = NSAlert()
-        alert.messageText = "Accessibility permission granted!"
-        alert.informativeText = "macOS requires VoiceType to be fully restarted for Accessibility permissions to take effect.\n\nThe app will now quit and relaunch automatically."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Restart Now")
-        alert.runModal()
-
-        // Relaunch the app
-        let url = Bundle.main.bundleURL
-        let config = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
-            NSApp.terminate(nil)
+    /// Notify the user via toast that a restart is required.
+    /// The toast is persistent (no 6s auto-dismiss) — it stays visible until
+    /// restartApp() terminates the process. onHideToast() is called first so the
+    /// window closes cleanly before NSApp.terminate fires. P2 finding #3.
+    private func showRestartRequiredToast() {
+        ErrorLogger.shared.log(
+            message: "Accessibility permission granted — restarting automatically",
+            category: "permissions"
+        )
+        AppLog.permissions.notice("Accessibility granted, showing restart toast and restarting")
+        // Show a persistent toast; the watcher (not a timer) will dismiss it.
+        onShowPersistentToast?(
+            "Accessibility permission granted",
+            "VoiceType will restart now to activate the permission."
+        )
+        // Brief delay so the toast renders before the app terminates.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            self.onHideToast?()
+            restartApp()
         }
     }
 
     /// Restart the app — used when Accessibility permission was granted but the running
     /// process was started before the permission was granted (cached stale state).
+    /// Called from the FirstLaunchWindow "Restart App" button — no NSAlert needed.
     func restartAppForAccessibility() {
-        let alert = NSAlert()
-        alert.messageText = "Restart required"
-        alert.informativeText = "macOS requires VoiceType to be restarted for Accessibility permissions to take effect.\n\nThe app will quit and relaunch automatically."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Restart Now")
-        alert.addButton(withTitle: "Cancel")
+        ErrorLogger.shared.log(
+            message: "Restarting for accessibility permission",
+            category: "permissions"
+        )
+        AppLog.permissions.notice("Restarting app for accessibility permission")
+        restartApp()
+    }
 
-        let response = alert.runModal()
-        guard response == .alertFirstButtonReturn else { return }
+    // MARK: - Private restart helper
 
+    private func restartApp() {
         let url = Bundle.main.bundleURL
         let config = NSWorkspace.OpenConfiguration()
         NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in

@@ -125,6 +125,57 @@ final class CapsuleStateTests: XCTestCase {
     }
 }
 
+// MARK: - scheduleErrorInlineDismiss cancellation (P3 codex fix)
+
+final class CapsuleStateModelDismissTests: XCTestCase {
+
+    /// Verifies that a second call to scheduleErrorInlineDismiss cancels the first
+    /// pending task so the first task cannot fire and hide the second message early.
+    ///
+    /// Timeline:
+    ///   T=0.00  error A, dismiss scheduled at T+0.10s
+    ///   T=0.05  error B, dismiss scheduled at T+0.25s (cancels first task)
+    ///   T=0.15  first task would have fired — state must still be .errorInline("B")
+    ///   T=0.35  second task fires — expiry notification posted; state check optional
+    func testScheduleErrorInlineDismissCancelsPrevious() async throws {
+        let model = CapsuleStateModel()
+        // Suppress VoiceOver calls in tests.
+        model.announcer = { _ in }
+
+        // T=0: schedule first dismiss with a short 0.1s window.
+        model.state = .errorInline(message: "A")
+        model.scheduleErrorInlineDismiss(after: 0.1)
+
+        // T=0.05: replace with error B and schedule a longer 0.2s window from now.
+        try await Task.sleep(for: .milliseconds(50))
+        model.state = .errorInline(message: "B")
+        model.scheduleErrorInlineDismiss(after: 0.2)
+
+        // T=0.15: the first task (0.1s from T=0) would have fired here.
+        // If cancellation works, state must still be .errorInline("B").
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(
+            model.state,
+            .errorInline(message: "B"),
+            "First dismiss task must be cancelled — it must not have hidden error B"
+        )
+
+        // T=0.35: second task (0.2s from T=0.05) should have fired.
+        // We verify via the .capsuleErrorInlineExpired notification.
+        let expectation = XCTestExpectation(description: "capsuleErrorInlineExpired posted")
+        let observer = NotificationCenter.default.addObserver(
+            forName: .capsuleErrorInlineExpired,
+            object: nil,
+            queue: .main
+        ) { _ in expectation.fulfill() }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        // Wait generously — the second task fires ~200ms after T=0.05 = ~250ms total.
+        // We are at ~T=0.15, so allow 300ms more (total ~450ms budget).
+        await fulfillment(of: [expectation], timeout: 0.3)
+    }
+}
+
 // MARK: - VoiceOver announcement copy tests
 //
 // Verifies verbatim copy strings per v6-a11y.html § 6.3, lines 271–276.

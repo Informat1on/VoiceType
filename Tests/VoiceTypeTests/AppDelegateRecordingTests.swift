@@ -23,6 +23,40 @@
 //
 // If a future refactor extracts `transcribeAndInject` into a testable pipeline
 // struct, add XCTestExpectation-based async tests with a 600 ms wait here.
+//
+// NOTE — P2 review findings #1 and #2 (injection failure UI + transcription error auto-dismiss):
+//
+// These behaviours cannot be unit-tested without NSWindow instantiation or a real
+// AppDelegate lifecycle (which requires macOS UI entitlements not available in a
+// headless test target). The CapsuleStateModel layer IS fully covered:
+//
+//   P2-#1: injectText returning false while pendingErrorInlineShown=true must NOT
+//          call voiceTypeWindow?.hide(). Covered manually:
+//          - Trigger an injection failure → capsule must remain in .errorInline state
+//            for ~4s, then auto-dismiss (NOT vanish immediately after injectText returns).
+//
+//   P2-#2: transcription catch must call scheduleErrorInlineDismiss(after:4).
+//          Covered at the CapsuleStateModel layer:
+//          - CapsuleStateTests verifies scheduleErrorInlineDismiss posts
+//            .capsuleErrorInlineExpired after 4s (existing test).
+//
+// Both are integration-verified via the manual QA checklist in TODOS.md.
+// If AppDelegate is refactored to accept injectable window/state seams, add
+// XCTestExpectation-based async tests here.
+//
+// NOTE — P2-1 and P2-2 codex fixes (persistent toast VoiceOver + ErrorLogger in catch):
+//
+// Manual QA checklist (no injectable seam available for unit tests):
+//
+//   P2-1: "QA: with VoiceOver enabled, grant Accessibility while app is running →
+//          verify VoiceOver speaks the restart toast title + body (e.g.
+//          'Restart required. VoiceType needs to restart to apply the new
+//          Accessibility permission.')"
+//
+//   P2-2: "QA: trigger a transcription failure (e.g., rename the model file to
+//          corrupt it) → verify an entry appears in
+//          ~/Library/Logs/VoiceType/errors.log within seconds of the
+//          capsule showing the inline error."
 
 import XCTest
 @testable import VoiceType
