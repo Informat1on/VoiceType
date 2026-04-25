@@ -174,4 +174,113 @@ final class HistoryStoreTests: XCTestCase {
             "nil bundleID must round-trip through JSON correctly"
         )
     }
+
+    // MARK: - testRapidFireAppendsPreserveOrderAndCount
+
+    /// 50 back-to-back @MainActor appends.
+    /// HistoryStore is @MainActor so there's no real concurrency, but this verifies
+    /// that sequential appends produce deterministic ordering and correct count.
+    func testRapidFireAppendsPreserveOrderAndCount() throws {
+        let (store, _) = try makeStore()
+
+        for i in 0..<50 {
+            store.append(sampleEntry(text: "entry-\(i)"))
+        }
+
+        let all = store.entries()
+        XCTAssertEqual(all.count, 50, "All 50 appends should be present")
+        XCTAssertEqual(all.first?.text, "entry-49", "Newest entry should be first (newest-first ordering)")
+        XCTAssertEqual(all.last?.text, "entry-0", "Oldest entry should be last")
+    }
+
+    // MARK: - testLoadDropsCorruptLines
+
+    /// A single corrupt JSONL line must be silently dropped; valid lines before and after
+    /// it must survive. This is the desired behaviour per DESIGN.md error-handling rules.
+    func testLoadDropsCorruptLines() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("history.jsonl")
+
+        // Two valid ISO-8601 encoded lines surrounding one corrupt line.
+        // Build each JSON object by concatenating two halves to stay within the 140-char limit.
+        let id1 = "00000000-0000-0000-0000-000000000001"
+        let id2 = "00000000-0000-0000-0000-000000000002"
+        let validBase = #","charCount":5,"targetAppName":"A","targetAppBundleID":"a","language":"ru"}"#
+        let valid1 = "{\"id\":\"\(id1)\",\"timestamp\":\"2024-01-20T00:00:00Z\",\"text\":\"clean\""
+            + validBase
+        let corrupt = "{not valid json"
+        let afterBase = #","charCount":5,"targetAppName":"B","targetAppBundleID":"b","language":"en"}"#
+        let valid2 = "{\"id\":\"\(id2)\",\"timestamp\":\"2024-01-20T00:01:00Z\",\"text\":\"after\""
+            + afterBase
+        let content = [valid1, corrupt, valid2].joined(separator: "\n") + "\n"
+        try content.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = HistoryStore.test(storeURL: url)
+        let loaded = store.entries()
+
+        // If this fails with count == 0, HistoryStore's load() is throwing on the first
+        // corrupt line and bailing out entirely instead of skipping it — that is a bug.
+        XCTAssertEqual(loaded.count, 2, "Corrupt JSONL line must be silently dropped; valid lines must be loaded")
+        XCTAssertTrue(loaded.contains { $0.text == "clean" }, "First valid entry must survive")
+        XCTAssertTrue(loaded.contains { $0.text == "after" }, "Third valid entry must survive")
+    }
+
+    // MARK: - testUnicodeBoundarySliceCorrectness
+
+    /// ZWJ family sequence + flag emoji must survive a JSON encode → decode round-trip
+    /// with no grapheme cluster damage. Swift String.count returns grapheme clusters,
+    /// which is the correct unit; the test verifies JSON encoding uses the same unit.
+    func testUnicodeBoundarySliceCorrectness() throws {
+        let (store, url) = try makeStore()
+
+        // Mixed RU + ZWJ family emoji + EN + flag emoji sequence.
+        // Split across two string literals (concatenated) to respect the 140-char line limit.
+        let text = "Привет мир \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}"
+            + " hello world \u{1F1F7}\u{1F1FA}\u{1F1EC}\u{1F1E7} done"
+        let entry = HistoryStore.Entry(
+            text: text,
+            targetAppName: "T",
+            targetAppBundleID: "t",
+            language: "ru"
+        )
+        store.append(entry)
+
+        // In-memory round-trip
+        let inMemory = store.entries()
+        XCTAssertEqual(inMemory.first?.text, text, "In-memory text must be bit-for-bit identical")
+        XCTAssertEqual(inMemory.first?.charCount, text.count, "charCount must equal Swift grapheme-cluster count")
+
+        // Persistence round-trip: re-open same file.
+        let store2 = HistoryStore.test(storeURL: url)
+        XCTAssertEqual(store2.entries().first?.text, text, "Text must survive JSONL encode/decode without grapheme cluster damage")
+        XCTAssertEqual(store2.entries().first?.charCount, text.count, "charCount must be preserved across persistence round-trip")
+    }
+
+    // MARK: - testCapEnforcedOnAppendBeyondLimit
+
+    /// Appending 150 entries must evict the oldest 50, leaving exactly 100.
+    /// The entries retained must be e50…e149 (newest 100). Both the in-memory
+    /// cache and the persisted file must agree on the cap.
+    func testCapEnforcedOnAppendBeyondLimit() throws {
+        let (store, url) = try makeStore()
+
+        for i in 0..<150 {
+            store.append(sampleEntry(text: "e\(i)"))
+        }
+
+        let all = store.entries()
+        XCTAssertEqual(all.count, 100, "Cap must evict oldest entries, keeping exactly 100")
+        XCTAssertEqual(all.first?.text, "e149", "Newest entry (e149) must be first")
+        XCTAssertEqual(all.last?.text, "e50", "Oldest surviving entry must be e50")
+        XCTAssertFalse(all.contains { $0.text == "e0" }, "Evicted entries (e0–e49) must not appear in results")
+
+        // Persistence layer must also cap to 100 on reload.
+        let store2 = HistoryStore.test(storeURL: url)
+        XCTAssertEqual(store2.entries().count, 100, "Reloaded store must also have exactly 100 entries (cap enforced at flush)")
+        XCTAssertEqual(store2.entries().first?.text, "e149")
+        XCTAssertEqual(store2.entries().last?.text, "e50")
+    }
 }
