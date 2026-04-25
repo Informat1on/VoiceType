@@ -111,7 +111,42 @@ final class PermissionStateTests: XCTestCase {
         )
     }
 
-    // MARK: 6 — PermissionState exhaustive switch (compiler-verified via return type)
+    // MARK: 6 — Revocation: granted user revokes AX → state must flip to .denied
+    // Code Reviewer L finding P2: revocation path was uncovered.
+
+    @MainActor
+    func testAccessibilityRevocationProducesDeniedNotNotDetermined() async {
+        // Pre-condition: prompt-shown flag is set (user previously granted, so the
+        // flag was set at some point in the past).
+        UserDefaults.standard.set(true, forKey: "voicetype.accessibilityPromptShown")
+        defer {
+            UserDefaults.standard.removeObject(forKey: "voicetype.accessibilityPromptShown")
+        }
+
+        // Scenario only meaningful when the process is currently NOT trusted
+        // (revocation simulated by the test runner not having AX granted).
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary
+        guard !AXIsProcessTrustedWithOptions(options) else {
+            // Process is trusted — we can't test revocation here. The state will
+            // correctly be .granted; assert that and exit.
+            let manager = PermissionManager()
+            XCTAssertEqual(manager.accessibilityPermission, .granted)
+            return
+        }
+
+        // Flag set + not trusted → .denied (NOT .notDetermined). Critical: a user
+        // who previously granted and then revoked should land in .denied, not
+        // back in .notDetermined (which would re-open System Settings on the
+        // next call to requestAccessibilityPermission(prompt:true)).
+        let manager = PermissionManager()
+        XCTAssertEqual(
+            manager.accessibilityPermission,
+            .denied,
+            "Revoked user (flag set + not trusted) must be .denied, not .notDetermined"
+        )
+    }
+
+    // MARK: 7 — PermissionState exhaustive switch (compiler-verified via return type)
 
     func testPermissionStateAllCasesReachable() {
         // This test primarily documents that all 3 cases exist and can be switched on.

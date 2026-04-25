@@ -72,7 +72,12 @@ final class PermissionManager: ObservableObject {
             refreshPermissions()
         }
 
-        if !hasAccessibilityPermission {
+        // Only prompt for accessibility on first-launch (`.notDetermined`) — once
+        // the user has explicitly denied, never re-open System Settings without
+        // their action. Code Reviewer L finding P1: previously gated on
+        // `!hasAccessibilityPermission`, which would re-toast a `.denied` user
+        // every time this entry point fired.
+        if accessibilityPermission == .notDetermined {
             AppLog.permissions.notice("Requesting initial accessibility access")
             requestAccessibilityPermission(prompt: true)
         }
@@ -145,8 +150,11 @@ final class PermissionManager: ObservableObject {
         // if the app is already in the Accessibility list (even if disabled).
         // The only reliable way is to open System Settings and ask user to enable the toggle.
         if prompt {
-            // Mark that the prompt has been shown — synthesizes .denied on next check
-            // when the user has seen the System Settings UI but hasn't granted yet.
+            // Mark that the prompt has been initiated — flips the synthesized state
+            // from `.notDetermined` to `.denied` once the user dismisses System
+            // Settings without granting. Crash between this write and the user
+            // acting in Settings is an accepted edge case (re-prompted on next
+            // launch). Code Reviewer L finding P2.
             UserDefaults.standard.set(true, forKey: "voicetype.accessibilityPromptShown")
             AppLog.permissions.notice("Accessibility not granted, opening System Settings")
             openAccessibilitySettings()
