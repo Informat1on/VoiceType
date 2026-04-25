@@ -130,9 +130,9 @@ struct AboutView: View {
                 }
             }
             // Prototype: .about-content { padding: 28px 28px 24px }
-            // aboutContentTop=28 (top), windowPadding=24 (horizontal), xl=24 (bottom).
-            .padding(.horizontal, Spacing.windowPadding)
-            .padding(.top, Spacing.aboutContentTop)   // was Spacing.xxl (32)
+            // aboutContentTop=28 (top), aboutContentHorizontal=28, xl=24 (bottom).
+            .padding(.horizontal, Spacing.aboutContentHorizontal)
+            .padding(.top, Spacing.aboutContentTop)
             .padding(.bottom, Spacing.xl)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
