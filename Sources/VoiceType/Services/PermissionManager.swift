@@ -4,11 +4,23 @@ import AVFoundation
 import ApplicationServices
 import AppKit
 
+// MARK: - 3-State Permission Enum
+
+enum PermissionState: Equatable {
+    case notDetermined
+    case denied
+    case granted
+}
+
 @MainActor
 final class PermissionManager: ObservableObject {
 
-    @Published var hasMicrophonePermission: Bool = false
-    @Published var hasAccessibilityPermission: Bool = false
+    @Published var microphonePermission: PermissionState = .notDetermined
+    @Published var accessibilityPermission: PermissionState = .notDetermined
+
+    // Backward-compatible Bool helpers — used by AppDelegate, watchForAccessibilityRestart, etc.
+    var hasMicrophonePermission: Bool { microphonePermission == .granted }
+    var hasAccessibilityPermission: Bool { accessibilityPermission == .granted }
 
     /// Called when PermissionManager needs to surface an unsolvable error toast.
     /// AppDelegate wires this to `AppDelegate.showErrorToast(title:body:)`.
@@ -69,14 +81,10 @@ final class PermissionManager: ObservableObject {
     private func checkMicrophonePermission() {
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
         switch status {
-        case .authorized:
-            hasMicrophonePermission = true
-        case .notDetermined:
-            hasMicrophonePermission = false
-        case .denied, .restricted:
-            hasMicrophonePermission = false
-        @unknown default:
-            hasMicrophonePermission = false
+        case .authorized:                microphonePermission = .granted
+        case .notDetermined:             microphonePermission = .notDetermined
+        case .denied, .restricted:       microphonePermission = .denied
+        @unknown default:                microphonePermission = .denied
         }
     }
     
@@ -85,32 +93,39 @@ final class PermissionManager: ObservableObject {
         
         switch status {
         case .authorized:
-            hasMicrophonePermission = true
+            microphonePermission = .granted
             AppLog.permissions.notice("Microphone permission is granted")
             refreshPermissions()
-            
+
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 Task { @MainActor [weak self] in
-                    self?.hasMicrophonePermission = granted
+                    self?.microphonePermission = granted ? .granted : .denied
                     AppLog.permissions.notice("Microphone permission updated: \(granted, privacy: .public)")
                     self?.refreshPermissions()
                 }
             }
-            
+
         case .denied, .restricted:
-            hasMicrophonePermission = false
+            microphonePermission = .denied
             AppLog.permissions.error("Microphone permission is unavailable")
             openMicrophoneSettings()
-            
+
         @unknown default:
-            hasMicrophonePermission = false
+            microphonePermission = .denied
         }
     }
     
     private func checkAccessibilityPermission() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary
-        hasAccessibilityPermission = AXIsProcessTrustedWithOptions(options)
+        let trusted = AXIsProcessTrustedWithOptions(options)
+        if trusted {
+            accessibilityPermission = .granted
+        } else if UserDefaults.standard.bool(forKey: "voicetype.accessibilityPromptShown") {
+            accessibilityPermission = .denied
+        } else {
+            accessibilityPermission = .notDetermined
+        }
     }
 
     func requestAccessibilityPermission(prompt: Bool = true) {
@@ -119,23 +134,27 @@ final class PermissionManager: ObservableObject {
         let currentlyTrusted = AXIsProcessTrustedWithOptions(checkOptions)
         
         if currentlyTrusted {
-            self.hasAccessibilityPermission = true
+            self.accessibilityPermission = .granted
             AppLog.permissions.notice("Accessibility permission already granted")
             refreshPermissions()
             return
         }
-        
+
         // If not trusted and prompt is requested, open System Settings directly
         // Note: AXIsProcessTrustedWithOptions with prompt=true does NOT show a dialog
         // if the app is already in the Accessibility list (even if disabled).
         // The only reliable way is to open System Settings and ask user to enable the toggle.
         if prompt {
+            // Mark that the prompt has been shown — synthesizes .denied on next check
+            // when the user has seen the System Settings UI but hasn't granted yet.
+            UserDefaults.standard.set(true, forKey: "voicetype.accessibilityPromptShown")
             AppLog.permissions.notice("Accessibility not granted, opening System Settings")
             openAccessibilitySettings()
             showAccessibilityInstructionsToast()
         } else {
-            self.hasAccessibilityPermission = false
-            AppLog.permissions.notice("Accessibility permission denied")
+            // prompt=false and not trusted — derive state from the flag
+            checkAccessibilityPermission()
+            AppLog.permissions.notice("Accessibility permission not granted")
             refreshPermissions()
         }
     }
@@ -181,7 +200,7 @@ final class PermissionManager: ObservableObject {
                 // Check without prompting
                 let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary
                 if AXIsProcessTrustedWithOptions(options) {
-                    self.hasAccessibilityPermission = true
+                    self.accessibilityPermission = .granted
                     AppLog.permissions.notice("Accessibility permission detected after grant!")
                     self.showRestartRequiredToast()
                     return

@@ -722,7 +722,7 @@ struct SettingsView: View {
             PermHintPanel(
                 state: microphonePermState,
                 title: microphonePermTitle,
-                actionLabel: permissionManager.hasMicrophonePermission ? "Open Privacy…" : "Grant Access",
+                actionLabel: microphoneActionLabel,
                 onAction: {
                     if permissionManager.hasMicrophonePermission {
                         openMicrophonePrivacySettings()
@@ -753,7 +753,7 @@ struct SettingsView: View {
             PermHintPanel(
                 state: accessibilityPermState,
                 title: accessibilityPermTitle,
-                actionLabel: permissionManager.hasAccessibilityPermission ? "Open Privacy…" : "Grant Access",
+                actionLabel: accessibilityActionLabel,
                 onAction: {
                     if permissionManager.hasAccessibilityPermission {
                         permissionManager.openAccessibilitySettings()
@@ -795,39 +795,52 @@ struct SettingsView: View {
 
     // MARK: - Permission State Helpers
 
-    // TODO(perm-3-state): PermissionManager currently exposes Bool (granted | not),
-    // collapsing `notDetermined` into `.denied`. The prototype's `.perm-hint`
-    // (v1-cool-inksteel.html line ~325) renders accent-soft for the not-yet-asked
-    // state vs error-tinted for explicit denial. Three-state requires extending
-    // PermissionManager.checkMicrophonePermission to return an enum. Tracked as
-    // follow-up chunk; first-launch UX is functionally equivalent to the prior
-    // modal-alert behavior, just visually red instead of system alert.
     private var microphonePermState: PermHintPanel.PermState {
-        // hasMicrophonePermission is Bool — .notRequested not surfaced at this level.
-        permissionManager.hasMicrophonePermission ? .granted : .denied
+        switch permissionManager.microphonePermission {
+        case .granted:       return .granted
+        case .notDetermined: return .notRequested
+        case .denied:        return .denied
+        }
     }
 
     private var microphonePermTitle: String {
-        permissionManager.hasMicrophonePermission
-            ? "Microphone access granted"
-            : "Microphone access required to capture your voice"
+        switch permissionManager.microphonePermission {
+        case .granted:       return "Microphone access granted"
+        case .notDetermined: return "Allow microphone access for dictation"
+        case .denied:        return "Microphone access required to capture your voice"
+        }
     }
 
-    // TODO(perm-3-state): PermissionManager currently exposes Bool (granted | not),
-    // collapsing `notDetermined` into `.denied`. The prototype's `.perm-hint`
-    // (v1-cool-inksteel.html line ~325) renders accent-soft for the not-yet-asked
-    // state vs error-tinted for explicit denial. Three-state requires extending
-    // PermissionManager.checkAccessibilityPermission to return an enum. Tracked as
-    // follow-up chunk; first-launch UX is functionally equivalent to the prior
-    // modal-alert behavior, just visually red instead of system alert.
     private var accessibilityPermState: PermHintPanel.PermState {
-        permissionManager.hasAccessibilityPermission ? .granted : .denied
+        switch permissionManager.accessibilityPermission {
+        case .granted:       return .granted
+        case .notDetermined: return .notRequested
+        case .denied:        return .denied
+        }
     }
 
     private var accessibilityPermTitle: String {
-        permissionManager.hasAccessibilityPermission
-            ? "Accessibility access granted"
-            : "Accessibility access required for synthesized ⌘V"
+        switch permissionManager.accessibilityPermission {
+        case .granted:       return "Accessibility access granted"
+        case .notDetermined: return "Allow accessibility access for ⌘V insertion"
+        case .denied:        return "Accessibility access required for synthesized ⌘V"
+        }
+    }
+
+    private var microphoneActionLabel: String {
+        switch permissionManager.microphonePermission {
+        case .granted:       return "Open Privacy…"
+        case .notDetermined: return "Allow Access"
+        case .denied:        return "Open Privacy…"
+        }
+    }
+
+    private var accessibilityActionLabel: String {
+        switch permissionManager.accessibilityPermission {
+        case .granted:       return "Open Privacy…"
+        case .notDetermined: return "Allow Access"
+        case .denied:        return "Open Privacy…"
+        }
     }
 
     // MARK: - Model Status Badges (logic preserved verbatim)
