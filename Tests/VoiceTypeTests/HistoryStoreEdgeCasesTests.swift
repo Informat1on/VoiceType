@@ -67,6 +67,14 @@ final class HistoryStoreEdgeCasesTests: XCTestCase {
         XCTAssertEqual(all.count, 2, "In-memory list must update even when disk flush fails")
         XCTAssertEqual(all.first?.text, "second", "Newest entry must be first (newest-first)")
         XCTAssertEqual(all.last?.text, "first", "Oldest entry must be last")
+
+        // The other half of the invariant: the file MUST NOT exist on disk. Without
+        // this assertion the test is a false-green — it would also pass if flush()
+        // accidentally created the parent dir and succeeded.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
+                       "history.jsonl must not exist when its parent dir was never created")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingDir.path),
+                       "Parent dir must not have been created as a side effect of flush()")
     }
 
     // MARK: - testDiskFullThenRecoveryWritesCleanFile
@@ -185,16 +193,26 @@ final class HistoryStoreEdgeCasesTests: XCTestCase {
         XCTAssertEqual(first.count, 2)
         XCTAssertEqual(first.first?.text, "beta", "Newest-first: beta (later timestamp) must be first")
 
-        // Second call must return the same state — loadIfNeeded() must not re-read disk.
-        let second = store.entries()
-        XCTAssertEqual(second.count, 2, "Calling entries() twice must return stable count")
-        XCTAssertEqual(second.first?.text, first.first?.text)
-        XCTAssertEqual(second.last?.text, first.last?.text)
+        // Mutate the file on disk OUT-OF-BAND to a single different entry. If the
+        // `loaded` guard works, entries() must keep returning the original cached
+        // state. Without the guard this test would fail (second call would see the
+        // mutated single-entry file). This is the actual proof of idempotency.
+        let id3 = "00000000-0000-0000-0000-000000000099"
+        let mutatedLine = "{\"id\":\"\(id3)\",\"timestamp\":\"2024-04-01T07:00:00Z\",\"text\":\"mutated\"\(tail)\n"
+        try mutatedLine.write(to: url, atomically: true, encoding: .utf8)
 
-        // Third call — UUIDs must be stable (not re-created from disk on every call).
+        // Second call must still return the original (cached) state.
+        let second = store.entries()
+        XCTAssertEqual(second.count, 2, "loaded guard must prevent re-read after first load")
+        XCTAssertEqual(second.first?.text, "beta", "Cached order must persist across calls")
+        XCTAssertEqual(second.map(\.id), first.map(\.id),
+                       "UUIDs must match first load — disk mutation must NOT leak into in-memory state")
+
+        // Third call — same invariant.
         let third = store.entries()
         XCTAssertEqual(third.count, 2)
-        XCTAssertEqual(third.map(\.id), first.map(\.id), "Entry UUIDs must be stable across repeated entries() calls")
+        XCTAssertFalse(third.contains { $0.text == "mutated" },
+                       "Out-of-band disk mutation must remain invisible until an explicit reload")
     }
 
     // MARK: - testFileDeletedUnderUsNextAppendRecreatesFile
@@ -262,6 +280,8 @@ final class HistoryStoreEdgeCasesTests: XCTestCase {
         let store2 = HistoryStore.test(storeURL: url)
         let reloaded = store2.entries()
         XCTAssertEqual(reloaded.count, 2, "New store instance must read back both entries from recreated file")
+        // entries() returns newest-first (load reverses the chronological-on-disk order),
+        // so "recreated" (last appended) must be at index 0 and "original" at the tail.
         XCTAssertEqual(reloaded.first?.text, "recreated")
         XCTAssertEqual(reloaded.last?.text, "original")
     }
