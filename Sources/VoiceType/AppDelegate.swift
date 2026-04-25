@@ -665,7 +665,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             AppLog.transcription.notice("Transcription produced empty text")
             voiceTypeWindow?.show(state: .emptyResult)
             Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(400))
+                let flashMs = insertedFlashDurationMs(
+                    reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+                try? await Task.sleep(for: .milliseconds(flashMs))
                 self?.voiceTypeWindow?.hide()
                 self?.appState = .idle
             }
@@ -697,11 +699,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             HistoryStore.shared.append(historyEntry)
 
             // Flash `.inserted` for 400ms (per v5-inserted-state.html), then hide.
+            // DESIGN.md § Reduced motion: shorten to 200ms when Reduce Motion is on.
             // appState stays non-idle during the flash so a hotkey press mid-flash
             // cannot pass canStartRecording() and start a new recording.
             voiceTypeWindow?.show(state: .inserted(charCount: charCount, targetAppName: targetAppName))
             Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(400))
+                let flashMs = insertedFlashDurationMs(
+                    reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+                try? await Task.sleep(for: .milliseconds(flashMs))
                 self?.voiceTypeWindow?.hide()
                 self?.appState = .idle
             }
@@ -825,4 +830,12 @@ extension AppDelegate: NSWindowDelegate {
             isSettingsOpen = false
         }
     }
+}
+
+// MARK: - Reduce-motion helpers (testable free functions)
+
+/// Returns the inserted/emptyResult flash duration in milliseconds.
+/// DESIGN.md § Reduced motion: 200ms when Reduce Motion is on, 400ms otherwise.
+func insertedFlashDurationMs(reduceMotion: Bool) -> Int {
+    reduceMotion ? 200 : 400
 }

@@ -60,6 +60,14 @@ struct CapsuleIndicatorView: View {
     // Tally dot pulse — audio-threshold-gated. Updated from levelTimer.
     @State private var tallyScale: CGFloat = 1.0
 
+    // Reduced-motion branch (DESIGN.md § Reduced motion)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// State-label transition: opacity+scale (default) or opacity-only (reduce motion).
+    private var labelTransition: AnyTransition {
+        reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.97))
+    }
+
     /// Current recording duration in seconds, computed from startedAt anchor.
     /// Depends on `tickTrigger` so SwiftUI re-renders every tick.
     private var recordingDuration: TimeInterval {
@@ -152,7 +160,7 @@ struct CapsuleIndicatorView: View {
                 center: { waveformZone },
                 trailing: { timerZone }
             )
-            .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            .transition(labelTransition)
 
         case .transcribing:
             threeZoneLayout(
@@ -163,7 +171,7 @@ struct CapsuleIndicatorView: View {
                 },
                 trailing: { timerZone }
             )
-            .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            .transition(labelTransition)
 
         case let .inserted(charCount, appName):
             threeZoneLayout(
@@ -182,7 +190,7 @@ struct CapsuleIndicatorView: View {
                 },
                 trailing: { timerZone }
             )
-            .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            .transition(labelTransition)
 
         case let .errorInline(message):
             threeZoneLayout(
@@ -197,7 +205,7 @@ struct CapsuleIndicatorView: View {
                 },
                 trailing: { timerZone }
             )
-            .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            .transition(labelTransition)
 
         case let .errorToast(title, _):
             // TODO: Step 7 — render as separate toast NSWindow.
@@ -217,7 +225,7 @@ struct CapsuleIndicatorView: View {
                         .frame(minWidth: 30, alignment: .trailing)
                 }
             )
-            .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            .transition(labelTransition)
 
         case .emptyResult:
             threeZoneLayout(
@@ -230,7 +238,7 @@ struct CapsuleIndicatorView: View {
                 },
                 trailing: { timerZone }
             )
-            .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            .transition(labelTransition)
         }
     }
 
@@ -378,6 +386,8 @@ struct CapsuleIndicatorView: View {
 struct CapsuleWaveformView: View {
     let history: [Float]
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private let barCount = 5
     private let barWidth: CGFloat = 3
     private let spacing: CGFloat = 2
@@ -414,7 +424,7 @@ struct CapsuleWaveformView: View {
                         ? Palette.Capsule.text
                         : Palette.Capsule.timer.opacity(0.55))
                     .frame(width: barWidth, height: barHeight)
-                    .animation(.easeInOut(duration: 0.05), value: barHeight)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.05), value: barHeight)
             }
         }
         .frame(height: maxHeight)
@@ -443,8 +453,13 @@ private struct InsertedTallyView: View {
 /// Three breathing dots for the transcribing state center zone.
 /// Prototype CSS: .transcribing-dots .dot { width: 4px; height: 4px; gap: 3px; }
 /// No "TRANSCRIBING" text — dots only, centered, 500ms breathing cycle.
+///
+/// Reduced motion (DESIGN.md § Reduced motion): scale pulse replaced with
+/// opacity fade so no geometric movement occurs.
 private struct TranscribingDotsView: View {
     let dotScale: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 3) {
@@ -452,15 +467,42 @@ private struct TranscribingDotsView: View {
                 Circle()
                     .fill(Palette.Capsule.timer)
                     .frame(width: 4, height: 4)
-                    .scaleEffect(dotScale)
-                    .animation(
-                        .easeInOut(duration: Motion.long)
-                            .repeatForever(autoreverses: true)
-                            .delay(Double(idx) * Motion.long / 3.0),
-                        value: dotScale
-                    )
+                    .modifier(BreathingMod(value: dotScale, idx: idx, reduceMotion: reduceMotion))
             }
         }
+    }
+}
+
+/// Applies breathing animation to a dot — scale pulse (default) or opacity
+/// fade (reduce motion). Both share the same timing and delay values.
+/// `internal` (not `private`) so ReducedMotionTests can exercise opacityFromScale.
+struct BreathingMod: ViewModifier {
+    let value: CGFloat
+    let idx: Int
+    let reduceMotion: Bool
+
+    func body(content: Content) -> some View {
+        let anim = Animation.easeInOut(duration: Motion.long)
+            .repeatForever(autoreverses: true)
+            .delay(Double(idx) * Motion.long / 3.0)
+
+        if reduceMotion {
+            // Opacity-only fade: map dotScale 0.5..1.3 → opacity 0.4..1.0
+            content
+                .opacity(opacityFromScale(value))
+                .animation(anim, value: value)
+        } else {
+            content
+                .scaleEffect(value)
+                .animation(anim, value: value)
+        }
+    }
+
+    /// Maps dotScale (0.5 … 1.3) to opacity (0.4 … 1.0), clamped.
+    /// Internal: exposed via `internal` so ReducedMotionTests can exercise it.
+    func opacityFromScale(_ scale: CGFloat) -> Double {
+        let normalized = (Double(scale) - 0.5) / 0.8   // 0.5→0.0, 1.3→1.0
+        return max(0.4, min(1.0, 0.4 + 0.6 * normalized))
     }
 }
 
