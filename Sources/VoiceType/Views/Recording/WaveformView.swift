@@ -123,7 +123,10 @@ struct CapsuleIndicatorView: View {
         // found by code review P2-C.
         .shadow(color: Color.black.opacity(0.50), radius: 4, x: 0, y: 2)
         .shadow(color: glowColor, radius: 8, x: 0, y: 0)
-        .animation(.easeInOut(duration: Motion.short), value: state)
+        // Reduce Motion: drop the eased cross-fade on border/glow color when state
+        // changes — fall back to a linear transition that lets only opacity-like
+        // properties animate. Code Reviewer P P1.
+        .animation(reduceMotion ? .linear(duration: Motion.short) : .easeInOut(duration: Motion.short), value: state)
     }
 
     // MARK: - Border color per state
@@ -467,7 +470,7 @@ private struct TranscribingDotsView: View {
                 Circle()
                     .fill(Palette.Capsule.timer)
                     .frame(width: 4, height: 4)
-                    .modifier(BreathingMod(value: dotScale, idx: idx, reduceMotion: reduceMotion))
+                    .modifier(BreathingMod(value: dotScale, idx: idx))
             }
         }
     }
@@ -475,11 +478,16 @@ private struct TranscribingDotsView: View {
 
 /// Applies breathing animation to a dot — scale pulse (default) or opacity
 /// fade (reduce motion). Both share the same timing and delay values.
-/// `internal` (not `private`) so ReducedMotionTests can exercise opacityFromScale.
+/// `internal` (not `private`) so ReducedMotionTests can construct it.
+///
+/// Owns its own `@Environment(\.accessibilityReduceMotion)` so a live System
+/// Settings toggle correctly invalidates the modifier without relying on a
+/// parent passing the value via constructor. Code Reviewer P P2.
 struct BreathingMod: ViewModifier {
     let value: CGFloat
     let idx: Int
-    let reduceMotion: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         let anim = Animation.easeInOut(duration: Motion.long)
@@ -497,13 +505,16 @@ struct BreathingMod: ViewModifier {
                 .animation(anim, value: value)
         }
     }
+}
 
-    /// Maps dotScale (0.5 … 1.3) to opacity (0.4 … 1.0), clamped.
-    /// Internal: exposed via `internal` so ReducedMotionTests can exercise it.
-    func opacityFromScale(_ scale: CGFloat) -> Double {
-        let normalized = (Double(scale) - 0.5) / 0.8   // 0.5→0.0, 1.3→1.0
-        return max(0.4, min(1.0, 0.4 + 0.6 * normalized))
-    }
+/// Maps breathing-phase value (0.5 … 1.3) to opacity (0.4 … 1.0), clamped.
+/// Free function (was `BreathingMod.opacityFromScale`) so ReducedMotionTests
+/// can exercise it without instantiating the SwiftUI ViewModifier — which now
+/// owns its own `@Environment` and can't be cheaply constructed in test.
+/// Code Reviewer P P2.
+func opacityFromScale(_ scale: CGFloat) -> Double {
+    let normalized = (Double(scale) - 0.5) / 0.8   // 0.5→0.0, 1.3→1.0
+    return max(0.4, min(1.0, 0.4 + 0.6 * normalized))
 }
 
 // MARK: - Notification name (A7)
