@@ -7,6 +7,8 @@
 // DESIGN.md § Interaction States / First launch arc.
 // DESIGN.md § Implementation Plan Step 4.
 // Decisions Log D8: FirstLaunchWindow replaces requestInitialPermissionsIfNeeded().
+// Phase 2.5 Chunk X: celebration arc — 200ms tick bounce + 200ms "All set" fade
+//   + 400ms hold + 300ms dismiss. ViewModel in FirstLaunchCelebrationViewModel.swift.
 //
 // Hotkey step (step 4) interpretation: rendered with muted badge
 // (Palette.textMuted number, Palette.surfaceInset background) to visually signal
@@ -79,10 +81,16 @@ final class FirstLaunchWindow: NSWindow {
         center()
     }
 
-    private func handleAutoClose() {
+    /// Celebration-aware auto-close.
+    /// Called by FirstLaunchView after the ViewModel's dismiss delay fires.
+    /// Animates opacity 1 → 0 over Motion.medium (300ms), then calls window.close().
+    /// Mirrors the capsule-dismiss pattern from DESIGN.md (scale 1.0 → 0.96 is
+    /// implicit via NSAnimationContext layer-backed animation on macOS 13+).
+    func handleAutoClose() {
         OnboardingState.hasCompleted = true
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = Motion.short
+            ctx.duration = Motion.medium
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             animator().alphaValue = 0
         }, completionHandler: { [weak self] in
             self?.close()
@@ -101,6 +109,15 @@ struct FirstLaunchView: View {
     // Model download state
     @State private var isDownloadingModel = false
     @State private var downloadFailed = false
+
+    // Celebration state machine
+    @StateObject private var celebration = FirstLaunchCelebrationViewModel()
+
+    // Tracks which badge number just flipped to done (for targeted bounce)
+    @State private var lastSatisfiedStep: Int?
+
+    // Reduced-motion environment
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var modelManager: ModelManager { ModelManager.shared }
 
@@ -160,6 +177,27 @@ struct FirstLaunchView: View {
             // Matches .fl-steps { margin-top: 8px } in v4-revisions.html — layered on top
             // of the outer VStack(spacing: 20) for a total 28pt gap.
             .padding(.top, 8)
+
+            // MARK: Celebration "All set" line
+            // Appears after all blockers satisfied, below the checklist.
+            // Fade-in from opacity 0 + slight y-slide (+6pt → 0).
+            // Typography: Geist 13pt Medium — closest to "bodyEmphasis"
+            // (no exact token exists at 14/16 600; 13pt Medium reads as
+            // body-with-emphasis at this scale).
+            // Reduced motion: pure opacity fade, no y-slide.
+            if celebration.showCelebration {
+                Text("All set. ⌥ SPACE to start typing with your voice.")
+                    .font(Font.custom("Geist-Medium", size: 13))
+                    .foregroundStyle(Palette.textPrimary)
+                    .multilineTextAlignment(.center)
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .opacity.combined(with: .offset(y: 6))
+                    )
+                    .accessibilityLabel("All set. Option Space to start typing with your voice.")
+                    .accessibilityAddTraits(.isStaticText)
+            }
         }
         // .fl-body { padding: 36px 32px }
         // 36pt vertical: no token exists (Spacing.xxxl=48, Spacing.xxl=32) → inline literal.
@@ -168,6 +206,11 @@ struct FirstLaunchView: View {
         .padding(.horizontal, Spacing.xxl)
         .frame(width: WindowSize.firstLaunch.width)
         .background(Palette.bgWindow)
+        // Animate showCelebration changes (the "All set" reveal).
+        .animation(
+            .easeOut(duration: Motion.short),
+            value: celebration.showCelebration
+        )
         // NOTE: single-parameter onChange is the macOS 13 API. The two-parameter
         // form (onChange(of:initial:_:)) requires macOS 14+. Deployment target
         // is macOS 13 (Package.swift), so keep this form until the target bumps.
@@ -180,7 +223,19 @@ struct FirstLaunchView: View {
                 checkBlockers()
             }
         }
-        .onAppear { checkBlockers() }
+        .onAppear {
+            // Record open state before the first checkBlockers() call so the
+            // ViewModel knows whether this is a "re-open when already complete" scenario.
+            let allDone = OnboardingState.allBlockersSatisfied(
+                hasMicrophonePermission: hasMic,
+                hasAccessibilityPermission: hasA11y,
+                hasAnyDownloadedModel: hasModel
+            )
+            celebration.recordOpenState(allBlockersSatisfiedAtOpen: allDone)
+            celebration.reduceMotion = reduceMotion
+            celebration.onDismiss = { onAllBlockersDone() }
+            checkBlockers()
+        }
     }
 
     // MARK: - Step Rows
@@ -191,7 +246,12 @@ struct FirstLaunchView: View {
 
         // .fl-step container — same chrome as stepRow()
         HStack(alignment: .center, spacing: Spacing.md) {
-            StepBadge(number: 3, isDone: modelDone, isNeutral: false)
+            StepBadge(
+                number: 3,
+                isDone: modelDone,
+                isNeutral: false,
+                bouncing: celebration.bounceBadge && lastSatisfiedStep == 3 && !reduceMotion
+            )
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 // .step-title { font-size:12px; font-weight:500 }
@@ -245,7 +305,7 @@ struct FirstLaunchView: View {
     private func hotkeyStepRow() -> some View {
         // .fl-step container — same chrome as stepRow()
         HStack(alignment: .center, spacing: Spacing.md) {
-            StepBadge(number: 4, isDone: false, isNeutral: true)
+            StepBadge(number: 4, isDone: false, isNeutral: true, bouncing: false)
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 // .step-title { font-size:12px; font-weight:500 }
@@ -287,7 +347,12 @@ struct FirstLaunchView: View {
         // .fl-step { padding:12px 14px; background:var(--surface-inset); border-radius:8px; gap:12px }
         // Spacing.md (12pt) vertical, Spacing.capsuleHorizontal (14pt) horizontal, Radius.control (8pt).
         HStack(alignment: .center, spacing: Spacing.md) {
-            StepBadge(number: config.number, isDone: config.isDone, isNeutral: config.isNeutral)
+            StepBadge(
+                number: config.number,
+                isDone: config.isDone,
+                isNeutral: config.isNeutral,
+                bouncing: celebration.bounceBadge && lastSatisfiedStep == config.number && !reduceMotion
+            )
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 // .step-title { font-size:12px; font-weight:500 } — Typography.buttonLabel matches exactly.
@@ -373,7 +438,11 @@ struct FirstLaunchView: View {
             hasAnyDownloadedModel: hasModel
         )
         if ready {
-            onAllBlockersDone()
+            // Identify which step number just turned green for targeted badge bounce.
+            // Pick the highest-numbered blocker that is now satisfied — that's the
+            // step the user just completed. Steps: 1=mic, 2=a11y, 3=model.
+            lastSatisfiedStep = hasModel ? 3 : (hasA11y ? 2 : 1)
+            celebration.handleBlockersSatisfied()
         }
     }
 }
@@ -385,6 +454,10 @@ struct StepBadge: View {
     let isDone: Bool
     /// Neutral steps (hotkey) render with muted styling to signal "optional".
     let isNeutral: Bool
+    /// When true, plays a single scale overshoot bounce (0.85 → 1.15 → 1.0).
+    /// Driven by FirstLaunchCelebrationViewModel.bounceBadge.
+    /// Already suppressed to false by FirstLaunchView when reduceMotion is on.
+    let bouncing: Bool
 
     // MARK: First-launch prototype CSS values
     // .num { width:20px; height:20px; border-radius:50% } — Circle, not rounded-rect.
@@ -408,6 +481,16 @@ struct StepBadge: View {
                     .monospacedDigit()
             }
         }
+        // Bounce overshoot: starts at 0.85 on the false→true transition (spring
+        // overshoots to 1.15 and settles at 1.0); returns to 1.0 when bouncing
+        // flips back to false with an easeOut so no second bounce.
+        .scaleEffect(bouncing ? 1.15 : 1.0)
+        .animation(
+            bouncing
+                ? .spring(response: Motion.short, dampingFraction: 0.5)
+                : .easeOut(duration: Motion.short),
+            value: bouncing
+        )
         .accessibilityLabel(isDone ? "Step \(number) complete" : "Step \(number)")
     }
 
