@@ -264,9 +264,19 @@ final class TranscriptionService: ObservableObject {
     /// Called from `transcribe(audio:language:)` — single source of truth.
     /// Exposed `internal` so `TranscriptionServiceTrimToggleTests` can test it
     /// without invoking whisper.cpp.
+    ///
+    /// Trims TRAILING whitespace only, matching the prototype label
+    /// "Trim trailing whitespace · Removes one trailing space Whisper often
+    /// emits" (v1-cool-inksteel.html .prefs-row INSERTION group). Leading
+    /// whitespace is preserved when the toggle is on — e.g. transcripts that
+    /// intentionally start with an indent are not silently mangled.
+    /// Code Reviewer O P2.
     static func conditionallyTrim(_ text: String) -> String {
-        AppSettings.shared.trimWhitespaceAfterInsert
-            ? text.trimmingCharacters(in: .whitespacesAndNewlines)
-            : text
+        guard AppSettings.shared.trimWhitespaceAfterInsert else { return text }
+        var result = text
+        while result.last?.isWhitespace == true {
+            result.removeLast()
+        }
+        return result
     }
 }
