@@ -42,6 +42,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
     case smallQ5 = "small-q5_1"
     case small = "small"
     case medium = "medium"
+    case largeV3Turbo = "large-v3-turbo"
 
     var displayName: String {
         switch self {
@@ -50,6 +51,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         case .smallQ5: return "Small Q5 (Balanced speed/quality)"
         case .small: return "Small (Best quality for most use)"
         case .medium: return "Medium (Highest quality, slower)"
+        case .largeV3Turbo: return "Large v3 Turbo (Highest quality, fast)"
         }
     }
 
@@ -94,6 +96,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         case .smallQ5: return "~190 MB"
         case .small: return "~466 MB"
         case .medium: return "~1.5 GB"
+        case .largeV3Turbo: return "~810 MB"
         }
     }
 
@@ -104,6 +107,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         case .smallQ5: return "⚡⚡⚡"
         case .small: return "⚡⚡"
         case .medium: return "⚡"
+        case .largeV3Turbo: return "⚡⚡⚡⚡"
         }
     }
 
@@ -114,6 +118,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         case .smallQ5: return "Very Good"
         case .small: return "Excellent"
         case .medium: return "Best"
+        case .largeV3Turbo: return "Best"
         }
     }
 
@@ -124,6 +129,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         case .smallQ5: return "Long messages, balanced"
         case .small: return "Professional, high accuracy"
         case .medium: return "Critical accuracy needs"
+        case .largeV3Turbo: return "Best quality with fast turnaround"
         }
     }
 }
