@@ -1,68 +1,218 @@
 import SwiftUI
 
+// MARK: - AboutView
+// Native-row layout per v1-cool-inksteel.html prototype (.about-window, .about-head,
+// .about-groups CSS). Glassmorphism wrappers (WindowSurface / WindowHeroHeader /
+// SettingsSectionCard) removed as mandated by DESIGN.md "no glassmorphism" rule.
+// Artwork 86 → 64pt; title 22 → 18pt; hotkey chip Capsule → RoundedRectangle(5pt).
+
 struct AboutView: View {
     @ObservedObject var permissionManager: PermissionManager
     @ObservedObject private var settings = AppSettings.shared
 
     var body: some View {
-        WindowSurface(
-            title: "About VoiceType",
-            subtitle: "A local-first macOS voice typing companion built around whisper.cpp, fast text insertion, and a lightweight menu bar workflow.",
-            symbol: "info.circle",
-            chips: ["On-device transcription", "Whisper.cpp", "Menu bar app"]
-        ) {
-            SettingsSectionCard(title: "Build", description: "Clean metadata that is safe to publish when you push the repository.") {
-                SettingsValueRow("Version") {
-                    Text(appVersion)
-                }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
 
-                SettingsValueRow("Bundle") {
-                    Text(Bundle.main.bundleIdentifier ?? "VoiceType")
-                        .foregroundStyle(.secondary)
-                }
+                // MARK: Head — artwork + title block
+                // Prototype: .about-head { display:flex; align-items:flex-start; gap:16px; margin-bottom:24px }
+                HStack(alignment: .top, spacing: Spacing.lg) {
+                    VoiceTypeArtwork(size: 64)
 
-                SettingsValueRow("Platform") {
-                    Text("macOS 13+")
-                }
-            }
+                    VStack(alignment: .leading, spacing: Spacing.xs) {
+                        Text("VoiceType")
+                            .font(Font.custom("Geist-Medium", size: 18))
+                            .foregroundStyle(Palette.textPrimary)
 
-            SettingsSectionCard(title: "Current Setup", description: "A quick snapshot of the local configuration currently driving voice input.") {
-                SettingsValueRow("Shortcut") {
-                    shortcutBadge
-                }
+                        // Prototype: .about-version { font-family: 'Geist Mono'; font-size: 11px;
+                        //   color: var(--text-muted); letter-spacing: 0.04em }
+                        Text(aboutVersionLine)
+                            .font(Typography.monoSmall)
+                            .tracking(Typography.metaLabelTracking)
+                            .foregroundStyle(Palette.textMuted)
+                    }
 
-                SettingsValueRow("Model") {
-                    Text(settings.selectedModel.displayName)
+                    Spacer(minLength: 0)
                 }
+                .padding(.bottom, Spacing.xl)   // margin-bottom: 24px
 
-                SettingsValueRow("Language") {
-                    Text(languageLabel)
-                }
-
-                SettingsValueRow("Insertion") {
-                    Text(settings.textInjectionMode.displayName)
-                }
-            }
-
-            SettingsSectionCard(title: "Permissions", description: "VoiceType only needs the permissions required to listen to your microphone and type back into the focused app.") {
-                SettingsValueRow("Microphone") {
-                    permissionBadge(permissionManager.hasMicrophonePermission)
-                }
-
-                SettingsValueRow("Accessibility") {
-                    permissionBadge(permissionManager.hasAccessibilityPermission)
-                }
-            }
-
-            SettingsSectionCard(title: "Privacy", description: "This app is designed to stay publishable without leaking personal information.") {
-                Text("Audio is transcribed locally on your Mac, and the resulting text is only inserted into the active field after you explicitly trigger recording.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                // MARK: Description paragraph
+                // Prototype: .about-body p { font-size: 13px; line-height: 1.5; color: var(--text-secondary) }
+                Text("100% local transcription via whisper.cpp and CoreML on Apple Silicon. No cloud, no account, no data leaves your Mac.")
+                    .font(Typography.body)
+                    .foregroundStyle(Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, Spacing.xl)
+
+                // MARK: Groups — native rows
+                // Prototype: .about-groups { margin-top: 20px; gap: 20px }
+                VStack(alignment: .leading, spacing: Spacing.xl) {
+
+                    // BUILD group
+                    aboutGroup(title: "Build") {
+                        aboutRow("Version") {
+                            Text(appVersion)
+                                .font(Typography.mono)
+                                .foregroundStyle(Palette.textSecondary)
+                        }
+                        aboutDivider
+                        aboutRow("Bundle") {
+                            Text(Bundle.main.bundleIdentifier ?? "VoiceType")
+                                .font(Typography.mono)
+                                .foregroundStyle(Palette.textSecondary)
+                        }
+                        aboutDivider
+                        aboutRow("Platform") {
+                            Text("macOS 13+")
+                                .font(Typography.mono)
+                                .foregroundStyle(Palette.textSecondary)
+                        }
+                    }
+
+                    // CURRENT SETUP group
+                    aboutGroup(title: "Current Setup") {
+                        aboutRow("Hotkey") {
+                            hotkeyChip
+                        }
+                        aboutDivider
+                        aboutRow("Model") {
+                            Text(settings.selectedModel.displayName)
+                                .font(Typography.mono)
+                                .foregroundStyle(Palette.textSecondary)
+                        }
+                        aboutDivider
+                        aboutRow("Language") {
+                            Text(languageLabel)
+                                .font(Typography.mono)
+                                .foregroundStyle(Palette.textSecondary)
+                        }
+                        aboutDivider
+                        aboutRow("Insertion") {
+                            Text(settings.textInjectionMode.displayName)
+                                .font(Typography.mono)
+                                .foregroundStyle(Palette.textSecondary)
+                        }
+                    }
+
+                    // PERMISSIONS group
+                    aboutGroup(title: "Permissions") {
+                        aboutRow("Microphone") {
+                            permissionBadge(permissionManager.hasMicrophonePermission)
+                        }
+                        aboutDivider
+                        aboutRow("Accessibility") {
+                            permissionBadge(permissionManager.hasAccessibilityPermission)
+                        }
+                    }
+
+                    // PRIVACY group — full-width description, no right control
+                    aboutGroup(title: "Privacy") {
+                        VStack(alignment: .leading, spacing: 0) {
+                            HStack(alignment: .top, spacing: Spacing.md) {
+                                Text("Your voice never leaves this Mac")
+                                    .font(Typography.body)
+                                    .foregroundStyle(Palette.textPrimary)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, Spacing.prefsRowHorizontal)
+                            .padding(.vertical, Spacing.prefsRowVertical)
+                            .frame(minHeight: Spacing.prefsRowMinHeight)
+
+                            // swiftlint:disable:next line_length
+                            Text("Audio is transcribed locally on your Mac and the resulting text is only inserted into the active field after you explicitly trigger recording.")
+                                .font(Typography.caption)
+                                .foregroundStyle(Palette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, Spacing.prefsRowHorizontal)
+                                .padding(.bottom, Spacing.prefsRowVertical)
+                        }
+                    }
+                }
             }
+            // Prototype: .about-content { padding: 28px 28px 24px }
+            // xxl=32 is the nearest token above 28; windowPadding=24 is exact for bottom.
+            .padding(.horizontal, Spacing.windowPadding)
+            .padding(.top, Spacing.xxl)
+            .padding(.bottom, Spacing.xl)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .frame(width: 460, height: 560)
+        .scrollIndicators(.hidden)
+        .background(Palette.bgWindow)
+        .frame(width: WindowSize.about.width, height: WindowSize.about.height)
     }
+
+    // MARK: - Group / row helpers
+
+    /// Uppercase meta-label group header + top-border rows block.
+    /// Prototype: .group-label meta-label + .group-rows { border-top: 1px solid var(--divider) }
+    @ViewBuilder
+    private func aboutGroup<Content: View>(
+        title: String,
+        @ViewBuilder rows: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(Typography.metaLabel)
+                .tracking(Typography.metaLabelTracking)
+                .textCase(.uppercase)
+                .foregroundStyle(Palette.textMuted)
+                .padding(.bottom, Spacing.sm)   // group-label: margin-bottom 8px
+
+            aboutDivider   // top border per prototype .group-rows
+            rows()
+        }
+    }
+
+    /// Single about-row: label left, control right. Matches .prefs-row layout.
+    @ViewBuilder
+    private func aboutRow<Control: View>(
+        _ label: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(alignment: .center, spacing: Spacing.md) {
+            Text(label)
+                .font(Typography.body)
+                .foregroundStyle(Palette.textPrimary)
+            Spacer(minLength: Spacing.md)
+            control()
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.horizontal, Spacing.prefsRowHorizontal)
+        .padding(.vertical, Spacing.prefsRowVertical)
+        .frame(minHeight: Spacing.prefsRowMinHeight)
+    }
+
+    /// 1px row divider. Local to AboutView — SettingsView's RowDivider is private.
+    /// Both implement the same visual using Palette.divider.
+    private var aboutDivider: some View {
+        Rectangle()
+            .fill(Palette.divider)
+            .frame(height: 1)
+    }
+
+    /// Hotkey display chip — RoundedRectangle 5pt per prototype.
+    /// Prototype: .hotkey-chip { border-radius: 5px; background: var(--surface-inset);
+    ///   border: 1px solid var(--stroke-subtle); font-family: 'Geist Mono';
+    ///   font-size: 11px; padding: 3px 8px; letter-spacing: 0.04em }
+    private var hotkeyChip: some View {
+        Text("\(modifiersToString(settings.hotkeyModifiers))\(keyCodeToString(settings.hotkeyKey))")
+            .font(Typography.monoSmall)
+            .tracking(Typography.metaLabelTracking)
+            .foregroundStyle(Palette.textPrimary)
+            .padding(.horizontal, Spacing.sm)   // 8px
+            .padding(.vertical, Spacing.xs)     // 4px (nearest token to prototype 3px)
+            .background(Palette.surfaceInset, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(Palette.strokeSubtle, lineWidth: 1)
+            )
+    }
+
+    private func permissionBadge(_ isGranted: Bool) -> some View {
+        StatusBadge(isGranted ? "Granted" : "Needs attention", tone: isGranted ? .positive : .warning)
+    }
+
+    // MARK: - Helpers
 
     private var appVersion: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development"
@@ -70,19 +220,12 @@ struct AboutView: View {
         return "\(version) (\(build))"
     }
 
+    /// Compact version line for the about-head sub-title.
+    private var aboutVersionLine: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development"
+    }
+
     private var languageLabel: String {
         settings.language.displayName
-    }
-
-    private var shortcutBadge: some View {
-        Text("\(modifiersToString(settings.hotkeyModifiers))\(keyCodeToString(settings.hotkeyKey))")
-            .font(.system(.subheadline, design: .monospaced))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.white.opacity(0.08), in: Capsule(style: .continuous))
-    }
-
-    private func permissionBadge(_ isGranted: Bool) -> some View {
-        StatusBadge(isGranted ? "Granted" : "Needs attention", tone: isGranted ? .positive : .warning)
     }
 }
