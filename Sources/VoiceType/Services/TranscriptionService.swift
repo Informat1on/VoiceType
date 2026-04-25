@@ -113,12 +113,15 @@ final class TranscriptionService: ObservableObject {
         AppLog.transcription.notice("Deferred initial prompt applied after transcription")
     }
 
+    #if DEBUG
     /// Test seam: allows unit tests to trigger _flushPendingPrompt without running
     /// a real whisper transcription.  Not part of the public API; production code
     /// reaches this path only through the defer block in transcribe().
+    /// Compiled out of release builds so the seam never leaks into shipping binaries.
     func _testFlushPendingPrompt() {
         _flushPendingPrompt()
     }
+    #endif
 
     /// Build and apply the initial prompt from the current language + custom vocabulary.
     /// Must be called:
