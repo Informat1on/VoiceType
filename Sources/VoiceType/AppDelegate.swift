@@ -557,10 +557,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         let text = (transcriptionText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            print("[AppDelegate] Transcription produced empty string — nothing to inject")
+            print("[AppDelegate] Transcription produced empty string — flashing emptyResult")
             AppLog.transcription.notice("Transcription produced empty text")
-            voiceTypeWindow?.hide()
-            appState = .idle
+            voiceTypeWindow?.show(state: .emptyResult)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(400))
+                self?.voiceTypeWindow?.hide()
+                self?.appState = .idle
+            }
             return
         }
 
@@ -573,17 +577,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Keep the app busy until the text is fully inserted, so the next hotkey
         // press cannot race with the paste/typing sequence.
         let injectionSucceeded = injectText(text, mode: AppSettings.shared.textInjectionMode)
-        appState = .idle
 
         if injectionSucceeded {
-            // Flash `.inserted` for ~500ms, then hide.
+            // Flash `.inserted` for 400ms (per v5-inserted-state.html), then hide.
+            // appState stays non-idle during the flash so a hotkey press mid-flash
+            // cannot pass canStartRecording() and start a new recording.
             voiceTypeWindow?.show(state: .inserted(charCount: charCount, targetAppName: targetAppName))
             Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await Task.sleep(for: .milliseconds(400))
                 self?.voiceTypeWindow?.hide()
+                self?.appState = .idle
             }
         } else {
             voiceTypeWindow?.hide()
+            appState = .idle
         }
     }
 
