@@ -353,7 +353,8 @@ struct ModelRow: View {
     @ObservedObject private var modelManager = ModelManager.shared
 
     var body: some View {
-        Button(action: onSelect) {
+        let compatible = model.isCompatibleWithCurrentEngine
+        Button(action: compatible ? onSelect : {}) {
             HStack(alignment: .center, spacing: Spacing.md) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(isSelected ? Palette.accent : Palette.textMuted)
@@ -362,7 +363,7 @@ struct ModelRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.displayName)
                         .font(Typography.body)
-                        .foregroundStyle(Palette.textPrimary)
+                        .foregroundStyle(compatible ? Palette.textPrimary : Palette.textMuted)
                     Text("\(model.estimatedSize) · Speed \(model.speedRating) · Quality \(model.qualityRating)")
                         .font(Typography.caption)
                         .foregroundStyle(Palette.textSecondary)
@@ -378,16 +379,20 @@ struct ModelRow: View {
             .padding(.horizontal, Spacing.prefsRowHorizontal)
             .padding(.vertical, Spacing.prefsRowVertical)
             .frame(minHeight: Spacing.prefsRowMinHeight)
+            .opacity(compatible ? 1.0 : 0.5)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
+        .disabled(!compatible)
         .accessibilityLabel(model.displayName)
         .accessibilityValue("\(downloadStateAccessibilityValue), \(model.estimatedSize), Speed \(model.speedRating), Quality \(model.qualityRating)")
     }
 
     @ViewBuilder
     private var downloadStateBadge: some View {
-        if modelManager.isModelDownloaded(model: model) {
+        if !model.isCompatibleWithCurrentEngine {
+            StatusBadge("Requires update", tone: .warning)
+        } else if modelManager.isModelDownloaded(model: model) {
             StatusBadge("Downloaded", tone: .positive)
         } else {
             StatusBadge("Not downloaded")
@@ -395,6 +400,7 @@ struct ModelRow: View {
     }
 
     private var downloadStateAccessibilityValue: String {
-        modelManager.isModelDownloaded(model: model) ? "Downloaded" : "Not downloaded"
+        if !model.isCompatibleWithCurrentEngine { return "Requires engine update, not selectable" }
+        return modelManager.isModelDownloaded(model: model) ? "Downloaded" : "Not downloaded"
     }
 }

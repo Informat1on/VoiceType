@@ -132,6 +132,13 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         case .largeV3Turbo: return "Best quality with fast turnaround"
         }
     }
+
+    // SwiftWhisper bundles whisper.cpp v1.4.2 which hardcodes WHISPER_N_MEL=80.
+    // large-v3-turbo requires 128 mel bands and was added in whisper.cpp v1.7.0.
+    // Crashes with SIGABRT in whisper_encode_internal until SwiftWhisper updates.
+    var isCompatibleWithCurrentEngine: Bool {
+        self != .largeV3Turbo
+    }
 }
 
 final class AppSettings: ObservableObject {
@@ -181,7 +188,8 @@ final class AppSettings: ObservableObject {
 
     private init() {
         self.activationMode = ActivationMode(rawValue: defaults.string(forKey: "activationMode") ?? "") ?? .singlePress
-        self.selectedModel = TranscriptionModel(rawValue: defaults.string(forKey: "selectedModel") ?? "") ?? .smallQ5
+        let storedModel = TranscriptionModel(rawValue: defaults.string(forKey: "selectedModel") ?? "") ?? .smallQ5
+        self.selectedModel = storedModel.isCompatibleWithCurrentEngine ? storedModel : .smallQ5
         let storedModifiers = defaults.integer(forKey: "hotkeyModifiers")
         if storedModifiers == 0 {
             // Factory default per spec audit: Option + Space. This supersedes the
