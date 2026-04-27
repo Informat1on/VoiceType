@@ -144,10 +144,6 @@ public final class AudioCaptureService: ObservableObject {
 
         try? FileManager.default.removeItem(at: recordingURL)
 
-        if samples.isEmpty {
-            throw AudioCaptureError.emptyRecording
-        }
-
         return samples
     }
 
@@ -277,7 +273,7 @@ public final class AudioCaptureService: ObservableObject {
             var conversionError: NSError?
             let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
                 guard !didProvideInput else {
-                    outStatus.pointee = .noDataNow
+                    outStatus.pointee = .endOfStream
                     return nil
                 }
 
@@ -330,7 +326,6 @@ public enum AudioCaptureError: LocalizedError {
     case noInputBuffersReceived
     case recorderStartFailed
     case recordingFileMissing
-    case emptyRecording
     case recordingReadFailed(Error)
     case recordingConversionFailed
 
@@ -354,8 +349,6 @@ public enum AudioCaptureError: LocalizedError {
             return "VoiceType could not start the microphone recorder. Check the active input device in macOS and try again."
         case .recordingFileMissing:
             return "VoiceType lost the temporary recording file before transcription could start."
-        case .emptyRecording:
-            return "VoiceType recorded an empty audio file. Check the active input device in macOS and try again."
         case .recordingReadFailed(let error):
             return "VoiceType could not read the recorded audio: \(error.localizedDescription)"
         case .recordingConversionFailed:

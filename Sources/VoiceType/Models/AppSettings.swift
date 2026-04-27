@@ -141,6 +141,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
     }
 }
 
+@MainActor
 final class AppSettings: ObservableObject {
     static let shared = AppSettings()
 
