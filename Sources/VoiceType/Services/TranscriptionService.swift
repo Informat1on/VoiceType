@@ -37,12 +37,23 @@ final class TranscriptionService: ObservableObject {
     @Published var progress: Double = 0.0
     @Published var lastResult: String?
 
+    /// H3: Maximum seconds a native transcription may run before it is forcibly
+    /// cancelled.  Previously declared only as an error case but never enforced;
+    /// now races against the real whisper.transcribe call via withThrowingTaskGroup.
+    var transcriptionTimeout: TimeInterval = 30
+
     private var whisper: Whisper?
     private var modelURL: URL?
     private var currentLanguage: String?
     private var currentModelName: String?
     private var _initialPrompt: UnsafeMutablePointer<CChar>?
     var currentInitialPromptText: String?
+
+    // H1: monotonically-increasing generation counter for loadModel.
+    // Each call captures a local copy before the async work begins.
+    // The result is committed only when the captured generation matches the
+    // current value — stale (out-of-order) loads are silently discarded.
+    private var modelLoadGeneration: Int = 0
 
     // Double-optional sentinel for deferred prompt updates during transcription.
     // .none           → no pending update
@@ -159,6 +170,24 @@ final class TranscriptionService: ObservableObject {
     }
 
     func loadModel(at url: URL, language: Language = .auto, model: TranscriptionModel? = nil) async throws {
+        // C1: Guard against swapping the Whisper instance (and freeing the old one)
+        // while whisper_full is running on a background thread holding a raw C pointer
+        // into its context.  Replacing `whisper` mid-transcription is a UAF.
+        guard !isTranscribing else {
+            AppLog.models.warning("loadModel called while transcription is active — rejected to prevent UAF")
+            throw TranscriptionError.modelLoadFailed(NSError(
+                domain: "TranscriptionService",
+                code: -2,
+                userInfo: [NSLocalizedDescriptionKey: "Cannot load a new model while transcription is in progress."]
+            ))
+        }
+
+        // H1: Capture and increment the generation counter BEFORE the async work.
+        // If a newer loadModel call arrives while we await, our generation will be
+        // stale and we discard the result rather than overwriting the newer model.
+        modelLoadGeneration &+= 1
+        let myGeneration = modelLoadGeneration
+
         print("[TranscriptionService] Loading model from \(url.lastPathComponent)")
         AppLog.models.notice("Loading model \(url.lastPathComponent, privacy: .public)")
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -204,6 +233,14 @@ final class TranscriptionService: ObservableObject {
         print("[TranscriptionService] GPU acceleration: \(hasCoreML ? "CoreML ENABLED" : "CPU only")")
         AppLog.models.notice("Model load finished")
 
+        // H1: If a newer loadModel call has already committed a different model,
+        // discard this stale result rather than overwriting the authoritative state.
+        guard myGeneration == modelLoadGeneration else {
+            AppLog.models.notice("Discarding stale model load (generation \(myGeneration) < \(self.modelLoadGeneration))")
+            print("[TranscriptionService] Stale model load discarded (gen \(myGeneration) vs current \(modelLoadGeneration))")
+            return
+        }
+
         whisper = newWhisper
         applyRuntimeConfiguration(language: language)
 
@@ -245,7 +282,12 @@ final class TranscriptionService: ObservableObject {
             if whisper.inProgress {
                 print("[TranscriptionService] ERROR: Whisper still busy after retries")
                 AppLog.transcription.error("Transcription skipped because previous job is still running")
-                throw TranscriptionError.transcriptionFailed(NSError(domain: "Whisper", code: -1, userInfo: [NSLocalizedDescriptionKey: "Previous transcription still completing"]))
+                let busyError = NSError(
+                    domain: "Whisper",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Previous transcription still completing"]
+                )
+                throw TranscriptionError.transcriptionFailed(busyError)
             }
         }
 
@@ -266,8 +308,33 @@ final class TranscriptionService: ObservableObject {
         do {
             let transcribeStart = CFAbsoluteTimeGetCurrent()
 
-            // transcribe returns [Segment]
-            let segments = try await whisper.transcribe(audioFrames: audio)
+            // H3: Race the actual transcription against a timeout task.
+            // `transcriptionTimeout` was previously declared but never enforced —
+            // a stuck whisper_full would wedge `isTranscribing = true` forever.
+            // withThrowingTaskGroup cancels the winner's sibling automatically.
+            let timeoutSeconds = transcriptionTimeout
+            let segments: [Segment] = try await withThrowingTaskGroup(of: [Segment].self) { group in
+                group.addTask {
+                    try await whisper.transcribe(audioFrames: audio)
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                    throw TranscriptionError.transcriptionTimeout
+                }
+                // Take whichever task finishes first; cancel the other.
+                guard let result = try await group.next() else {
+                    group.cancelAll()
+                    let noResultError = NSError(
+                        domain: "TranscriptionService",
+                        code: -3,
+                        userInfo: [NSLocalizedDescriptionKey: "Task group completed with no result"]
+                    )
+                    throw TranscriptionError.transcriptionFailed(noResultError)
+                }
+                group.cancelAll()
+                return result
+            }
+
             let text = segments.map { $0.text }.joined()
 
             let transcribeTime = CFAbsoluteTimeGetCurrent() - transcribeStart
@@ -285,6 +352,15 @@ final class TranscriptionService: ObservableObject {
             print("[TranscriptionService] Result ready (characters: \(trimmed.count))")
             AppLog.transcription.notice("Transcription result is ready")
             return trimmed
+        } catch TranscriptionError.transcriptionTimeout {
+            progress = 0.0
+            AppLog.transcription.error("Transcription timed out after \(self.transcriptionTimeout)s")
+            print("[TranscriptionService] Transcription timed out after \(transcriptionTimeout)s")
+            ErrorLogger.shared.log(
+                message: "Transcription timed out after \(transcriptionTimeout)s — model may be too large",
+                category: "transcription"
+            )
+            throw TranscriptionError.transcriptionTimeout
         } catch {
             progress = 0.0
             print("[TranscriptionService] Transcription error: \(error)")
@@ -294,6 +370,12 @@ final class TranscriptionService: ObservableObject {
     }
 
     func unloadModel() {
+        // C1: Never nil out `whisper` while whisper_full holds its C context pointer.
+        guard !isTranscribing else {
+            AppLog.models.warning("unloadModel called while transcription is active — deferred")
+            print("[TranscriptionService] unloadModel deferred: transcription in progress")
+            return
+        }
         print("[TranscriptionService] Unloading model")
         whisper = nil
         modelURL = nil

@@ -36,7 +36,14 @@ final class PermissionManager: ObservableObject {
     var onHideToast: (() -> Void)?
 
     private var cancellables = Set<AnyCancellable>()
+    /// H2: Routine permission polling task (refreshPermissions / openMicrophoneSettings).
+    /// Kept separate from accessibilityWatcherTask so that user-initiated refreshes
+    /// do not silently cancel the long-running accessibility-grant watcher.
     private var refreshTask: Task<Void, Never>?
+    /// H2: Long-running watcher task started by watchForAccessibilityRestart().
+    /// Independent of refreshTask — cancelled only by watchForAccessibilityRestart itself
+    /// (when re-entered) or on dealloc.
+    private var accessibilityWatcherTask: Task<Void, Never>?
     
     init() {
         checkAllPermissions()
@@ -197,9 +204,15 @@ final class PermissionManager: ObservableObject {
 
     /// After user enables Accessibility in System Settings, watch for it and prompt to restart.
     /// macOS requires a full app restart for Accessibility permissions to take effect.
+    ///
+    /// H2: Uses `accessibilityWatcherTask` — a dedicated task property — so that
+    /// routine calls to `refreshPermissions()` (e.g. user taps Refresh, opens
+    /// Mic Settings) cannot silently cancel this long-running watcher and cause the
+    /// app to miss the accessibility-grant event.
     private func watchForAccessibilityRestart() {
-        refreshTask?.cancel()
-        refreshTask = Task { @MainActor [weak self] in
+        // Cancel any previously-running watcher (re-entry guard).
+        accessibilityWatcherTask?.cancel()
+        accessibilityWatcherTask = Task { @MainActor [weak self] in
             let maxAttempts = 30 // 30 seconds max
             for _ in 0..<maxAttempts {
                 try? await Task.sleep(nanoseconds: 1_000_000_000) // 1s
