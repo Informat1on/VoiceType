@@ -64,6 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Keyed by entry UUID so multiple eval editors can coexist without losing ownership.
     /// VT-REV-001: replaced single `evalEditorWindow` optional with a dictionary.
     private var evalEditorWindows: [UUID: EvalEditorWindow] = [:]
+    /// Block-based NotificationCenter observers tied to eval editor windows.
+    /// Stored so we can `removeObserver` when the window closes — otherwise each
+    /// opened editor leaks a registration until process exit (Codex re-review).
+    private var evalEditorObservers: [UUID: NSObjectProtocol] = [:]
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Eval hotkey (Cmd+Opt+E, separate from the recording hotkey)
@@ -205,15 +209,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
         let win = EvalEditorWindow.open(entryID: entryID)
         evalEditorWindows[entryID] = win
-        NotificationCenter.default.addObserver(
+        let token = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: win,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.evalEditorWindows.removeValue(forKey: entryID)
+                guard let self else { return }
+                self.evalEditorWindows.removeValue(forKey: entryID)
+                if let observer = self.evalEditorObservers.removeValue(forKey: entryID) {
+                    NotificationCenter.default.removeObserver(observer)
+                }
             }
         }
+        evalEditorObservers[entryID] = token
     }
 
     /// Open the eval editor for the last transcription (Cmd+Opt+E hotkey path).
