@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import CoreText
+import Carbon
 
 enum AppState: String {
     case idle
@@ -60,7 +61,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var settingsWindow: NSWindow?
     private var aboutWindow: NSWindow?
     private var firstLaunchWindow: FirstLaunchWindow?
+    private var evalEditorWindow: EvalEditorWindow?
     private var cancellables = Set<AnyCancellable>()
+
+    // MARK: - Eval hotkey (Cmd+Opt+E, separate from the recording hotkey)
+    private var evalHotKeyRef: EventHotKeyRef?
+    private var evalEventHandler: EventHandlerRef?
+    /// Static id distinct from HotkeyService.hotKeySignature ('hk11' = 0x686B3131)
+    private static let evalHotKeySignature: UInt32 = 0x65766C31 // 'evl1'
+    private static let evalHotKeyId: UInt32 = 42
 
     /// Set to `true` by `injectText` when it shows an `.errorInline` capsule state.
     /// Cleared by `transcribeAndInject`'s else-branch so the capsule is NOT hidden
@@ -96,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupHotkeyCallbacks()
         setupBindings()
         preloadModelIfNeeded()
+        registerEvalHotkey()
 
         // Show first-launch checklist on first run. Placed after preloadModelIfNeeded()
         // so ModelManager state is queryable when the window opens.
@@ -110,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationWillTerminate(_ notification: Notification) {
         hotkeyService.stopListening()
+        unregisterEvalHotkey()
         if appState == .recording {
             _ = try? audioCaptureService.stopRecording()
         }
@@ -177,6 +188,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         firstLaunchWindow?.deminiaturize(nil)
         firstLaunchWindow?.makeKeyAndOrderFront(nil)
         firstLaunchWindow?.orderFrontRegardless()
+    }
+
+    // MARK: - Eval Editor Window
+
+    /// Open the eval editor for the last transcription.
+    /// Shows a brief inline error if no transcription exists yet.
+    func openEvalEditor() {
+        print("[AppDelegate] openEvalEditor() called")
+        guard HistoryStore.shared.latestEntry() != nil else {
+            showErrorToast(title: "No transcription yet", body: "Make a transcription first, then press Cmd+Opt+E to edit it.")
+            return
+        }
+        // Re-open with fresh entry each time (entry may have changed since last open).
+        evalEditorWindow = nil
+        evalEditorWindow = EvalEditorWindow.openForLatestEntry()
+    }
+
+    // MARK: - Eval Hotkey (Cmd+Opt+E)
+
+    private func registerEvalHotkey() {
+        // Key code for 'E' = 14 (Carbon virtual key code)
+        // Modifiers: cmdKey (256) | optionKey (2048)
+        let keyCode: UInt32 = 14
+        let modifiers = UInt32(cmdKey | optionKey)
+
+        var eventSpecs: [EventTypeSpec] = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        ]
+        let target = GetApplicationEventTarget()
+
+        let regError = RegisterEventHotKey(
+            keyCode,
+            modifiers,
+            EventHotKeyID(signature: Self.evalHotKeySignature, id: Self.evalHotKeyId),
+            target,
+            0,
+            &evalHotKeyRef
+        )
+
+        guard regError == noErr else {
+            print("[AppDelegate] Failed to register eval hotkey (Cmd+Opt+E), error: \(regError)")
+            return
+        }
+
+        let handlerError = InstallEventHandler(
+            target,
+            { _, event, userData -> OSStatus in
+                guard let event, let userData else { return OSStatus(eventNotHandledErr) }
+                let delegate = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
+                return delegate.handleEvalHotkeyEvent(event)
+            },
+            Int(eventSpecs.count),
+            &eventSpecs,
+            Unmanaged.passUnretained(self).toOpaque(),
+            &evalEventHandler
+        )
+
+        guard handlerError == noErr else {
+            print("[AppDelegate] Failed to install eval event handler, error: \(handlerError)")
+            UnregisterEventHotKey(evalHotKeyRef)
+            evalHotKeyRef = nil
+            return
+        }
+
+        print("[AppDelegate] Eval hotkey registered: Cmd+Opt+E")
+    }
+
+    private func unregisterEvalHotkey() {
+        if let handler = evalEventHandler {
+            RemoveEventHandler(handler)
+            evalEventHandler = nil
+        }
+        if let hotkey = evalHotKeyRef {
+            UnregisterEventHotKey(hotkey)
+            evalHotKeyRef = nil
+        }
+    }
+
+    private func handleEvalHotkeyEvent(_ event: EventRef) -> OSStatus {
+        var hotKeyId = EventHotKeyID()
+        let error = GetEventParameter(
+            event,
+            EventParamName(kEventParamDirectObject),
+            EventParamType(typeEventHotKeyID),
+            nil,
+            MemoryLayout<EventHotKeyID>.size,
+            nil,
+            &hotKeyId
+        )
+        guard error == noErr,
+              hotKeyId.signature == Self.evalHotKeySignature,
+              hotKeyId.id == Self.evalHotKeyId else {
+            return OSStatus(eventNotHandledErr)
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.openEvalEditor()
+        }
+        return noErr
     }
 
     // MARK: - Font Registration
@@ -575,8 +685,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return
         }
 
+        // Generate a UUID-named destination in the audio directory before calling stop,
+        // so the audio capture service can copy the raw CAF there before deletion.
+        // Ensure the directory exists lazily (production path; test paths skip this).
+        HistoryStore.shared.ensureAudioDirectoryExists()
+        let audioFileName = "\(UUID().uuidString).caf"
+        let audioDestination = HistoryStore.shared.audioDirectory
+            .appendingPathComponent(audioFileName)
+
+        let samples: [Float]
+        var savedAudioPath: String?
+        var savedAudioDuration: Double?
+
         do {
-            let samples = try audioCaptureService.stopRecording()
+            let result = try audioCaptureService.stopRecordingRetaining(savingAudioTo: audioDestination)
+            samples = result.0
+            savedAudioPath = result.1 != nil ? audioFileName : nil
+            savedAudioDuration = result.1
             print("[AppDelegate] Got \(samples.count) audio samples")
             guard !samples.isEmpty else {
                 print("[AppDelegate] No audio samples")
@@ -607,10 +732,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             AppLog.transcription.notice("Transcription started")
 
             print("[AppDelegate] About to create transcription Task")
+            let audioPathCapture = savedAudioPath
+            let audioDurationCapture = savedAudioDuration
             Task(priority: .userInitiated) { [weak self] in
                 guard let self else { return }
                 print("[AppDelegate] Transcription Task started, calling transcribeAndInject")
-                await self.transcribeAndInject(samples: samples)
+                await self.transcribeAndInject(
+                    samples: samples,
+                    audioPath: audioPathCapture,
+                    audioDuration: audioDurationCapture
+                )
                 print("[AppDelegate] Transcription Task completed")
             }
             print("[AppDelegate] Transcription Task created")
@@ -638,7 +769,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     // MARK: - Transcription Pipeline
 
-    private func transcribeAndInject(samples: [Float]) async {
+    private func transcribeAndInject(
+        samples: [Float],
+        audioPath: String? = nil,
+        audioDuration: Double? = nil
+    ) async {
         print("[AppDelegate] transcribeAndInject: \(samples.count) samples")
 
         var transcriptionText: String?
@@ -708,7 +843,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 text: text,
                 targetAppName: targetAppName,
                 targetAppBundleID: targetBundleID,
-                language: AppSettings.shared.language.rawValue
+                language: AppSettings.shared.language.rawValue,
+                audioPath: audioPath,
+                model: AppSettings.shared.selectedModel.rawValue,
+                audioDurationSeconds: audioDuration
             )
             HistoryStore.shared.append(historyEntry)
 

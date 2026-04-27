@@ -121,6 +121,20 @@ public final class AudioCaptureService: ObservableObject {
     }
 
     public func stopRecording() throws -> [Float] {
+        let (samples, _) = try stopRecordingCore(savingAudioTo: nil)
+        return samples
+    }
+
+    /// Stop recording, return samples, and optionally copy the raw audio file
+    /// to `saveURL` before it is deleted from the temp directory.
+    /// Returns (samples, audioDurationSeconds). audioDurationSeconds is nil if
+    /// the save failed or was not requested.
+    public func stopRecordingRetaining(savingAudioTo saveURL: URL) throws -> ([Float], Double?) {
+        return try stopRecordingCore(savingAudioTo: saveURL)
+    }
+
+    @discardableResult
+    private func stopRecordingCore(savingAudioTo saveURL: URL?) throws -> ([Float], Double?) {
         var currentlyRecording = false
         stateQueue.sync { currentlyRecording = isRecording }
         guard currentlyRecording else {
@@ -142,9 +156,24 @@ public final class AudioCaptureService: ObservableObject {
 
         let samples = try loadSamples(from: recordingURL)
 
+        // Optionally persist a copy before deletion.
+        var savedDuration: Double?
+        if let destination = saveURL {
+            do {
+                try FileManager.default.copyItem(at: recordingURL, to: destination)
+                // Compute duration from sample count at the known target rate.
+                if !samples.isEmpty {
+                    savedDuration = Double(samples.count) / targetSampleRate
+                }
+            } catch {
+                // Non-fatal: eval audio save failure must not block transcription.
+                print("[AudioCapture] Failed to save eval audio: \(error)")
+            }
+        }
+
         try? FileManager.default.removeItem(at: recordingURL)
 
-        return samples
+        return (samples, savedDuration)
     }
 
     private func recordingSettings() -> [String: Any] {

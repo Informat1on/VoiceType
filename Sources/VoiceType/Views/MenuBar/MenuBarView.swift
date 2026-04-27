@@ -223,6 +223,10 @@ struct MenuBarView: View {
                 appDelegate.startRecordingFromMenu()
             }
 
+            MenuActionRow(label: "Edit last transcription\u{2026}", trailingHint: "\u{2318}\u{2325}E") {
+                appDelegate.openEvalEditor()
+            }
+
             MenuActionRow(label: "Open Settings\u{2026}", keyboardShortcut: (",", .command)) {
                 appDelegate.openSettings()
             }
