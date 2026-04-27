@@ -8,7 +8,7 @@ let package = Package(
         .executable(name: "VoiceType", targets: ["VoiceType"])
     ],
     dependencies: [
-        .package(url: "https://github.com/exPHAT/SwiftWhisper.git", branch: "master")
+        .package(url: "https://github.com/Informat1on/SwiftWhisper.git", branch: "master")
     ],
     targets: [
         .executableTarget(

@@ -133,11 +133,10 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         }
     }
 
-    // SwiftWhisper bundles whisper.cpp v1.4.2 which hardcodes WHISPER_N_MEL=80.
-    // large-v3-turbo requires 128 mel bands and was added in whisper.cpp v1.7.0.
-    // Crashes with SIGABRT in whisper_encode_internal until SwiftWhisper updates.
+    // Forked SwiftWhisper bundles whisper.cpp v1.7.5 which supports 128 mel bands
+    // and the 4-layer decoder required by large-v3-turbo. All models are compatible.
     var isCompatibleWithCurrentEngine: Bool {
-        self != .largeV3Turbo
+        true
     }
 }
 

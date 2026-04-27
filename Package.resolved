@@ -3,10 +3,10 @@
     {
       "identity" : "swiftwhisper",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/exPHAT/SwiftWhisper.git",
+      "location" : "https://github.com/Informat1on/SwiftWhisper.git",
       "state" : {
         "branch" : "master",
-        "revision" : "c340197966ebd264f3135d3955874b40f8ed58bc"
+        "revision" : "15d7a54af5479cb23a78e0140d5ece263ee457c4"
       }
     }
   ],
