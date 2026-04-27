@@ -37,6 +37,10 @@ struct SettingsView: View {
     /// Default tab per DESIGN.md line 176.
     @State private var selectedTab: Tab = .general
 
+    /// Controls the Advanced expander in the Models tab. Collapsed by default
+    /// so presets are the primary UI; power users can expand to pick any model.
+    @State private var isAdvancedModelsExpanded = false
+
     var body: some View {
         // Flat HStack layout per prototype .settings-window { display:flex }
         // Replaces NavigationSplitView + List (codex audit P1).
@@ -169,34 +173,84 @@ struct SettingsView: View {
 
     // MARK: - Tab 2: Models
 
+    /// True when `settings.selectedModel` matches one of the three presets.
+    /// False means the user picked a non-preset model via the Advanced picker,
+    /// which causes all preset rows to render as unselected ("Custom" state).
+    private var activePreset: ModelPresetRow.Preset? {
+        ModelPresetRow.all.first { $0.model == settings.selectedModel }
+    }
+
     private var modelsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
 
-                // MARK: MODEL group
+                // MARK: PRESETS group — primary UI
                 GroupHeader(title: "Model")
                 RowDivider()
-                ForEach(TranscriptionModel.allCases, id: \.self) { model in
-                    // VT-REV-001: status dot must only reflect the LOADED model, not the
-                    // selected model.  After the user taps a new model row, selectedModel
-                    // updates immediately but the old model is still loaded (and still
-                    // .ready).  Forwarding modelStatus to the newly-selected row would show
-                    // a misleading green dot before loading actually completes.
-                    // Fix: compare against loadedModelName — the authoritative identity of
-                    // whatever model TranscriptionService has in memory right now.
-                    // When loadedModelName is nil (no model loaded yet) every row gets
-                    // .notLoaded, which is also correct.
-                    let isActuallyLoaded = transcriptionService.loadedModelName == model.rawValue
-                    ModelRow(
-                        model: model,
-                        isSelected: settings.selectedModel == model,
-                        onSelect: { settings.selectedModel = model },
-                        activeModelStatus: isActuallyLoaded
-                            ? transcriptionService.modelStatus
-                            : .notLoaded
+
+                ForEach(ModelPresetRow.all, id: \.model) { preset in
+                    ModelPresetRow(
+                        preset: preset,
+                        isSelected: settings.selectedModel == preset.model,
+                        onSelect: { settings.selectedModel = preset.model }
                     )
                     RowDivider()
                 }
+
+                // "Custom" indicator: shown only when the selected model is not
+                // one of the three presets (user chose via Advanced picker).
+                if activePreset == nil {
+                    HStack(spacing: Spacing.sm) {
+                        Image(systemName: "slider.horizontal.3")
+                            .foregroundStyle(Palette.textMuted)
+                            .font(.system(size: 11))
+                        Text("Custom model selected via Advanced")
+                            .font(Typography.caption)
+                            .foregroundStyle(Palette.textMuted)
+                    }
+                    .padding(.horizontal, Spacing.prefsRowHorizontal)
+                    .padding(.vertical, Spacing.prefsRowVertical)
+                    RowDivider()
+                }
+
+                SectionGap()
+
+                // MARK: ADVANCED expander — full 7-model list, collapsed by default
+                DisclosureGroup(
+                    isExpanded: $isAdvancedModelsExpanded,
+                    content: {
+                        VStack(alignment: .leading, spacing: 0) {
+                            RowDivider()
+                            ForEach(TranscriptionModel.allCases, id: \.self) { model in
+                                // VT-REV-001: status dot must only reflect the LOADED model, not
+                                // the selected model. Compare against loadedModelName — the
+                                // authoritative identity of whatever model TranscriptionService
+                                // has in memory right now. nil → every row gets .notLoaded.
+                                let isActuallyLoaded = transcriptionService.loadedModelName == model.rawValue
+                                ModelRow(
+                                    model: model,
+                                    isSelected: settings.selectedModel == model,
+                                    onSelect: { settings.selectedModel = model },
+                                    activeModelStatus: isActuallyLoaded
+                                        ? transcriptionService.modelStatus
+                                        : .notLoaded
+                                )
+                                RowDivider()
+                            }
+                        }
+                        // Suppress DisclosureGroup's default indentation so model rows
+                        // align with the preset rows above.
+                        .padding(.leading, -Spacing.prefsRowHorizontal)
+                    },
+                    label: {
+                        Text("Advanced")
+                            .font(Typography.body)
+                            .foregroundStyle(Palette.textSecondary)
+                            .padding(.vertical, Spacing.prefsRowVertical)
+                    }
+                )
+                .padding(.horizontal, Spacing.prefsRowHorizontal)
+                .accentColor(Palette.accent)
 
                 SectionGap()
 
