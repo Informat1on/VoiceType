@@ -5,8 +5,12 @@
 // 20pt from edges. Width 320pt per v4-revisions.html CSS (.toast-error).
 // Background #2A1A1A (error surface). 6s auto-dismiss via Task.sleep.
 //
-// Multiple calls: replace the current toast (cancel previous dismiss task,
-// re-show with new content). Simpler than queuing, sufficient for error rate.
+// Queuing: every show() call is logged immediately to errors.log via the
+// injected logger. If a toast is already visible and has been shown for less
+// than minVisibleTime (2.5s), the new toast is queued (FIFO, max 3 entries).
+// When the current toast has been visible for at least 2.5s it is dismissed
+// and the next queued entry is shown. If the queue is full (3 entries) the
+// oldest queued (not currently shown) entry is dropped and a warning is logged.
 //
 // VoiceOver: callers MUST set CapsuleStateModel.state = .errorToast(title:body:)
 // BEFORE or AFTER calling show(title:body:) to fire the announcement.
@@ -77,12 +81,48 @@ private struct ErrorToastContent: View {
 // MARK: - ErrorToastWindow
 
 /// Floating NSPanel showing unsolvable errors. Created once, reused per show call.
+///
+/// Every show() call is immediately written to errors.log via `logger`.
+/// When a toast is already visible and has been shown for less than
+/// `minVisibleTime` (2.5 s), the incoming toast is queued (FIFO, max 3).
+/// The fourth enqueue drops the oldest queued entry and logs a warning.
 final class ErrorToastWindow: NSPanel {
+
+    // MARK: - Queue entry
+
+    private struct QueueEntry {
+        let title: String
+        let body: String
+        let persistent: Bool
+    }
+
+    // MARK: - Configuration
+
+    /// Minimum time a toast must stay visible before the next one can replace it.
+    /// Exposed as `var` so tests can inject a smaller value for fast execution.
+    var minVisibleTime: TimeInterval = 2.5
+
+    /// Maximum number of pending (not-yet-shown) entries in the queue.
+    static let maxQueueDepth = 3
+
+    // MARK: - Test seam
+
+    /// Logger closure. Defaults to `ErrorLogger.shared.log(message:category:)`.
+    /// Tests inject their own closure to capture log calls without file I/O.
+    var logger: (_ message: String, _ category: String) -> Void = { message, category in
+        ErrorLogger.shared.log(message: message, category: category)
+    }
 
     // MARK: - Private state
 
     private var dismissTask: Task<Void, Never>?
     private let hostingView: NSHostingView<ErrorToastContent>
+    /// Timestamp when the current toast was first shown (used for min-visible-time).
+    private var showStartTime: Date?
+    /// Pending toasts not yet displayed.
+    private var queue: [QueueEntry] = []
+    /// Whether the currently visible toast was shown as persistent. Used by tests.
+    internal private(set) var currentToastIsPersistent: Bool = false
 
     // MARK: - Init
 
@@ -106,11 +146,52 @@ final class ErrorToastWindow: NSPanel {
 
     // MARK: - Public API
 
-    /// Show the toast with given content. Replaces any in-progress toast.
-    /// Auto-dismisses after 6 seconds unless `persistent` is true.
-    /// Persistent toasts stay visible until `hide()` is called explicitly
-    /// (e.g. by watchForAccessibilityRestart() once permission flips). P2 finding #3.
+    /// Show the toast with given content.
+    ///
+    /// - The toast is logged to errors.log immediately (before any UI change).
+    /// - **Persistent toasts pre-empt the queue.** Persistent is reserved for
+    ///   urgent, action-required messages (e.g. restart-required after the
+    ///   user grants Accessibility). Callers like `PermissionManager` act on
+    ///   a short delay after showing them, so queueing would let the user
+    ///   miss the notification entirely. Persistent calls displace whatever
+    ///   is currently visible and replace it immediately.
+    /// - Otherwise, if the window is already visible the new entry is queued
+    ///   (FIFO, max 3). If the queue is full the oldest queued entry is
+    ///   dropped and a warning is logged.
+    /// - If the window is not visible, the toast is shown immediately.
+    /// - Auto-dismisses after 6 seconds unless `persistent` is true.
+    /// - Persistent toasts stay visible until `hide()` is called explicitly
+    ///   (e.g. by watchForAccessibilityRestart() once permission flips).
     func show(title: String, body: String, persistent: Bool = false) {
+        // Log immediately — before any UI mutation — per DESIGN.md §Error Handling & Logging:
+        // "Every error logged before UI surface appears."
+        logger("\(title): \(body)", "toast")
+
+        // Non-persistent toasts queue when the window is on screen, preserving
+        // FIFO order (Codex P2 finding on 5ab8814).
+        // Persistent toasts bypass the queue and pre-empt the current toast,
+        // because the caller may take action seconds later and the user must
+        // see the urgent message (Codex P2 finding on 19100f4: persistent
+        // restart-required toasts queued behind visible accessibility toasts).
+        if !persistent && isVisible {
+            enqueue(QueueEntry(title: title, body: body, persistent: persistent))
+            return
+        }
+
+        displayImmediately(title: title, body: body, persistent: persistent)
+    }
+
+    func hide() {
+        dismissTask?.cancel()
+        dismissTask = nil
+        showStartTime = nil
+        orderOut(nil)
+        showNextQueued()
+    }
+
+    // MARK: - Private — display
+
+    private func displayImmediately(title: String, body: String, persistent: Bool = false) {
         dismissTask?.cancel()
         dismissTask = nil
 
@@ -126,24 +207,40 @@ final class ErrorToastWindow: NSPanel {
         setContentSize(fitting)
         positionTopRight()
 
+        showStartTime = Date()
+        currentToastIsPersistent = persistent
         orderFrontRegardless()
 
         if !persistent {
             dismissTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(6))
+                guard let self else { return }
+                // Wait until at least minVisibleTime has elapsed since show.
+                let elapsed = Date().timeIntervalSince(self.showStartTime ?? Date())
+                let remaining = max(self.minVisibleTime, 6.0) - elapsed
+                try? await Task.sleep(for: .seconds(remaining))
                 guard !Task.isCancelled else { return }
-                self?.hide()
+                self.hide()
             }
         }
     }
 
-    func hide() {
-        dismissTask?.cancel()
-        dismissTask = nil
-        orderOut(nil)
+    // MARK: - Private — queue management
+
+    private func enqueue(_ entry: QueueEntry) {
+        if queue.count >= ErrorToastWindow.maxQueueDepth {
+            let dropped = queue.removeFirst()
+            logger("Toast queue full — dropped: \(dropped.title): \(dropped.body)", "toast-warning")
+        }
+        queue.append(entry)
     }
 
-    // MARK: - Private
+    private func showNextQueued() {
+        guard !queue.isEmpty else { return }
+        let next = queue.removeFirst()
+        displayImmediately(title: next.title, body: next.body, persistent: next.persistent)
+    }
+
+    // MARK: - Private — window
 
     private func configureWindow() {
         backgroundColor = .clear
