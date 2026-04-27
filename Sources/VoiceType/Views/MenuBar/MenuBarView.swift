@@ -84,6 +84,7 @@ struct MenuBarView: View {
     @ObservedObject private var permissionManager: PermissionManager
     @ObservedObject private var modelManager: ModelManager
     @ObservedObject private var settings = AppSettings.shared
+    @ObservedObject private var transcriptionService: TranscriptionService
 
     // 1-Hz ticker for the live recording timer display
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -93,6 +94,7 @@ struct MenuBarView: View {
         self.appDelegate = appDelegate
         self.permissionManager = appDelegate.permissionManager
         self.modelManager = ModelManager.shared
+        self.transcriptionService = appDelegate.transcriptionService
     }
 
     // MARK: Derived booleans
@@ -116,7 +118,7 @@ struct MenuBarView: View {
     var body: some View {
         // Width 280pt — DESIGN.md § MenuBar dropdown layout: "280px wide".
         VStack(spacing: 0) {
-            StatusLine(state: menuBarState, settings: settings)
+            StatusLine(state: menuBarState, settings: settings, modelStatus: transcriptionService.modelStatus)
                 .padding(.horizontal, MenuBar.statusHorizontalPadding)
                 .padding(.top, MenuBar.statusTopPadding)
                 .padding(.bottom, MenuBar.statusBottomPadding)
@@ -259,6 +261,7 @@ private struct StatusLine: View {
 
     let state: MenuBarState
     let settings: AppSettings
+    let modelStatus: ModelStatus
 
     var body: some View {
         HStack(spacing: Spacing.sm) {
@@ -275,13 +278,24 @@ private struct StatusLine: View {
                     .foregroundStyle(Palette.textPrimary)
                     .lineLimit(1)
 
-                Text(subLineText)
-                    .font(Typography.monoSmall)
-                    .foregroundStyle(subLineColor)
-                    .textCase(subLineUppercase ? .uppercase : nil)
-                    .tracking(subLineUppercase ? Typography.metaLabelTracking : Typography.metaLabelTracking)
-                    .monospacedDigit()
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    // Model status dot — shown only in idle/recording where the model
+                    // name is visible. Not shown for notReady/transcribing where the
+                    // sub-line carries a different semantic signal.
+                    if showModelStatusDot {
+                        Circle()
+                            .fill(modelStatusDotColor)
+                            .frame(width: 5, height: 5)
+                            .accessibilityLabel(modelStatusAccessibilityLabel)
+                    }
+                    Text(subLineText)
+                        .font(Typography.monoSmall)
+                        .foregroundStyle(subLineColor)
+                        .textCase(subLineUppercase ? .uppercase : nil)
+                        .tracking(subLineUppercase ? Typography.metaLabelTracking : Typography.metaLabelTracking)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
             }
 
             Spacer()
@@ -344,6 +358,50 @@ private struct StatusLine: View {
                 missingModel: missingModel
             )
             return "\(n) SETUP STEPS REMAINING"
+        }
+    }
+
+    // MARK: Model status dot
+
+    /// Show the 5pt status dot only when the sub-line displays model + language.
+    private var showModelStatusDot: Bool {
+        switch state {
+        case .idle, .recording:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Dot color mapped from ModelStatus using DESIGN.md palette tokens.
+    /// .ready → Palette.success (green), .loading/.warming → Palette.warning (amber),
+    /// .error → Palette.error (red-pink), .notLoaded → Palette.textMuted (steel grey).
+    private var modelStatusDotColor: Color {
+        switch modelStatus {
+        case .ready:
+            return Palette.success
+        case .loading, .warming:
+            return Palette.warning
+        case .error:
+            return Palette.error
+        case .notLoaded:
+            return Palette.textMuted
+        }
+    }
+
+    /// VoiceOver label for the model status dot.
+    private var modelStatusAccessibilityLabel: String {
+        switch modelStatus {
+        case .ready:
+            return "Model ready"
+        case .loading:
+            return "Model loading"
+        case .warming:
+            return "Model warming up"
+        case .error:
+            return "Model error"
+        case .notLoaded:
+            return "Model not loaded"
         }
     }
 

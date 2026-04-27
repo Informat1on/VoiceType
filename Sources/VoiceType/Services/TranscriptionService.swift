@@ -2,6 +2,40 @@ import Foundation
 import Combine
 import SwiftWhisper
 
+// MARK: - ModelStatus
+
+/// Load + warm-up lifecycle for the active Whisper model.
+/// Published on TranscriptionService so any observer (e.g. MenuBarView) can
+/// render a status indicator without polling.
+enum ModelStatus: Equatable {
+    /// No model selected / never started loading.
+    case notLoaded
+    /// `Whisper(fromFileURL:)` is executing on the background thread.
+    case loading
+    /// Model bytes are in memory; running a silent buffer to prime Metal/CoreML/ANE caches.
+    case warming
+    /// Model is fully ready; first real transcription will be fast.
+    case ready
+    /// Load or warm-up threw a hard error (file missing, SIGABRT, etc.).
+    /// Associated value carries a short human-readable message for logging.
+    case error(String)
+
+    // Custom Equatable: two .error cases are equal only when their messages match.
+    static func == (lhs: ModelStatus, rhs: ModelStatus) -> Bool {
+        switch (lhs, rhs) {
+        case (.notLoaded, .notLoaded),
+             (.loading, .loading),
+             (.warming, .warming),
+             (.ready, .ready):
+            return true
+        case let (.error(l), .error(r)):
+            return l == r
+        default:
+            return false
+        }
+    }
+}
+
 enum TranscriptionError: LocalizedError {
     case modelNotLoaded
     case modelLoadFailed(Error?)
@@ -36,6 +70,8 @@ final class TranscriptionService: ObservableObject {
     @Published var isTranscribing: Bool = false
     @Published var progress: Double = 0.0
     @Published var lastResult: String?
+    /// Load + warm-up lifecycle. Observed by MenuBarView to render the model status dot.
+    @Published private(set) var modelStatus: ModelStatus = .notLoaded
 
     /// H3: Maximum seconds a native transcription may run before it is forcibly
     /// cancelled.  Previously declared only as an error case but never enforced;
@@ -54,6 +90,10 @@ final class TranscriptionService: ObservableObject {
     // The result is committed only when the captured generation matches the
     // current value — stale (out-of-order) loads are silently discarded.
     private var modelLoadGeneration: Int = 0
+
+    /// Cancellable handle for background warm-up. Cancelled by transcribe() so a real
+    /// transcription always pre-empts an ongoing warm-up pass.
+    private var warmUpTask: Task<Void, Never>?
 
     // Double-optional sentinel for deferred prompt updates during transcription.
     // .none           → no pending update
@@ -193,8 +233,14 @@ final class TranscriptionService: ObservableObject {
         guard FileManager.default.fileExists(atPath: url.path) else {
             print("[TranscriptionService] Model file not found: \(url.lastPathComponent)")
             AppLog.models.error("Model file is missing: \(url.lastPathComponent, privacy: .public)")
+            modelStatus = .error("Model file not found: \(url.lastPathComponent)")
             throw TranscriptionError.modelLoadFailed(nil)
         }
+
+        // Cancel any in-flight warm-up from a previous model before starting a new load.
+        warmUpTask?.cancel()
+        warmUpTask = nil
+        modelStatus = .loading
 
         let resolvedWhisperLang = language.whisperLanguage
         let shouldDetectLanguage = resolvedWhisperLang == nil
@@ -248,6 +294,74 @@ final class TranscriptionService: ObservableObject {
         // or the bilingual seed.  (The WhisperParams object is freshly created above, so
         // any previously-set initial_prompt pointer is gone — must re-apply unconditionally.)
         applyInitialPrompt()
+
+        // Transition to .warming and kick off background warm-up so Metal kernels, CoreML,
+        // and the ANE memory allocator are primed before the first real transcription.
+        modelStatus = .warming
+        warmUpTask = Task { [weak self] in
+            await self?.performWarmUp()
+        }
+    }
+
+    // MARK: - Warm-up
+
+    /// Primes Metal/CoreML/ANE caches by running 500ms of silence (8000 zero-samples
+    /// @ 16 kHz) through whisper.transcribe. Must not affect user-facing state or the
+    /// initial prompt.
+    ///
+    /// - On success: `modelStatus` advances to `.ready`.
+    /// - On failure: logs to errors.log and sets `.ready` anyway (warm-up is an
+    ///   optimisation, not a hard requirement; the model is still usable).
+    /// - Cancelled by `transcribe()` so a real transcription always pre-empts warm-up.
+    private func performWarmUp() async {
+        guard let whisper else { return }
+
+        // Snapshot and clear the initial prompt so the silence buffer is decoded
+        // without any bilingual/vocabulary seed — avoids hallucinated tokens in log.
+        let savedPromptText = currentInitialPromptText
+        _applyPromptNow(nil)
+
+        let silenceBuffer = [Float](repeating: 0, count: 8_000)   // 500 ms @ 16 kHz
+
+        do {
+            _ = try await withThrowingTaskGroup(of: [Segment].self) { group in
+                group.addTask {
+                    try await whisper.transcribe(audioFrames: silenceBuffer)
+                }
+                // 30-second safety timeout — identical ceiling used for real transcriptions.
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 30_000_000_000)
+                    throw TranscriptionError.transcriptionTimeout
+                }
+                // Return first result (real transcription or timeout).
+                guard let result = try await group.next() else {
+                    group.cancelAll()
+                    return [Segment]()
+                }
+                group.cancelAll()
+                return result
+            }
+            // Restore prompt before marking ready so any subscriber that reacts to
+            // .ready immediately has the correct prompt in place.
+            _applyPromptNow(savedPromptText)
+            if !Task.isCancelled {
+                modelStatus = .ready
+                AppLog.models.notice("Warm-up completed — model is hot")
+            }
+        } catch {
+            // Restore prompt even on error so user vocabulary is not silently lost.
+            _applyPromptNow(savedPromptText)
+            if Task.isCancelled {
+                // A real transcription pre-empted us — that is fine; status will be
+                // managed by the transcription path.
+                AppLog.models.notice("Warm-up cancelled (pre-empted by real transcription)")
+            } else {
+                AppLog.models.error("Warm-up failed: \(error.localizedDescription, privacy: .public)")
+                ErrorLogger.shared.log(error, category: "models", context: ["stage": "warmup"])
+                // Model is still loaded — mark ready so the user can transcribe.
+                modelStatus = .ready
+            }
+        }
     }
 
     func transcribe(audio: [Float], language: Language = .auto) async throws -> String {
@@ -294,6 +408,12 @@ final class TranscriptionService: ObservableObject {
         // Apply runtime config only after confirming whisper is idle — prevents mutating
         // language/thread params while whisper_full runs on a background thread.
         applyRuntimeConfiguration(language: language)
+
+        // Pre-empt any in-flight warm-up so the real transcription is not queued
+        // behind a silence-buffer pass on the single-threaded whisper context.
+        warmUpTask?.cancel()
+        warmUpTask = nil
+
         isTranscribing = true
         progress = 0.0
         lastResult = nil
@@ -377,12 +497,15 @@ final class TranscriptionService: ObservableObject {
             return
         }
         print("[TranscriptionService] Unloading model")
+        warmUpTask?.cancel()
+        warmUpTask = nil
         whisper = nil
         modelURL = nil
         currentLanguage = nil
         currentModelName = nil
         lastResult = nil
         progress = 0.0
+        modelStatus = .notLoaded
     }
 
     // MARK: - Trim helper
