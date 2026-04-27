@@ -249,6 +249,60 @@ final class EvalCollectorTests: XCTestCase {
         XCTAssertEqual(reloaded[1].userCorrection, "beta corrected")
     }
 
+    // MARK: - testEntryByIDReturnsCorrectEntry
+
+    /// entry(byID:) must return the exact entry matching the given UUID.
+    func testEntryByIDReturnsCorrectEntry() throws {
+        let (store, _) = try makeStore()
+        let a = sampleEntry(text: "alpha")
+        let b = sampleEntry(text: "beta")
+        let c = sampleEntry(text: "gamma")
+        store.append(a)
+        store.append(b)
+        store.append(c)
+
+        let found = store.entry(byID: b.id)
+        XCTAssertNotNil(found, "entry(byID:) must return the entry when the ID is present")
+        XCTAssertEqual(found?.text, "beta")
+        XCTAssertEqual(found?.id, b.id)
+    }
+
+    // MARK: - testEntryByIDReturnsNilForUnknownID
+
+    /// entry(byID:) must return nil for a UUID that is not in the store.
+    func testEntryByIDReturnsNilForUnknownID() throws {
+        let (store, _) = try makeStore()
+        store.append(sampleEntry(text: "only entry"))
+
+        let result = store.entry(byID: UUID()) // random unknown UUID
+        XCTAssertNil(result, "entry(byID:) must return nil for an ID not present in the store")
+    }
+
+    // MARK: - testEvalEditorViewHandlesEntryWithoutAudio
+
+    /// An entry without audioPath (pre-v1.2.1) must round-trip through
+    /// withEvalSaved without errors. EvalEditorView uses entry?.audioPath for
+    /// the hasAudio guard, so this test verifies the data layer is clean.
+    func testEvalEditorViewHandlesEntryWithoutAudio() throws {
+        let (store, _) = try makeStore()
+        let noAudio = sampleEntry(text: "no audio entry", audioPath: nil)
+        store.append(noAudio)
+
+        let found = store.entry(byID: noAudio.id)
+        XCTAssertNotNil(found)
+        XCTAssertNil(found?.audioPath, "Old entry must have nil audioPath")
+
+        // Saving a correction on an entry without audio must succeed cleanly.
+        let foundEntry = try XCTUnwrap(found)
+        let saved = foundEntry.withEvalSaved(correction: "corrected no-audio entry")
+        store.update(saved)
+
+        let reloaded = store.entry(byID: noAudio.id)
+        XCTAssertEqual(reloaded?.userCorrection, "corrected no-audio entry")
+        XCTAssertEqual(reloaded?.isSavedEval, true)
+        XCTAssertNil(reloaded?.audioPath, "audioPath must remain nil after eval save")
+    }
+
     // MARK: - testSavedEvalCount
 
     func testSavedEvalCount() throws {

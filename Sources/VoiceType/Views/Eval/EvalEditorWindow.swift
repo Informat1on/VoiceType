@@ -1,9 +1,13 @@
 // EvalEditorWindow.swift — VoiceType Eval Collector
 //
-// NSWindow wrapper for EvalEditorView. Opens with the latest HistoryStore entry.
+// NSWindow wrapper for EvalEditorView.
+// Supports two open paths:
+//   1. show(entryID:) — opens any history entry by UUID (used by edit button).
+//   2. openForLatestEntry() — opens the most recent entry (Cmd+Opt+E hotkey).
 // Manages the Save → update HistoryStore → close flow.
 //
 // 2026-04-27 — Eval Collector (initial implementation)
+// 2026-04-27 — entryID-based init added so any history item is editable
 
 import AppKit
 import SwiftUI
@@ -16,13 +20,19 @@ final class EvalEditorWindow: NSWindow {
     // MARK: - Factory
 
     /// Open an eval editor for the most recent history entry.
-    /// Returns nil and shows a brief notification if the store is empty.
+    /// Returns nil (caller should show an error toast) if the store is empty.
     @discardableResult
     static func openForLatestEntry() -> EvalEditorWindow? {
-        guard let entry = HistoryStore.shared.latestEntry() else {
+        guard let latest = HistoryStore.shared.latestEntry() else {
             return nil
         }
-        let win = EvalEditorWindow(entry: entry)
+        return open(entryID: latest.id)
+    }
+
+    /// Open an eval editor for the given entry ID.
+    @discardableResult
+    static func open(entryID: UUID) -> EvalEditorWindow {
+        let win = EvalEditorWindow(entryID: entryID)
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         return win
@@ -30,12 +40,12 @@ final class EvalEditorWindow: NSWindow {
 
     // MARK: - Properties
 
-    private var entry: HistoryStore.Entry
+    private var entryID: UUID
 
     // MARK: - Init
 
-    init(entry: HistoryStore.Entry) {
-        self.entry = entry
+    private init(entryID: UUID) {
+        self.entryID = entryID
 
         super.init(
             contentRect: NSRect(origin: .zero, size: NSSize(width: 580, height: 520)),
@@ -54,7 +64,7 @@ final class EvalEditorWindow: NSWindow {
 
     private func buildContent() {
         let view = EvalEditorView(
-            entry: entry,
+            entryID: entryID,
             onSave: { [weak self] correction in
                 self?.handleSave(correction: correction)
             },
@@ -69,6 +79,12 @@ final class EvalEditorWindow: NSWindow {
     // MARK: - Save
 
     private func handleSave(correction: String) {
+        guard let entry = HistoryStore.shared.entry(byID: entryID) else {
+            // Entry was deleted while the window was open — just close.
+            print("[EvalEditor] Entry \(entryID) not found during save — closing.")
+            close()
+            return
+        }
         let updated = entry.withEvalSaved(correction: correction)
         HistoryStore.shared.update(updated)
         let evalCount = HistoryStore.shared.savedEvalCount()

@@ -256,6 +256,12 @@ final class HistoryStore {
         return cachedEntries.filter { $0.isSavedEval == true }.count
     }
 
+    /// Look up a single entry by its UUID. Returns nil if the ID is not found.
+    func entry(byID id: UUID) -> Entry? {
+        loadIfNeeded()
+        return cachedEntries.first { $0.id == id }
+    }
+
     // MARK: - Audio rotation
 
     /// Rotate unsaved audio files: keeps up to maxUnsavedAudio.

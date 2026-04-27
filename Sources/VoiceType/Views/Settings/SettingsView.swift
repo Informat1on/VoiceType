@@ -155,18 +155,10 @@ struct SettingsView: View {
 
                 SectionGap()
 
-                // MARK: MICROPHONE group — perm-hint panel per prototype lines 644-661
-                GroupHeader(title: "Microphone")
+                // MARK: PERMISSIONS group — compact dual-permission block
+                GroupHeader(title: "Permissions")
                 RowDivider()
-                microphonePermissionRow
-                RowDivider()
-
-                SectionGap()
-
-                // MARK: ACCESSIBILITY group — required for text insertion into other apps
-                GroupHeader(title: "Accessibility")
-                RowDivider()
-                accessibilityPermissionRowGeneral
+                permissionsSectionGeneral
                 RowDivider()
             }
             .padding(Spacing.windowPadding)
@@ -337,13 +329,16 @@ struct SettingsView: View {
                     .padding(.vertical, Spacing.prefsRowVertical)
                 }
 
-                SectionGap()
-
-                // MARK: ACCESSIBILITY group — perm-hint panel per prototype pattern
-                GroupHeader(title: "Accessibility")
-                RowDivider()
-                accessibilityPermissionRow
-                RowDivider()
+                // Inline hint when accessibility is not granted —
+                // General tab is the single source of truth for permissions.
+                if accessibilityPermState != .granted {
+                    SectionGap()
+                    PrefsRow("Hotkey requires Accessibility",
+                             subtitle: "⚠ Hotkey-triggered text insertion requires Accessibility permission. See General → Permissions.") {
+                        EmptyView()
+                    }
+                    RowDivider()
+                }
             }
             .padding(Spacing.windowPadding)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -408,22 +403,20 @@ struct SettingsView: View {
         .scrollIndicators(.hidden)
     }
 
-    // MARK: - Permission Rows
+    // MARK: - Permissions Section (General tab)
     //
-    // Prototype lines 644-661: perm-hint panel replaces plain PrefsRow for permissions.
+    // Compact dual-row block — replaces separate MICROPHONE and ACCESSIBILITY groups.
+    // Happy path: one tight row per permission (dot + name + status + button).
+    // Denied path: expands the affected permission with description + action buttons.
+    // General tab is the single source of truth; Shortcuts tab shows a read-only hint.
 
-    /// Microphone permission row — General tab. DESIGN.md lines 254-258.
-    private var microphonePermissionRow: some View {
+    private var permissionsSectionGeneral: some View {
         VStack(alignment: .leading, spacing: 0) {
-            PrefsRow("Microphone access", subtitle: nil) {
-                EmptyView()
-            }
-            // perm-hint panel per prototype lines 325-337, 656-660
-            PermHintPanel(
+            // --- Microphone row ---
+            CompactPermissionRow(
+                name: "Microphone",
                 state: microphonePermState,
-                title: microphonePermTitle,
-                actionLabel: microphoneActionLabel,
-                onAction: {
+                onPrivacy: {
                     if permissionManager.hasMicrophonePermission {
                         openMicrophonePrivacySettings()
                     } else {
@@ -431,30 +424,34 @@ struct SettingsView: View {
                     }
                 }
             )
-            .padding(.horizontal, Spacing.prefsRowHorizontal)
-            .padding(.bottom, Spacing.prefsRowVertical)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            permissionManager.hasMicrophonePermission
-                ? "Microphone access: Granted"
-                : "Microphone access: Not granted. Tap to request."
-        )
-    }
 
-    /// Accessibility permission row — General tab. Mirrors microphonePermissionRow layout.
-    /// Subtitle explains why this permission matters to non-technical users.
-    private var accessibilityPermissionRowGeneral: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PrefsRow("Accessibility access",
-                     subtitle: "Required for VoiceType to insert transcribed text into other apps.") {
-                EmptyView()
+            // Expanded block for microphone — only shown when denied / not requested
+            if microphonePermState != .granted {
+                VStack(alignment: .leading, spacing: Spacing.sm) {
+                    PermHintPanel(
+                        state: microphonePermState,
+                        title: microphonePermTitle,
+                        actionLabel: microphoneActionLabel,
+                        onAction: {
+                            if permissionManager.hasMicrophonePermission {
+                                openMicrophonePrivacySettings()
+                            } else {
+                                permissionManager.requestMicrophonePermission()
+                            }
+                        }
+                    )
+                }
+                .padding(.horizontal, Spacing.prefsRowHorizontal)
+                .padding(.bottom, Spacing.prefsRowVertical)
             }
-            PermHintPanel(
+
+            RowDivider()
+
+            // --- Accessibility row ---
+            CompactPermissionRow(
+                name: "Accessibility",
                 state: accessibilityPermState,
-                title: accessibilityPermTitle,
-                actionLabel: accessibilityActionLabel,
-                onAction: {
+                onPrivacy: {
                     if permissionManager.hasAccessibilityPermission {
                         permissionManager.openAccessibilitySettings()
                     } else {
@@ -462,84 +459,59 @@ struct SettingsView: View {
                     }
                 }
             )
-            .padding(.horizontal, Spacing.prefsRowHorizontal)
-            .padding(.bottom, Spacing.prefsRowVertical)
 
-            if !permissionManager.hasAccessibilityPermission {
-                HStack(spacing: Spacing.sm) {
-                    Button("Refresh") {
-                        permissionManager.refreshPermissions()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+            // Expanded block for accessibility — only shown when denied / not requested
+            if accessibilityPermState != .granted {
+                VStack(alignment: .leading, spacing: Spacing.sm) {
+                    Text("Required for VoiceType to insert transcribed text into other apps.")
+                        .font(Typography.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                        .padding(.horizontal, Spacing.prefsRowHorizontal)
 
-                    Button("Restart App") {
-                        permissionManager.restartAppForAccessibility()
+                    PermHintPanel(
+                        state: accessibilityPermState,
+                        title: accessibilityPermTitle,
+                        actionLabel: accessibilityActionLabel,
+                        onAction: {
+                            if permissionManager.hasAccessibilityPermission {
+                                permissionManager.openAccessibilitySettings()
+                            } else {
+                                permissionManager.requestAccessibilityPermission()
+                            }
+                        }
+                    )
+                    .padding(.horizontal, Spacing.prefsRowHorizontal)
+
+                    HStack(spacing: Spacing.sm) {
+                        Button("Refresh") {
+                            permissionManager.refreshPermissions()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        Button("Restart App") {
+                            permissionManager.restartAppForAccessibility()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .padding(.horizontal, Spacing.prefsRowHorizontal)
+                    .padding(.bottom, Spacing.prefsRowVertical)
                 }
-                .padding(.horizontal, Spacing.prefsRowHorizontal)
-                .padding(.bottom, Spacing.prefsRowVertical)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            permissionManager.hasAccessibilityPermission
-                ? "Accessibility access: Granted"
-                : "Accessibility access: Not granted. Required to insert transcribed text. Tap to grant."
-        )
+        .accessibilityLabel(permissionsSectionAccessibilityLabel)
     }
 
-    /// Accessibility permission row — Shortcuts tab. DESIGN.md lines 254-258 / line 193.
-    private var accessibilityPermissionRow: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PrefsRow("Accessibility access",
-                     subtitle: "Required for synthesized ⌘V") {
-                EmptyView()
-            }
-            // perm-hint panel per prototype lines 325-337
-            PermHintPanel(
-                state: accessibilityPermState,
-                title: accessibilityPermTitle,
-                actionLabel: accessibilityActionLabel,
-                onAction: {
-                    if permissionManager.hasAccessibilityPermission {
-                        permissionManager.openAccessibilitySettings()
-                    } else {
-                        permissionManager.requestAccessibilityPermission()
-                    }
-                }
-            )
-            .padding(.horizontal, Spacing.prefsRowHorizontal)
-            .padding(.bottom, Spacing.prefsRowVertical)
-
-            // Refresh + Restart App buttons — only when permission not granted
-            if !permissionManager.hasAccessibilityPermission {
-                HStack(spacing: Spacing.sm) {
-                    Button("Refresh") {
-                        permissionManager.refreshPermissions()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                    // macOS caches Accessibility state per-process. Full restart needed.
-                    Button("Restart App") {
-                        permissionManager.restartAppForAccessibility()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-                .padding(.horizontal, Spacing.prefsRowHorizontal)
-                .padding(.bottom, Spacing.prefsRowVertical)
-            }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            permissionManager.hasAccessibilityPermission
-                ? "Accessibility access: Granted"
-                : "Accessibility access: Not granted. Required for synthesized ⌘V. Tap to grant."
-        )
+    private var permissionsSectionAccessibilityLabel: String {
+        let mic = permissionManager.hasMicrophonePermission
+            ? "Microphone: granted."
+            : "Microphone: not granted."
+        let acc = permissionManager.hasAccessibilityPermission
+            ? "Accessibility: granted."
+            : "Accessibility: not granted. Required to insert transcribed text."
+        return "\(mic) \(acc)"
     }
 
     // MARK: - Permission State Helpers

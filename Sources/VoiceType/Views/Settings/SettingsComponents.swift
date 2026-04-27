@@ -285,6 +285,64 @@ struct PermHintPanel: View {
     }
 }
 
+// MARK: - Compact Permission Row
+//
+// One-line row for the consolidated PERMISSIONS section in General tab.
+// Happy path: dot + name + status text + "Open Privacy…" button — all on one line.
+// The caller is responsible for rendering the expanded PermHintPanel below
+// when the permission is denied/not-requested.
+
+struct CompactPermissionRow: View {
+    let name: String
+    let state: PermHintPanel.PermState
+    let onPrivacy: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Spacing.sm) {
+            PermissionDot(state: dotState)
+            Text(name)
+                .font(Typography.body)
+                .foregroundStyle(Palette.textPrimary)
+            Text(statusLabel)
+                .font(Typography.caption)
+                .foregroundStyle(statusColor)
+            Spacer(minLength: Spacing.sm)
+            Button("Open Privacy\u{2026}", action: onPrivacy)
+                .font(Typography.buttonLabel)
+                .foregroundStyle(Palette.accent)
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+        }
+        .padding(.horizontal, Spacing.prefsRowHorizontal)
+        .padding(.vertical, Spacing.prefsRowVertical)
+        .frame(minHeight: Spacing.prefsRowMinHeight)
+    }
+
+    private var dotState: PermissionDot.DotState {
+        switch state {
+        case .granted:      return .granted
+        case .denied:       return .denied
+        case .notRequested: return .notRequested
+        }
+    }
+
+    private var statusLabel: String {
+        switch state {
+        case .granted:      return "granted"
+        case .denied:       return "not granted"
+        case .notRequested: return "not requested"
+        }
+    }
+
+    private var statusColor: Color {
+        switch state {
+        case .granted:      return Palette.success
+        case .denied:       return Palette.error
+        case .notRequested: return Palette.textMuted
+        }
+    }
+}
+
 // MARK: - Sidebar Item
 //
 // Replaces NavigationSplitView List rows. Matches prototype CSS exactly:

@@ -22,31 +22,52 @@ import AVFoundation
 
 struct EvalEditorView: View {
 
-    let entry: HistoryStore.Entry
+    // MARK: - Initialisation
+
+    /// Designated initialiser. Window manages the entry lifecycle.
+    let entryID: UUID
     let onSave: (_ correction: String) -> Void
     let onCancel: () -> Void
 
-    @State private var correctionText: String
+    /// Resolved entry — loaded from HistoryStore on appear.
+    /// Nil means the entry was deleted from history while the window was open.
+    @State private var entry: HistoryStore.Entry?
+
+    @State private var correctionText: String = ""
     @State private var isPlayingAudio = false
     @State private var audioPlayer: AVAudioPlayer?
     @State private var playbackProgress: Double = 0
     @State private var playbackTimer: Timer?
 
-    init(entry: HistoryStore.Entry, onSave: @escaping (_ correction: String) -> Void, onCancel: @escaping () -> Void) {
-        self.entry = entry
+    /// Primary init: takes an explicit entry ID — works for any history entry.
+    init(entryID: UUID, onSave: @escaping (_ correction: String) -> Void, onCancel: @escaping () -> Void) {
+        self.entryID = entryID
         self.onSave = onSave
         self.onCancel = onCancel
-        _correctionText = State(initialValue: entry.text)
+    }
+
+    // MARK: - Factory
+
+    /// Convenience factory for the Cmd+Opt+E hotkey path — opens the most recent entry.
+    /// Returns nil when the history store is empty (caller should show a toast instead).
+    @MainActor
+    static func lastEntry(
+        onSave: @escaping (_ correction: String) -> Void,
+        onCancel: @escaping () -> Void
+    ) -> EvalEditorView? {
+        guard let latest = HistoryStore.shared.latestEntry() else { return nil }
+        return EvalEditorView(entryID: latest.id, onSave: onSave, onCancel: onCancel)
     }
 
     // MARK: - Computed
 
     private var isCorrectionChanged: Bool {
-        correctionText != entry.text
+        guard let entry else { return false }
+        return correctionText != entry.text
     }
 
     private var audioFileURL: URL? {
-        guard let path = entry.audioPath else { return nil }
+        guard let path = entry?.audioPath else { return nil }
         return HistoryStore.shared.audioDirectory.appendingPathComponent(path)
     }
 
@@ -56,7 +77,7 @@ struct EvalEditorView: View {
     }
 
     private var formattedDuration: String {
-        guard let dur = entry.audioDurationSeconds else { return "" }
+        guard let dur = entry?.audioDurationSeconds else { return "" }
         let secs = Int(dur)
         return String(format: "%d:%02d", secs / 60, secs % 60)
     }
@@ -64,6 +85,24 @@ struct EvalEditorView: View {
     // MARK: - Body
 
     var body: some View {
+        Group {
+            if entry != nil {
+                loadedBody
+            } else {
+                notFoundBody
+            }
+        }
+        .frame(width: 580)
+        .onAppear {
+            let resolved = HistoryStore.shared.entry(byID: entryID)
+            entry = resolved
+            correctionText = resolved?.text ?? ""
+        }
+        .onDisappear { stopPlayback() }
+    }
+
+    /// Shown while the entry is still in the history store.
+    private var loadedBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Palette.divider.frame(height: 1)
@@ -78,15 +117,33 @@ struct EvalEditorView: View {
             footer
         }
         .background(Palette.bgWindow)
-        .frame(width: 580)
-        .onDisappear { stopPlayback() }
+    }
+
+    /// Fallback shown when the entry was deleted while the window was open.
+    private var notFoundBody: some View {
+        VStack(spacing: Spacing.lg) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 32))
+                .foregroundStyle(Palette.textMuted)
+            Text("Entry not found")
+                .font(Typography.sectionTitle)
+                .foregroundStyle(Palette.textPrimary)
+            Text("This transcription was removed from history.")
+                .font(Typography.body)
+                .foregroundStyle(Palette.textSecondary)
+            Button("Close", action: onCancel)
+                .buttonStyle(VoiceTypeSecondaryButtonStyle())
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(Spacing.xl)
+        .background(Palette.bgWindow)
     }
 
     // MARK: - Header
 
     private var header: some View {
         HStack {
-            Text("Eval — Last transcription")
+            Text("Eval — Transcription")
                 .font(Typography.sectionTitle)
                 .foregroundStyle(Palette.textPrimary)
             Spacer()
@@ -106,16 +163,18 @@ struct EvalEditorView: View {
 
     private var metaRow: some View {
         HStack(spacing: Spacing.lg) {
-            if let modelName = entry.model {
+            if let modelName = entry?.model {
                 metaChip(label: "MODEL", value: modelName)
             }
-            metaChip(label: "LANG", value: entry.language.uppercased())
-            if let dur = entry.audioDurationSeconds {
+            if let lang = entry?.language {
+                metaChip(label: "LANG", value: lang.uppercased())
+            }
+            if let dur = entry?.audioDurationSeconds {
                 metaChip(label: "DUR", value: String(format: "%.1fs", dur))
             }
             Spacer()
             // Show eval status badge if already saved
-            if entry.isSavedEval == true {
+            if entry?.isSavedEval == true {
                 Text("SAVED")
                     .font(Typography.metaLabel)
                     .tracking(Typography.metaLabelTracking)
@@ -203,7 +262,7 @@ struct EvalEditorView: View {
                     .foregroundStyle(Palette.textMuted)
 
                 ScrollView {
-                    Text(entry.text)
+                    Text(entry?.text ?? "")
                         .font(Typography.body)
                         .foregroundStyle(Palette.textSecondary)
                         .textSelection(.enabled)

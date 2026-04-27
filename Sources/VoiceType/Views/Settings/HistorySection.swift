@@ -150,6 +150,7 @@ private struct HistorySheetView: View {
                 entry: entry,
                 onReinsert: { reinsert(entry) },
                 onCopy: { copy(entry) },
+                onEdit: { openEvalEditor(for: entry) },
                 onDelete: {
                     delete(entry)
                     if selectedID == entry.id { selectedID = nil }
@@ -223,6 +224,12 @@ private struct HistorySheetView: View {
         onReloadEntries()
     }
 
+    private func openEvalEditor(for entry: HistoryStore.Entry) {
+        // Open the EvalEditorWindow for this specific entry.
+        // The sheet stays open so the user can navigate history while editing.
+        EvalEditorWindow.open(entryID: entry.id)
+    }
+
     /// Synthesize Cmd+V via CGEvent so re-insert works identically to normal injection.
     private func synthesizePaste() {
         let source = CGEventSource(stateID: .hidSystemState)
@@ -287,6 +294,7 @@ private struct HistoryDetailView: View {
     let entry: HistoryStore.Entry
     let onReinsert: () -> Void
     let onCopy: () -> Void
+    let onEdit: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -349,6 +357,12 @@ private struct HistoryDetailView: View {
                 }
                 .buttonStyle(BorderedButtonStyle())
                 .help("Copy text to clipboard")
+
+                Button(action: onEdit) {
+                    Label("Edit", systemImage: "square.and.pencil")
+                }
+                .buttonStyle(BorderedButtonStyle())
+                .help("Open in Eval Editor to review and correct")
 
                 Spacer()
 
