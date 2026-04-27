@@ -5,9 +5,15 @@ dist/
 
 # AI tool local state — personal, not for repo
 .qwen/
+.claude/
 .claude/settings.local.json
 .claude/.session/
 .claude/worktrees/
+
+# Local agent config files injected at session start — not project files
+.cursorrules
+AGENTS.md
+LEAN-CTX.md
 
 # Bench output: runs and live recordings are local exploratory data.
 # RESULTS.md and results.csv stay committed as canonical reference.
