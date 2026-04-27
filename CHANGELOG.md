@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-04-27
+
+### Added
+- **3 model presets in Settings → Models.** Fast (small-q5, ~190 MB),
+  Balanced (large-v3-turbo-q5, ~547 MB, marked **Recommended**), Max
+  Quality (large-v3-turbo, ~810 MB). The full 7-model list moved into a
+  collapsed "Advanced" expander for power users. New users get a clear
+  3-tier story instead of a wall of jargon. Existing model selection is
+  preserved; if you have a non-preset model selected, the preset row
+  shows a "Custom" indicator pointing you to Advanced.
+- **`scripts/codex-review.sh`** developer helper that wraps `codex review`
+  with 24h SHA-keyed caching, fail-fast on `--range <base>..<custom-head>`,
+  and ref-peeling for annotated tags. Standardizes the post-feature
+  Codex review gate that's now part of the project's shipping workflow.
+
+### Changed
+- **Error toasts now persist to `~/Library/Logs/VoiceType/errors.log`.**
+  Previously `showErrorToast()` wrote only to `os.Logger`, so errors
+  flashed in the top-right and disappeared without a trail. Logging now
+  happens inside `ErrorToastWindow.show()` so every toast caller benefits
+  automatically.
+- **Toast queue with min-visible-time 2.5s.** Rapid back-to-back errors
+  no longer flash for milliseconds and replace each other. Toasts stay
+  visible for at least 2.5s; new toasts queue (FIFO, max 3, oldest drops
+  with a warning logged).
+- **Persistent (urgent) toasts pre-empt the queue.** The
+  restart-required toast fired by PermissionManager when you grant
+  Accessibility now displaces any visible toast immediately, instead of
+  queueing behind a stale accessibility-instructions toast and getting
+  drowned out by the 600ms restart delay.
+
+### Fixed
+- **Errors not landing in `errors.log`.** Toasts now actually persist
+  every error to the log file, every time. Three Codex review rounds
+  caught two regressions in the queue logic before merge: FIFO order
+  broken when the queue was non-empty after `minVisibleTime`, and the
+  `persistent` flag dropped on queued toasts.
+
+### Internal
+- **Codex review pipeline standardized** as a hard gate before merging
+  any feature ≥ ~50 LOC. Caught 4 P2/P3 findings across 4 streams in
+  this release that would otherwise have shipped: FIFO regression,
+  persistent flag round-trip, persistent pre-emption, annotated-tag SHA
+  comparison.
+- **`.gitignore` cleanup.** Top-level entries for `.claude/`,
+  `.cursorrules`, `AGENTS.md`, `LEAN-CTX.md` so machine-local agent
+  state and global lean-ctx instruction copies stop showing up in
+  `git status`.
+- **+20 tests across 4 streams.** ErrorToastQueueTests (8),
+  ModelPresetTests (11), plus regression coverage. Total: 296 → 316.
+
 ## [1.2.2] - 2026-04-27
 
 ### Added
