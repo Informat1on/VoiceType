@@ -113,11 +113,13 @@ if [[ -z "$BASE_REF" ]]; then
     BASE_REF="HEAD^"
 fi
 
-# Resolve to full SHAs for stable cache keys
-HEAD_SHA="$(git -C "$REPO_DIR" rev-parse --verify "$HEAD_REF" 2>/dev/null)" \
-    || die_usage "cannot resolve HEAD ref: $HEAD_REF"
-BASE_SHA="$(git -C "$REPO_DIR" rev-parse --verify "$BASE_REF" 2>/dev/null)" \
-    || die_usage "cannot resolve base ref: $BASE_REF"
+# Resolve to full SHAs for stable cache keys.  Peel to ^{commit} so annotated
+# tags (e.g. v1.2) compare equal to the underlying commit SHA, otherwise the
+# RANGE guard below would reject a tag that points at the current HEAD.
+HEAD_SHA="$(git -C "$REPO_DIR" rev-parse --verify "${HEAD_REF}^{commit}" 2>/dev/null)" \
+    || die_usage "cannot resolve HEAD ref to a commit: $HEAD_REF"
+BASE_SHA="$(git -C "$REPO_DIR" rev-parse --verify "${BASE_REF}^{commit}" 2>/dev/null)" \
+    || die_usage "cannot resolve base ref to a commit: $BASE_REF"
 
 # `codex review` always reviews against the working tree's HEAD.  If the user
 # passed --range with a head that isn't the current HEAD, the cached output
