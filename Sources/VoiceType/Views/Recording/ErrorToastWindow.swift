@@ -149,24 +149,31 @@ final class ErrorToastWindow: NSPanel {
     /// Show the toast with given content.
     ///
     /// - The toast is logged to errors.log immediately (before any UI change).
-    /// - If the window is already visible and has been shown for less than
-    ///   `minVisibleTime`, the new entry is queued (FIFO, max 3). If the queue
-    ///   is full the oldest queued entry is dropped and a warning is logged.
-    /// - If the window is not visible (or min-visible-time has elapsed), the
-    ///   toast is shown immediately, replacing any current content.
+    /// - **Persistent toasts pre-empt the queue.** Persistent is reserved for
+    ///   urgent, action-required messages (e.g. restart-required after the
+    ///   user grants Accessibility). Callers like `PermissionManager` act on
+    ///   a short delay after showing them, so queueing would let the user
+    ///   miss the notification entirely. Persistent calls displace whatever
+    ///   is currently visible and replace it immediately.
+    /// - Otherwise, if the window is already visible the new entry is queued
+    ///   (FIFO, max 3). If the queue is full the oldest queued entry is
+    ///   dropped and a warning is logged.
+    /// - If the window is not visible, the toast is shown immediately.
     /// - Auto-dismisses after 6 seconds unless `persistent` is true.
     /// - Persistent toasts stay visible until `hide()` is called explicitly
-    ///   (e.g. by watchForAccessibilityRestart() once permission flips). P2 finding #3.
+    ///   (e.g. by watchForAccessibilityRestart() once permission flips).
     func show(title: String, body: String, persistent: Bool = false) {
         // Log immediately — before any UI mutation — per DESIGN.md §Error Handling & Logging:
         // "Every error logged before UI surface appears."
         logger("\(title): \(body)", "toast")
 
-        // If currently visible, queue the entry to preserve FIFO order.
-        // We enqueue unconditionally whenever a toast is on screen — not just within
-        // minVisibleTime — because displaying immediately would show a newer toast
-        // ahead of any already-queued entries (Codex P2 finding: FIFO broken).
-        if isVisible {
+        // Non-persistent toasts queue when the window is on screen, preserving
+        // FIFO order (Codex P2 finding on 5ab8814).
+        // Persistent toasts bypass the queue and pre-empt the current toast,
+        // because the caller may take action seconds later and the user must
+        // see the urgent message (Codex P2 finding on 19100f4: persistent
+        // restart-required toasts queued behind visible accessibility toasts).
+        if !persistent && isVisible {
             enqueue(QueueEntry(title: title, body: body, persistent: persistent))
             return
         }
