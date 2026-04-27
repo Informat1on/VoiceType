@@ -101,7 +101,7 @@ struct SettingsView: View {
                 // SegmentedControl replaces Picker(.segmented) — codex audit P1.
                 // Prototype lines 606-614: custom .seg inside .prefs-row.
                 PrefsRow("Preferred language",
-                         subtitle: "Promoted to first-class: code-switching is why this exists.") {
+                         subtitle: "Auto detects per recording. RU/EN pin a single language. RU+EN enables bilingual mode for code-switched speech.") {
                     SegmentedControl(
                         options: Language.allCases.map { (label: $0.displayName, value: $0) },
                         selection: $settings.language
@@ -154,6 +154,14 @@ struct SettingsView: View {
                 GroupHeader(title: "Microphone")
                 RowDivider()
                 microphonePermissionRow
+                RowDivider()
+
+                SectionGap()
+
+                // MARK: ACCESSIBILITY group — required for text insertion into other apps
+                GroupHeader(title: "Accessibility")
+                RowDivider()
+                accessibilityPermissionRowGeneral
                 RowDivider()
             }
             .padding(Spacing.windowPadding)
@@ -416,6 +424,55 @@ struct SettingsView: View {
             permissionManager.hasMicrophonePermission
                 ? "Microphone access: Granted"
                 : "Microphone access: Not granted. Tap to request."
+        )
+    }
+
+    /// Accessibility permission row — General tab. Mirrors microphonePermissionRow layout.
+    /// Subtitle explains why this permission matters to non-technical users.
+    private var accessibilityPermissionRowGeneral: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            PrefsRow("Accessibility access",
+                     subtitle: "Required for VoiceType to insert transcribed text into other apps.") {
+                EmptyView()
+            }
+            PermHintPanel(
+                state: accessibilityPermState,
+                title: accessibilityPermTitle,
+                actionLabel: accessibilityActionLabel,
+                onAction: {
+                    if permissionManager.hasAccessibilityPermission {
+                        permissionManager.openAccessibilitySettings()
+                    } else {
+                        permissionManager.requestAccessibilityPermission()
+                    }
+                }
+            )
+            .padding(.horizontal, Spacing.prefsRowHorizontal)
+            .padding(.bottom, Spacing.prefsRowVertical)
+
+            if !permissionManager.hasAccessibilityPermission {
+                HStack(spacing: Spacing.sm) {
+                    Button("Refresh") {
+                        permissionManager.refreshPermissions()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button("Restart App") {
+                        permissionManager.restartAppForAccessibility()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, Spacing.prefsRowHorizontal)
+                .padding(.bottom, Spacing.prefsRowVertical)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            permissionManager.hasAccessibilityPermission
+                ? "Accessibility access: Granted"
+                : "Accessibility access: Not granted. Required to insert transcribed text. Tap to grant."
         )
     }
 
