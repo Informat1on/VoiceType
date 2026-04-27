@@ -91,9 +91,13 @@ final class TranscriptionService: ObservableObject {
     // current value — stale (out-of-order) loads are silently discarded.
     private var modelLoadGeneration: Int = 0
 
-    /// Cancellable handle for background warm-up. Cancelled by transcribe() so a real
-    /// transcription always pre-empts an ongoing warm-up pass.
+    /// Cancellable handle for background warm-up. Cancelled (and awaited) by transcribe()
+    /// so a real transcription always pre-empts an ongoing warm-up pass.
     private var warmUpTask: Task<Void, Never>?
+
+    /// True while performWarmUp() is executing — defers setInitialPrompt() the same way
+    /// isTranscribing does (VT-WARM-002: prevents prompt restore from overwriting user intent).
+    private var isWarmingUp: Bool = false
 
     // Double-optional sentinel for deferred prompt updates during transcription.
     // .none           → no pending update
@@ -132,9 +136,13 @@ final class TranscriptionService: ObservableObject {
         // it holds a raw pointer into _initialPrompt via the value-copy of whisper_full_params.
         // Freeing that buffer now would be a C-level use-after-free.
         // Defer the update instead; _flushPendingPrompt() applies it once transcription ends.
-        if isTranscribing {
+        //
+        // VT-WARM-002: warm-up also runs whisper_full on a C thread — apply the same guard.
+        // performWarmUp() checks _pendingPrompt after the silence pass and skips its
+        // savedPromptText restore when a pending update exists, ensuring user intent wins.
+        if isTranscribing || isWarmingUp {
             _pendingPrompt = .some(text)
-            AppLog.transcription.notice("setInitialPrompt deferred: transcription in progress")
+            AppLog.transcription.notice("setInitialPrompt deferred: \(self.isTranscribing ? "transcription" : "warm-up") in progress")
             return
         }
         _applyPromptNow(text)
@@ -168,13 +176,23 @@ final class TranscriptionService: ObservableObject {
     }
 
     #if DEBUG
-    /// Test seam: allows unit tests to trigger _flushPendingPrompt without running
-    /// a real whisper transcription.  Not part of the public API; production code
-    /// reaches this path only through the defer block in transcribe().
-    /// Compiled out of release builds so the seam never leaks into shipping binaries.
-    func _testFlushPendingPrompt() {
-        _flushPendingPrompt()
+    // Test seams — compiled out of release builds.
+    func _testFlushPendingPrompt() { _flushPendingPrompt() }
+
+    /// VT-WARM-002: drive isWarmingUp without a real Whisper context.
+    var _testIsWarmingUp: Bool {
+        get { isWarmingUp }
+        set { isWarmingUp = newValue }
     }
+
+    /// VT-WARM-002: drive modelLoadGeneration without invoking loadModel.
+    var _testModelLoadGeneration: Int {
+        get { modelLoadGeneration }
+        set { modelLoadGeneration = newValue }
+    }
+
+    /// VT-WARM-004: plant a modelStatus value without going through loadModel.
+    func _testSetModelStatus(_ status: ModelStatus) { modelStatus = status }
     #endif
 
     /// Build and apply the initial prompt from the current language + custom vocabulary.
@@ -230,6 +248,15 @@ final class TranscriptionService: ObservableObject {
 
         print("[TranscriptionService] Loading model from \(url.lastPathComponent)")
         AppLog.models.notice("Loading model \(url.lastPathComponent, privacy: .public)")
+
+        // VT-WARM-003: Cancel any in-flight warm-up BEFORE the file-existence guard so a
+        // previous warm-up cannot race to write .ready over the .error status we set below.
+        if let existingTask = warmUpTask {
+            existingTask.cancel()
+            _ = await existingTask.value   // drain so whisper_full finishes on the C side
+            warmUpTask = nil
+        }
+
         guard FileManager.default.fileExists(atPath: url.path) else {
             print("[TranscriptionService] Model file not found: \(url.lastPathComponent)")
             AppLog.models.error("Model file is missing: \(url.lastPathComponent, privacy: .public)")
@@ -237,9 +264,6 @@ final class TranscriptionService: ObservableObject {
             throw TranscriptionError.modelLoadFailed(nil)
         }
 
-        // Cancel any in-flight warm-up from a previous model before starting a new load.
-        warmUpTask?.cancel()
-        warmUpTask = nil
         modelStatus = .loading
 
         let resolvedWhisperLang = language.whisperLanguage
@@ -316,6 +340,25 @@ final class TranscriptionService: ObservableObject {
     private func performWarmUp() async {
         guard let whisper else { return }
 
+        // VT-WARM-002: Snapshot the generation so we can detect if loadModel was called
+        // again while we were awaiting — in that case we must not touch modelStatus or
+        // restore the prompt (the new load will manage those itself).
+        let warmUpGeneration = modelLoadGeneration
+
+        // VT-WARM-002/005: Bracket warm-up with isWarmingUp so setInitialPrompt defers
+        // its changes to _pendingPrompt instead of modifying the buffer mid-transcription.
+        isWarmingUp = true
+        defer {
+            isWarmingUp = false
+            // VT-WARM-005: Nil out warmUpTask on natural exit so the Task does not retain
+            // self for the object's entire lifetime.  transcribe() already nils it on the
+            // cancel path before awaiting task.value, so this only fires on the success /
+            // unforced-error paths.  Both paths are on @MainActor — no data race.
+            if warmUpGeneration == modelLoadGeneration {
+                warmUpTask = nil
+            }
+        }
+
         // Snapshot and clear the initial prompt so the silence buffer is decoded
         // without any bilingual/vocabulary seed — avoids hallucinated tokens in log.
         let savedPromptText = currentInitialPromptText
@@ -341,21 +384,35 @@ final class TranscriptionService: ObservableObject {
                 group.cancelAll()
                 return result
             }
-            // Restore prompt before marking ready so any subscriber that reacts to
-            // .ready immediately has the correct prompt in place.
-            _applyPromptNow(savedPromptText)
-            if !Task.isCancelled {
+
+            // VT-WARM-002: Only restore the saved prompt when the generation is still
+            // current AND no user-initiated setInitialPrompt arrived while we were busy
+            // (the pending update already contains the user's intent and wins).
+            if warmUpGeneration == modelLoadGeneration && _pendingPrompt == nil {
+                _applyPromptNow(savedPromptText)
+            } else if warmUpGeneration == modelLoadGeneration {
+                // A pending prompt arrived — flush it now (isWarmingUp is still true here
+                // so _flushPendingPrompt goes through _applyPromptNow safely).
+                _flushPendingPrompt()
+            }
+
+            if !Task.isCancelled && warmUpGeneration == modelLoadGeneration {
                 modelStatus = .ready
                 AppLog.models.notice("Warm-up completed — model is hot")
             }
         } catch {
-            // Restore prompt even on error so user vocabulary is not silently lost.
-            _applyPromptNow(savedPromptText)
+            // VT-WARM-002: Restore prompt only when still current and no pending update.
+            if warmUpGeneration == modelLoadGeneration && _pendingPrompt == nil {
+                _applyPromptNow(savedPromptText)
+            } else if warmUpGeneration == modelLoadGeneration {
+                _flushPendingPrompt()
+            }
+
             if Task.isCancelled {
                 // A real transcription pre-empted us — that is fine; status will be
                 // managed by the transcription path.
                 AppLog.models.notice("Warm-up cancelled (pre-empted by real transcription)")
-            } else {
+            } else if warmUpGeneration == modelLoadGeneration {
                 AppLog.models.error("Warm-up failed: \(error.localizedDescription, privacy: .public)")
                 ErrorLogger.shared.log(error, category: "models", context: ["stage": "warmup"])
                 // Model is still loaded — mark ready so the user can transcribe.
@@ -409,10 +466,20 @@ final class TranscriptionService: ObservableObject {
         // language/thread params while whisper_full runs on a background thread.
         applyRuntimeConfiguration(language: language)
 
-        // Pre-empt any in-flight warm-up so the real transcription is not queued
-        // behind a silence-buffer pass on the single-threaded whisper context.
-        warmUpTask?.cancel()
-        warmUpTask = nil
+        // VT-WARM-001: Cancel + await warm-up so whisper_full is fully retired before we
+        // call whisper.transcribe() — prevents inProgress collision. Nil first so
+        // performWarmUp's defer skips its own nil assignment.
+        if let task = warmUpTask {
+            task.cancel()
+            warmUpTask = nil
+            _ = await task.value
+        }
+
+        // VT-WARM-004: Warm-up may have been cancelled mid-flight leaving status at .warming.
+        // The model is already exercised enough; advance to .ready so the UI stays coherent.
+        if modelStatus == .warming {
+            modelStatus = .ready
+        }
 
         isTranscribing = true
         progress = 0.0
