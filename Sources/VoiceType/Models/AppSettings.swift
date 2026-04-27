@@ -172,6 +172,12 @@ enum TranscriptionModel: String, Codable, CaseIterable {
     var isCompatibleWithCurrentEngine: Bool {
         true
     }
+
+    // Fresh-install default (as of 2026-04-27): largeV3TurboQ5.
+    // Bench data: turbo-q5 ≡ turbo on WER (23.2% avg, identical per-block),
+    // 30% faster (1.10s vs 1.57s avg), 64% smaller on disk (547 MB vs 1.5 GB).
+    // Existing users with a stored selectedModel are unaffected — see AppSettings.init().
+    static let freshInstallDefault: TranscriptionModel = .largeV3TurboQ5
 }
 
 @MainActor
@@ -222,8 +228,20 @@ final class AppSettings: ObservableObject {
 
     private init() {
         self.activationMode = ActivationMode(rawValue: defaults.string(forKey: "activationMode") ?? "") ?? .singlePress
-        let storedModel = TranscriptionModel(rawValue: defaults.string(forKey: "selectedModel") ?? "") ?? .smallQ5
-        self.selectedModel = storedModel.isCompatibleWithCurrentEngine ? storedModel : .smallQ5
+
+        // Model default logic:
+        //   - New installs (no stored "selectedModel" AND "hasSeenDefaultModel" is false)
+        //     → largeV3TurboQ5 (fresh-install default per bench results 2026-04-27).
+        //   - Existing users who already chose a model → honour their choice.
+        //   - Legacy users who never explicitly chose (no stored raw, but sentinel exists)
+        //     → smallQ5 (conservative, avoids a surprise 547 MB download on update).
+        let storedRaw = defaults.string(forKey: "selectedModel")
+        let storedModel = storedRaw.flatMap { TranscriptionModel(rawValue: $0) }
+        let isFreshInstall = !defaults.bool(forKey: "hasSeenDefaultModel")
+        defaults.set(true, forKey: "hasSeenDefaultModel")
+
+        let resolvedModel = storedModel ?? (isFreshInstall ? TranscriptionModel.freshInstallDefault : .smallQ5)
+        self.selectedModel = resolvedModel.isCompatibleWithCurrentEngine ? resolvedModel : .smallQ5
         let storedModifiers = defaults.integer(forKey: "hotkeyModifiers")
         if storedModifiers == 0 {
             // Factory default per spec audit: Option + Space. This supersedes the
