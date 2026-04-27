@@ -35,12 +35,39 @@ final class TranscriptionModelTests: XCTestCase {
         )
     }
 
-    func testTranscriptionModelEnumCount() {
-        XCTAssertEqual(TranscriptionModel.allCases.count, 6)
+    func testLargeV3TurboQ5RawValueAndDownloadURL() {
+        let model = TranscriptionModel.largeV3TurboQ5
+        XCTAssertEqual(model.rawValue, "large-v3-turbo-q5_0")
+        XCTAssertEqual(model.fileName, "ggml-large-v3-turbo-q5_0.bin")
+        XCTAssertEqual(
+            model.downloadURL,
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
+        )
+        // Q5 shares the fp16 CoreML encoder with the full Turbo model.
+        XCTAssertEqual(model.coreMLZipFileName, "ggml-large-v3-turbo-encoder.mlmodelc.zip")
+        XCTAssertEqual(
+            model.coreMLDownloadURL,
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-encoder.mlmodelc.zip"
+        )
     }
 
-    func testCaseOrderingPlacesTurboLast() {
-        XCTAssertEqual(TranscriptionModel.allCases.last, .largeV3Turbo)
+    func testLargeV3TurboQ5DisplayName() {
+        XCTAssertEqual(
+            TranscriptionModel.largeV3TurboQ5.displayName,
+            "Large v3 Turbo Q5 (Highest quality, fast, compact)"
+        )
+    }
+
+    func testLargeV3TurboQ5HasCoreMLSupport() {
+        XCTAssertTrue(TranscriptionModel.largeV3TurboQ5.hasCoreMLSupport)
+    }
+
+    func testTranscriptionModelEnumCount() {
+        XCTAssertEqual(TranscriptionModel.allCases.count, 7)
+    }
+
+    func testCaseOrderingPlacesTurboQ5Last() {
+        XCTAssertEqual(TranscriptionModel.allCases.last, .largeV3TurboQ5)
     }
 
     // MARK: - Engine compatibility

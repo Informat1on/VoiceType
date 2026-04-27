@@ -43,6 +43,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
     case small = "small"
     case medium = "medium"
     case largeV3Turbo = "large-v3-turbo"
+    case largeV3TurboQ5 = "large-v3-turbo-q5_0"
 
     var displayName: String {
         switch self {
@@ -52,6 +53,19 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         case .small: return "Small (Best quality for most use)"
         case .medium: return "Medium (Highest quality, slower)"
         case .largeV3Turbo: return "Large v3 Turbo (Highest quality, fast)"
+        case .largeV3TurboQ5: return "Large v3 Turbo Q5 (Highest quality, fast, compact)"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .tiny: return "Best speed, minimal accuracy"
+        case .base: return "Good balance of speed and accuracy"
+        case .smallQ5: return "Balanced speed and quality, quantized"
+        case .small: return "High accuracy for most use cases"
+        case .medium: return "Highest accuracy, slowest speed"
+        case .largeV3Turbo: return "Best quality at fast speed, full size"
+        case .largeV3TurboQ5: return "Best quality, half the disk size of full Turbo"
         }
     }
 
@@ -63,25 +77,41 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(fileName)"
     }
 
+    /// CoreML encoder model filename (unzipped directory name).
+    /// largeV3TurboQ5 shares the fp16 encoder with largeV3Turbo —
+    /// Q5 quantization applies only to decoder weights.
     var coreMLFileName: String {
-        "ggml-\(rawValue)-encoder.mlmodelc"
+        switch self {
+        case .largeV3TurboQ5: return "ggml-large-v3-turbo-encoder.mlmodelc"
+        default: return "ggml-\(rawValue)-encoder.mlmodelc"
+        }
     }
 
+    /// CoreML encoder zip download URL.
     var coreMLDownloadURL: String {
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-\(rawValue)-encoder.mlmodelc.zip"
+        switch self {
+        case .largeV3TurboQ5:
+            return "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-encoder.mlmodelc.zip"
+        default:
+            return "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-\(rawValue)-encoder.mlmodelc.zip"
+        }
     }
 
+    /// CoreML encoder zip filename (used for on-disk cache lookup).
     var coreMLZipFileName: String {
-        "ggml-\(rawValue)-encoder.mlmodelc.zip"
+        switch self {
+        case .largeV3TurboQ5: return "ggml-large-v3-turbo-encoder.mlmodelc.zip"
+        default: return "ggml-\(rawValue)-encoder.mlmodelc.zip"
+        }
     }
-    
+
     var hasCoreMLSupport: Bool {
         switch self {
         case .smallQ5: return false
         default: return true
         }
     }
-    
+
     var coreMLExplanation: String? {
         switch self {
         case .smallQ5: return "Q5 quantized models don't support CoreML (CPU only)"
@@ -97,6 +127,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         case .small: return "~466 MB"
         case .medium: return "~1.5 GB"
         case .largeV3Turbo: return "~810 MB"
+        case .largeV3TurboQ5: return "~547 MB"
         }
     }
 
@@ -108,6 +139,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         case .small: return "⚡⚡"
         case .medium: return "⚡"
         case .largeV3Turbo: return "⚡⚡⚡⚡"
+        case .largeV3TurboQ5: return "⚡⚡⚡⚡"
         }
     }
 
@@ -119,6 +151,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         case .small: return "Excellent"
         case .medium: return "Best"
         case .largeV3Turbo: return "Best"
+        case .largeV3TurboQ5: return "Best"
         }
     }
 
@@ -130,6 +163,7 @@ enum TranscriptionModel: String, Codable, CaseIterable {
         case .small: return "Professional, high accuracy"
         case .medium: return "Critical accuracy needs"
         case .largeV3Turbo: return "Best quality with fast turnaround"
+        case .largeV3TurboQ5: return "Best quality, compact download"
         }
     }
 
