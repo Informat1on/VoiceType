@@ -73,7 +73,7 @@ Design-debt и follow-up items, вынесенные из `/plan-design-review` 
 - **Cons:** каждая под-фича = дополнительный UI surface + edge cases. Sync требует решения о privacy (история содержит текст, который мог быть чувствительным).
 - **Depends on:** v1.1 ships + telemetry about history usage.
 
-## T9 — ADR: RU+EN language mode mapping
+## T9 — ADR: RU+EN language mode mapping ✅ DONE (2026-04-24, `docs/decisions/2026-04-24-ruen-language-mode.md`)
 
 - **What:** написать `docs/decisions/2026-04-XX-ruen-language-mode.md` — ADR документирующий, почему `Language.bilingualRuEn` маппится в `whisperLanguage: .ru` + bilingual `initial_prompt`, а не в `language=nil` (auto) или отдельный режим.
 - **Why:** `/plan-eng-review` 2026-04-24 выявил, что без ADR будущий maintainer не поймёт почему `bilingualRuEn.whisperLanguage = .ru` — это выглядит как баг, но является архитектурным решением. Codex независимо подтвердил риск silent degradation в auto.
@@ -95,7 +95,7 @@ Design-debt и follow-up items, вынесенные из `/plan-design-review` 
 
 ## Process TODOs
 
-## P1 — Update CLAUDE.md `## Design System` section
+## P1 — Update CLAUDE.md `## Design System` section ✅ DONE (2026-04-24)
 
 - **What:** расширить секцию `## Design System` в `CLAUDE.md` ссылками на новые разделы DESIGN.md (Interaction States, Accessibility, User Journey, Error Handling, Transcription History, Focus Return).
 - **Why:** сейчас CLAUDE.md упоминает только общий compass и Decisions Log. После сегодняшней ревизии DESIGN.md вырос с 381 до ~650 строк с 10+ новыми разделами.
@@ -103,10 +103,21 @@ Design-debt и follow-up items, вынесенные из `/plan-design-review` 
 - **Cons:** ~5 мин редактирования.
 - **Depends on:** после commit DESIGN.md.
 
-## P2 — Context-save после сегодняшней сессии
+## P2 — Context-save после сессии ✅ DONE (recurring; latest 2026-04-27)
 
 - **What:** запустить `/context-save` с title "v1.1 Track 1 — design review complete, DESIGN.md locked, ready for Tier A".
 - **Why:** окно контекста заполняется. Текущая сессия имеет огромное количество decisions (30+ в Decisions Log), которые стоит зафиксировать вне conversation memory.
 - **Pros:** следующая сессия может `/context-restore` и получить полный state.
 - **Cons:** нет, только плюсы.
 - **Depends on:** после finalize passes (сейчас).
+
+---
+
+## v1.3.0 deliverables (2026-04-27, shipped) ✅
+
+- **Toast logging fix.** `showErrorToast()` now persists every toast to `errors.log` (logging happens inside `ErrorToastWindow.show()` so all callers benefit). FIFO queue (max 3, oldest drops with warning), min-visible-time 2.5s, persistent toasts pre-empt the queue. 3 Codex review rounds. 8 ErrorToastQueueTests. (Поток F)
+- **3 model presets.** Settings → Models now shows Fast / Balanced / Max Quality as primary UI; full 7-model list moved to "Advanced" DisclosureGroup. Single shared persistence key. (Поток E)
+- **Codex review pipeline standardized.** `scripts/codex-review.sh` wraps `codex review` with 24h SHA-keyed caching, fail-fast on `--range <base>..<custom-head>`, ref-peeling for annotated tags. (Поток Helper)
+- **`.gitignore` cleanup.** `.claude/`, `.cursorrules`, `AGENTS.md`, `LEAN-CTX.md` ignored at top level. (Поток Cleanup)
+
+Test count: 296 → 316 (+20). SwiftLint: 54 warnings, 0 errors (baseline).

@@ -1,6 +1,36 @@
-# VoiceType v1.1 — Roadmap & Weekly Plan
+# VoiceType — Roadmap
 
-> Generated after /office-hours session on 2026-04-23.
+> **Status (2026-04-27): v1.3.0 in progress.**
+> v1.1.0, v1.2.0, v1.2.1, v1.2.2 shipped; v1.3.0 staged on main, ready to release.
+> Open work tracked in `TODOS.md`. This file is the historical office-hours plan
+> from 2026-04-23 plus an at-a-glance release log.
+
+## Releases
+
+| Version | Date       | Highlights |
+|---------|------------|-----------|
+| v1.1.0  | 2026-04-25 | Tier A token system + view migration + Geist fonts; large-v3-turbo as opt-in |
+| v1.2.0  | 2026-04-26 | `largeV3TurboQ5` becomes default; benchmark infrastructure (`scripts/bench*`) |
+| v1.2.1  | 2026-04-27 | Eval collector (`Cmd+Opt+E`), accessibility section, UX polish |
+| v1.2.2  | 2026-04-27 | Edit any history item, compact permissions; Codex P1 fixes (VT-REV-001..004) |
+| v1.3.0  | 2026-04-27 | Toast queue + persistent pre-emption (errors.log fix); 3 model presets; `scripts/codex-review.sh`; `.gitignore` cleanup |
+
+## What's next (post-v1.3.0)
+
+Tracked in `TODOS.md`:
+
+- **Поток G — Notarization.** Requires Apple Developer account ($99/year). `release.sh` ready for `NOTARY_PROFILE` env var. ~1h once account is live.
+- **Поток H — LLM postprocessor.** Qwen2.5-1.5B-Instruct Q4_K_M (869 MB) via mlx-swift. Blocked on collecting 50+ saved eval pairs via `Cmd+Opt+E`. ~20h integration when corpus is ready.
+- **T5 — Error log rotation.** `errors.log` daily rotation + 7-day retention. Mentioned in DESIGN.md but not yet implemented.
+- **T7 — Multi-screen preferences.** Target v1.2/v1.4 — currently fixed "follow focused window" behavior.
+- **T8 — Transcription history UX.** Search / filter / export / iCloud sync. Power-user surface.
+- **T10 — initial_prompt length clamp.** Verify whisper.cpp truncation threshold + UI counter.
+
+---
+
+## Historical: v1.1 office-hours plan (2026-04-23)
+
+> Original /office-hours session that bootstrapped v1.1.
 > Design doc: `~/.gstack/projects/Informat1on-VoiceType/arseniy-main-design-20260423-211817.md`
 
 ## Quick links
