@@ -93,6 +93,7 @@ final class ErrorToastWindow: NSPanel {
     private struct QueueEntry {
         let title: String
         let body: String
+        let persistent: Bool
     }
 
     // MARK: - Configuration
@@ -120,6 +121,8 @@ final class ErrorToastWindow: NSPanel {
     private var showStartTime: Date?
     /// Pending toasts not yet displayed.
     private var queue: [QueueEntry] = []
+    /// Whether the currently visible toast was shown as persistent. Used by tests.
+    internal private(set) var currentToastIsPersistent: Bool = false
 
     // MARK: - Init
 
@@ -159,9 +162,12 @@ final class ErrorToastWindow: NSPanel {
         // "Every error logged before UI surface appears."
         logger("\(title): \(body)", "toast")
 
-        // If currently visible and within the min-visible window, queue the entry.
-        if isVisible, let start = showStartTime, Date().timeIntervalSince(start) < minVisibleTime {
-            enqueue(QueueEntry(title: title, body: body))
+        // If currently visible, queue the entry to preserve FIFO order.
+        // We enqueue unconditionally whenever a toast is on screen — not just within
+        // minVisibleTime — because displaying immediately would show a newer toast
+        // ahead of any already-queued entries (Codex P2 finding: FIFO broken).
+        if isVisible {
+            enqueue(QueueEntry(title: title, body: body, persistent: persistent))
             return
         }
 
@@ -195,6 +201,7 @@ final class ErrorToastWindow: NSPanel {
         positionTopRight()
 
         showStartTime = Date()
+        currentToastIsPersistent = persistent
         orderFrontRegardless()
 
         if !persistent {
@@ -223,7 +230,7 @@ final class ErrorToastWindow: NSPanel {
     private func showNextQueued() {
         guard !queue.isEmpty else { return }
         let next = queue.removeFirst()
-        displayImmediately(title: next.title, body: next.body)
+        displayImmediately(title: next.title, body: next.body, persistent: next.persistent)
     }
 
     // MARK: - Private — window

@@ -93,23 +93,30 @@ final class ErrorToastQueueTests: XCTestCase {
         XCTAssertTrue(toast.isVisible, "Toast must remain visible; second show() should have queued")
     }
 
-    /// When a show() arrives and minVisibleTime has already elapsed, the toast
-    /// is replaced immediately (no queue involvement).
-    func testShowAfterMinVisibleTimeReplacesImmediately() async throws {
-        toast.minVisibleTime = 0.0 // elapsed immediately
+    /// When a show() arrives while a toast is already visible, it is always queued
+    /// regardless of how much time has elapsed (FIFO is unconditional while visible).
+    /// After hide(), the queued entry becomes visible.
+    func testShowWhileVisibleAlwaysQueues() async throws {
+        // Even with minVisibleTime = 0 the second show() must queue while the window
+        // is still on screen — displaying immediately would break FIFO if older
+        // entries are already in the queue (Codex P2 finding: FIFO broken).
+        toast.minVisibleTime = 0.0
 
         toast.show(title: "First", body: "B1")
         XCTAssertTrue(toast.isVisible)
 
-        // With minVisibleTime = 0 the elapsed time already exceeds it.
         toast.show(title: "Second", body: "B2")
 
         try await Task.sleep(for: .milliseconds(50))
-        XCTAssertTrue(toast.isVisible, "Toast must still be visible after replacement")
-        // Only 2 log entries — no queue-drop warning.
+        // Toast must still be visible (not hidden), with no queue-drop warning.
+        XCTAssertTrue(toast.isVisible, "Toast must remain visible; second show() should have queued")
         XCTAssertEqual(loggedMessages.count, 2, "Two show() calls must produce two log entries")
         let categories = loggedMessages.map(\.category)
         XCTAssertFalse(categories.contains("toast-warning"), "No queue-drop warning expected")
+
+        // After hiding, the queued Second must be shown next.
+        toast.hide()
+        XCTAssertTrue(toast.isVisible, "Second toast must be visible after first is hidden")
     }
 
     // MARK: - 3. Queue max-size drop
@@ -158,5 +165,68 @@ final class ErrorToastQueueTests: XCTestCase {
         // isVisible reflects whether the NSPanel is on screen.
         // The next queued entry is shown synchronously in showNextQueued().
         XCTAssertTrue(toast.isVisible, "Next queued toast (Second) must become visible after hide()")
+    }
+
+    // MARK: - 4. FIFO when queue non-empty after minVisibleTime elapses
+
+    /// Regression test for Codex P2 finding: FIFO broken when queue is non-empty.
+    ///
+    /// Scenario: A shown at t=0, B queued at t=1, C arrives after minVisibleTime.
+    /// Before the fix, C fell through to displayImmediately, skipping B.
+    /// After the fix, C is queued behind B and B is shown first after hide().
+    func testThirdShowAfterMinVisibleStillQueuesWhenSecondPending() async throws {
+        // Use a very short minVisibleTime so it elapses quickly.
+        toast.minVisibleTime = 0.1
+
+        // A shown immediately.
+        toast.show(title: "A", body: "first")
+        XCTAssertTrue(toast.isVisible, "A must be visible")
+
+        // B queued immediately (A still visible).
+        toast.show(title: "B", body: "second")
+
+        // Wait past minVisibleTime so the "before fix" condition would have allowed
+        // C to call displayImmediately and bypass B.
+        try await Task.sleep(for: .milliseconds(200))
+
+        // C must still queue behind B, not jump ahead.
+        toast.show(title: "C", body: "third")
+
+        // Hide A — B must be next (FIFO).
+        toast.hide()
+        XCTAssertTrue(toast.isVisible, "B must be visible after A is hidden (FIFO)")
+
+        // Hide B — C must be next.
+        toast.hide()
+        XCTAssertTrue(toast.isVisible, "C must be visible after B is hidden (FIFO)")
+    }
+
+    // MARK: - 5. Persistent flag carried through queue
+
+    /// Regression test for Codex P2 finding: persistent flag dropped on queued toasts.
+    ///
+    /// A toast queued with `persistent: true` must still be persistent when it
+    /// eventually becomes visible — it must NOT start an auto-dismiss task.
+    func testQueuedPersistentToastRetainsPersistentFlag() async throws {
+        // Large minVisibleTime so A stays visible and B queues.
+        toast.minVisibleTime = 999
+
+        // A is non-persistent.
+        toast.show(title: "A", body: "non-persistent", persistent: false)
+        XCTAssertTrue(toast.isVisible)
+        XCTAssertFalse(toast.currentToastIsPersistent, "A must not be persistent")
+
+        // B is persistent — it goes into the queue.
+        toast.show(title: "B", body: "persistent-content", persistent: true)
+
+        // Hide A — B should now be the visible toast.
+        toast.hide()
+        XCTAssertTrue(toast.isVisible, "B must be visible after A is hidden")
+
+        // B must carry through its persistent flag.
+        XCTAssertTrue(
+            toast.currentToastIsPersistent,
+            "Queued persistent toast must remain persistent when shown"
+        )
     }
 }
