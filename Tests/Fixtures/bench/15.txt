@@ -1,0 +1,1 @@
+Настрой webhook на endpoint slash api slash events.

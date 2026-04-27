@@ -1,0 +1,1 @@
+Убери console.log из production кода и проверь линтером.
