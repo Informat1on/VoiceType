@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] - 2026-04-27
+
+### Added
+- **Edit any history item, not just the latest one.** Settings → Advanced
+  → History now has an Edit button on every transcription that opens the
+  EvalEditorView for that specific entry. Listen to the audio (if it's
+  still in the rolling buffer), see the whisper output, edit the
+  pre-filled correction, save. Multiple editors can be open simultaneously
+  for different entries — each has its own window owned by AppDelegate.
+
+### Changed
+- **MICROPHONE + ACCESSIBILITY in Settings → General** consolidated into a
+  single compact PERMISSIONS block. One-line rows in the granted state
+  ("● Microphone granted [Open Privacy…]"); the explanatory hint panel
+  with Refresh / Restart App buttons appears only when the permission is
+  denied. Stops the General tab from being dominated by housekeeping.
+- **Shortcuts tab no longer duplicates the accessibility section.** When
+  accessibility is denied, an inline button "Go to General → Permissions"
+  switches the tab. Single source of truth.
+
+### Fixed
+- **Window leak from history-edit path.** EvalEditorWindow opened from a
+  history entry had no strong owner and could deallocate. Now stored in a
+  `[UUID: EvalEditorWindow]` registry on AppDelegate; closing a window
+  cleans up its registry entry and its NotificationCenter observer.
+  (Codex review VT-REV-001.)
+- **Accessibility regression in PERMISSIONS section.** The wrapping
+  `.accessibilityElement(children: .combine)` was swallowing the
+  Refresh / Restart App / Open Privacy buttons from VoiceOver. Replaced
+  with `.contain` so each button stays individually focusable. (Codex
+  review VT-REV-002.)
+- **Silent data loss when editing a rotated entry.** If the entry being
+  edited got pushed out of the 100-item rolling buffer, the previous
+  Save flow silently closed the window and lost the typed correction. A
+  poll timer now detects rotation and shows a warning banner advising
+  the user to copy their correction before closing; Save itself no
+  longer auto-closes on a missing entry. (Codex review VT-REV-003.)
+- **Shortcuts tab inline hint is now actionable.** Was a text-only
+  PrefsRow ("see General → Permissions") with no tap target. Now an
+  explicit Button that switches the tab and announces correctly to
+  VoiceOver. (Codex review VT-REV-004.)
+- **NotificationCenter observer leak.** Each opened eval editor was
+  leaking one block-based observer until process exit. Token now stored
+  per entry and removed on window close. (Codex re-review.)
+
+### Under the hood
+- Two rounds of Codex review on this release. Round 1 found 2 High + 2
+  Medium issues, all addressed. Round 2 found 1 Low (the observer leak
+  above), addressed before tagging. Establishing post-feature Codex
+  review as a hard gate before any patch ships.
+
 ## [1.2.1] - 2026-04-27
 
 ### Added
