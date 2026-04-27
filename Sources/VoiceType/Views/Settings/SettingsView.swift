@@ -7,6 +7,7 @@ struct SettingsView: View {
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var modelManager = ModelManager.shared
     @ObservedObject var permissionManager: PermissionManager
+    @ObservedObject var transcriptionService: TranscriptionService
     @State private var isRecordingHotkey = false
     @State private var recordedModifiers = 0
     @State private var recordedKey = 0
@@ -106,7 +107,7 @@ struct SettingsView: View {
                         selection: $settings.language
                     )
                     .accessibilityLabel("Preferred language")
-                    .accessibilityValue(settings.language.displayName)
+                    .accessibilityValue(settings.language.longDisplayName)
                 }
                 RowDivider()
 
@@ -174,7 +175,10 @@ struct SettingsView: View {
                     ModelRow(
                         model: model,
                         isSelected: settings.selectedModel == model,
-                        onSelect: { settings.selectedModel = model }
+                        onSelect: { settings.selectedModel = model },
+                        activeModelStatus: settings.selectedModel == model
+                            ? transcriptionService.modelStatus
+                            : .notLoaded
                     )
                     RowDivider()
                 }

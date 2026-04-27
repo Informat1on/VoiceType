@@ -24,13 +24,24 @@ enum Language: String, Codable, CaseIterable {
         }
     }
 
-    /// Human-facing display label (used by SettingsView Picker + AboutView summary).
+    /// Short display label shown in the UI language selector.
+    /// Compact to prevent overflow in the Settings → General picker.
     var displayName: String {
         switch self {
+        case .auto:          return "Auto"
+        case .ru:            return "RU"
+        case .en:            return "EN"
+        case .bilingualRuEn: return "RU+EN"
+        }
+    }
+
+    /// Full display label for VoiceOver and accessibility tooltips.
+    var longDisplayName: String {
+        switch self {
         case .auto:          return "Auto-detect"
-        case .ru:            return "Русский"
+        case .ru:            return "Russian"
         case .en:            return "English"
-        case .bilingualRuEn: return "RU + EN (bilingual)"
+        case .bilingualRuEn: return "Russian + English (bilingual)"
         }
     }
 }

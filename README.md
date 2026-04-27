@@ -231,6 +231,54 @@ Default shortcut: `Option + Command + V`
 - Choose text insertion mode
 - Optionally press Enter after insertion
 
+## Custom Vocabulary
+
+VoiceType has a **Custom Vocabulary** field in Settings → Advanced. It is a hint
+to the speech model — *not* a replacement dictionary. Useful when you frequently
+say words the base Whisper model handles poorly (technical terms, names,
+project-specific jargon).
+
+### How it works
+
+The text you enter is passed as Whisper's `initial_prompt` parameter before
+each transcription. Whisper sees it as a hint about the kind of vocabulary to
+expect, and **biases its decoder** toward those words. It does not replace
+text after the fact.
+
+This means:
+
+- Whisper will more often pick `Sonnet` over `Соннет` if you list it.
+- Project names like `react-query` or `useQuery` will appear correctly.
+- It is **not guaranteed** — if you mumble a word, Whisper may still mishear it.
+- It is **not a regex / find-replace.** "Always replace X with Y" is not what this does.
+
+### Example
+
+Field value:
+
+```
+Sonnet, Codex, Claude, GitHub, server.js, react-query, useQuery, ffmpeg,
+Whisper, TranscriptionService, MenuBarView, AppSettings, AVAudioRecorder
+```
+
+Use commas, spaces, or any separator — Whisper consumes the whole string as
+context. Keep it under ~200 characters; longer prompts hit Whisper's 224-token
+`initial_prompt` cap and earlier terms get truncated.
+
+### What it does NOT do
+
+If you want guaranteed text replacement (e.g. "always write `server.js` even
+if Whisper outputs `сервер точка джейэс`), that is a separate feature called
+a **replacement dictionary** — not yet implemented in VoiceType. It is on the
+roadmap and will live alongside Custom Vocabulary, not replace it.
+
+### Bilingual mode
+
+If your Language is set to **RU+EN**, VoiceType automatically prepends a
+short bilingual seed prompt (a few mixed Russian/English sentences) to your
+custom vocabulary. This stabilises code-switched speech where you mix
+Russian sentences with inline English code identifiers.
+
 ## Models
 
 Available model presets:

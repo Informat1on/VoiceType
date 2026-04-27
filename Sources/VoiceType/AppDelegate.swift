@@ -129,7 +129,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             settingsWindow = makeWindow(
                 title: "VoiceType Settings",
                 size: NSSize(width: 620, height: 520),
-                content: SettingsView(permissionManager: permissionManager)
+                content: SettingsView(
+                    permissionManager: permissionManager,
+                    transcriptionService: transcriptionService
+                )
             )
             settingsWindow?.delegate = self
         }

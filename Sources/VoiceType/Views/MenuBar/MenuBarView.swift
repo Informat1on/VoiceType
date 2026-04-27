@@ -282,11 +282,24 @@ private struct StatusLine: View {
                     // Model status dot — shown only in idle/recording where the model
                     // name is visible. Not shown for notReady/transcribing where the
                     // sub-line carries a different semantic signal.
+                    // Size 9pt: visible at a glance without dominating the sub-line.
                     if showModelStatusDot {
                         Circle()
                             .fill(modelStatusDotColor)
-                            .frame(width: 5, height: 5)
+                            .frame(width: 9, height: 9)
                             .accessibilityLabel(modelStatusAccessibilityLabel)
+
+                        // Accessibility-friendly text label for non-ready states.
+                        // .ready → silent (green dot speaks for itself).
+                        // .loading / .warming → brief inline label.
+                        // .error → "Error" with tooltip carrying the message.
+                        if let statusLabel = modelStatusInlineLabel {
+                            Text(statusLabel)
+                                .font(Typography.monoSmall)
+                                .foregroundStyle(modelStatusDotColor)
+                                .lineLimit(1)
+                                .help(modelStatusTooltip ?? "")
+                        }
                     }
                     Text(subLineText)
                         .font(Typography.monoSmall)
@@ -403,6 +416,27 @@ private struct StatusLine: View {
         case .notLoaded:
             return "Model not loaded"
         }
+    }
+
+    /// Short inline text label shown next to the dot for non-ready states.
+    /// nil when the model is ready — green dot is sufficient signal.
+    private var modelStatusInlineLabel: String? {
+        switch modelStatus {
+        case .ready, .notLoaded:
+            return nil
+        case .loading:
+            return "Loading\u{2026}"
+        case .warming:
+            return "Warming\u{2026}"
+        case .error:
+            return "Error"
+        }
+    }
+
+    /// Tooltip string for .error state — carries the human-readable message.
+    private var modelStatusTooltip: String? {
+        if case .error(let msg) = modelStatus { return msg }
+        return nil
     }
 
     private var subLineColor: Color {

@@ -350,6 +350,11 @@ struct ModelRow: View {
     let model: TranscriptionModel
     let isSelected: Bool
     let onSelect: () -> Void
+    /// Live model status — only relevant for the active (selected) row.
+    /// Pass `.notLoaded` for non-selected rows. Exposed as a plain `let` so
+    /// SettingsView can forward the published value without giving ModelRow
+    /// an @ObservedObject reference to TranscriptionService.
+    var activeModelStatus: ModelStatus = .notLoaded
     @ObservedObject private var modelManager = ModelManager.shared
 
     var body: some View {
@@ -361,9 +366,20 @@ struct ModelRow: View {
                     .frame(width: 16)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model.displayName)
-                        .font(Typography.body)
-                        .foregroundStyle(compatible ? Palette.textPrimary : Palette.textMuted)
+                    // For the active (selected) model, show the live model status dot
+                    // next to the display name so users can see load state from Settings.
+                    HStack(spacing: 5) {
+                        Text(model.displayName)
+                            .font(Typography.body)
+                            .foregroundStyle(compatible ? Palette.textPrimary : Palette.textMuted)
+                        if isSelected {
+                            Circle()
+                                .fill(activeModelStatusDotColor)
+                                .frame(width: 9, height: 9)
+                                .accessibilityLabel(activeModelStatusAccessibilityLabel)
+                                .help(activeModelStatusTooltip)
+                        }
+                    }
                     Text("\(model.estimatedSize) · Speed \(model.speedRating) · Quality \(model.qualityRating)")
                         .font(Typography.caption)
                         .foregroundStyle(Palette.textSecondary)
@@ -402,5 +418,33 @@ struct ModelRow: View {
     private var downloadStateAccessibilityValue: String {
         if !model.isCompatibleWithCurrentEngine { return "Requires engine update, not selectable" }
         return modelManager.isModelDownloaded(model: model) ? "Downloaded" : "Not downloaded"
+    }
+
+    // MARK: Active model status dot helpers (isSelected rows only)
+
+    /// Dot color mirroring the MenuBarView model status palette tokens.
+    private var activeModelStatusDotColor: Color {
+        switch activeModelStatus {
+        case .ready:                return Palette.success
+        case .loading, .warming:    return Palette.warning
+        case .error:                return Palette.error
+        case .notLoaded:            return Palette.textMuted
+        }
+    }
+
+    private var activeModelStatusAccessibilityLabel: String {
+        switch activeModelStatus {
+        case .ready:     return "Model ready"
+        case .loading:   return "Model loading"
+        case .warming:   return "Model warming up"
+        case .error:     return "Model error"
+        case .notLoaded: return "Model not loaded"
+        }
+    }
+
+    /// Tooltip for the status dot — shows error message for .error, empty otherwise.
+    private var activeModelStatusTooltip: String {
+        if case .error(let msg) = activeModelStatus { return msg }
+        return activeModelStatusAccessibilityLabel
     }
 }
