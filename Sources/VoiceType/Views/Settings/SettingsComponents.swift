@@ -114,9 +114,31 @@ struct PermissionDot: View {
 //                                      color:var(--text-primary);
 //                                      box-shadow:0 1px 2px rgba(0,0,0,0.12); }
 
+// swiftlint:disable large_tuple
+// Three-element named tuples are used for SegmentedControl options to carry
+// (label, value, accessibilityLabel) without introducing a new public type.
+// The struct is internal to this file and the 3-member shape is intentional
+// (VT-REV-002: per-segment VoiceOver label differs from compact visible text).
 struct SegmentedControl<T: Hashable>: View {
-    let options: [(label: String, value: T)]
+    /// Each option carries a visible `label` (compact, shown in UI) and an optional
+    /// `accessibilityLabel` (full name read by VoiceOver).  When `accessibilityLabel`
+    /// is nil the visible label is used — preserving backward compatibility for callers
+    /// that do not need distinct VoiceOver text.
+    let options: [(label: String, value: T, accessibilityLabel: String?)]
     @Binding var selection: T
+
+    /// Convenience initialiser for callers that don't need per-segment VoiceOver labels.
+    init(options: [(label: String, value: T)], selection: Binding<T>) {
+        self.options = options.map { (label: $0.label, value: $0.value, accessibilityLabel: nil) }
+        self._selection = selection
+    }
+
+    /// Full initialiser used when per-segment VoiceOver labels differ from visible text
+    /// (e.g. compact "RU" visible / "Russian" announced — VT-REV-002).
+    init(options: [(label: String, value: T, accessibilityLabel: String?)], selection: Binding<T>) {
+        self.options = options
+        self._selection = selection
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -134,7 +156,7 @@ struct SegmentedControl<T: Hashable>: View {
     }
 
     @ViewBuilder
-    private func segButton(_ option: (label: String, value: T)) -> some View {
+    private func segButton(_ option: (label: String, value: T, accessibilityLabel: String?)) -> some View {
         let isSelected = selection == option.value
         Button {
             selection = option.value
@@ -144,6 +166,9 @@ struct SegmentedControl<T: Hashable>: View {
                 .foregroundStyle(isSelected ? Palette.textPrimary : Palette.textMuted)
                 .padding(.horizontal, 10)  // prototype: padding 4px 10px
                 .padding(.vertical, 4)
+                // VT-REV-002: override the default VoiceOver label (which would read the
+                // compact visible text, e.g. "RU") with the full language name when provided.
+                .accessibilityLabel(option.accessibilityLabel ?? option.label)
                 .background(
                     Group {
                         if isSelected {
@@ -163,6 +188,7 @@ struct SegmentedControl<T: Hashable>: View {
         .animation(.easeInOut(duration: 0.12), value: isSelected)  // transition:120ms per prototype
     }
 }
+// swiftlint:enable large_tuple
 
 // MARK: - Permission Hint Panel
 //

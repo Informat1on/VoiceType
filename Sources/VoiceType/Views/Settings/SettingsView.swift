@@ -103,7 +103,12 @@ struct SettingsView: View {
                 PrefsRow("Preferred language",
                          subtitle: "Auto detects per recording. RU/EN pin a single language. RU+EN enables bilingual mode for code-switched speech.") {
                     SegmentedControl(
-                        options: Language.allCases.map { (label: $0.displayName, value: $0) },
+                        // VT-REV-002: pass longDisplayName as per-segment accessibilityLabel so
+                        // VoiceOver reads "Russian" / "English" / "Russian + English (bilingual)"
+                        // instead of the compact visible text "RU" / "EN" / "RU+EN".
+                        options: Language.allCases.map {
+                            (label: $0.displayName, value: $0, accessibilityLabel: $0.longDisplayName)
+                        },
                         selection: $settings.language
                     )
                     .accessibilityLabel("Preferred language")
@@ -180,11 +185,21 @@ struct SettingsView: View {
                 GroupHeader(title: "Model")
                 RowDivider()
                 ForEach(TranscriptionModel.allCases, id: \.self) { model in
+                    // VT-REV-001: status dot must only reflect the LOADED model, not the
+                    // selected model.  After the user taps a new model row, selectedModel
+                    // updates immediately but the old model is still loaded (and still
+                    // .ready).  Forwarding modelStatus to the newly-selected row would show
+                    // a misleading green dot before loading actually completes.
+                    // Fix: compare against loadedModelName — the authoritative identity of
+                    // whatever model TranscriptionService has in memory right now.
+                    // When loadedModelName is nil (no model loaded yet) every row gets
+                    // .notLoaded, which is also correct.
+                    let isActuallyLoaded = transcriptionService.loadedModelName == model.rawValue
                     ModelRow(
                         model: model,
                         isSelected: settings.selectedModel == model,
                         onSelect: { settings.selectedModel = model },
-                        activeModelStatus: settings.selectedModel == model
+                        activeModelStatus: isActuallyLoaded
                             ? transcriptionService.modelStatus
                             : .notLoaded
                     )

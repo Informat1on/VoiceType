@@ -256,4 +256,34 @@ final class LanguageMappingTests: XCTestCase {
 
         XCTAssertEqual(first, second, "Repeated applyInitialPrompt for .auto must be idempotent")
     }
+
+    // MARK: - VT-REV-002: longDisplayName sanity guard
+
+    /// Ensures longDisplayName is strictly more verbose than displayName for every case.
+    /// Guards against accidental future edits that collapse them back to the same value
+    /// (which would silently re-introduce the VoiceOver regression).
+    func testLongDisplayNameIsMoreVerboseThanDisplayName() {
+        for lang in Language.allCases {
+            XCTAssertNotEqual(
+                lang.displayName,
+                lang.longDisplayName,
+                "\(lang.rawValue): longDisplayName must differ from displayName (VT-REV-002)"
+            )
+            XCTAssertGreaterThan(
+                lang.longDisplayName.count,
+                lang.displayName.count,
+                "\(lang.rawValue): longDisplayName must be longer than displayName (VT-REV-002)"
+            )
+        }
+    }
+
+    /// Ensures every longDisplayName is non-empty — VoiceOver must never announce a blank label.
+    func testLongDisplayNameNonEmptyForAllCases() {
+        for lang in Language.allCases {
+            XCTAssertFalse(
+                lang.longDisplayName.isEmpty,
+                "\(lang.rawValue): longDisplayName must not be empty (VT-REV-002)"
+            )
+        }
+    }
 }
