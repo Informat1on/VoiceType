@@ -5,7 +5,8 @@
 # Usage:
 #   codex-review.sh                     Review HEAD (last commit) vs HEAD^
 #   codex-review.sh <base-sha|branch>   Review HEAD vs <base>
-#   codex-review.sh --range <base>..<head>  Review arbitrary range
+#   codex-review.sh --range <base>..[head]
+#                                     Review base..HEAD; <head> if given must equal current HEAD
 #   codex-review.sh --no-cache [...]    Bypass cache, force fresh review
 #   codex-review.sh --help              Show this help
 #
@@ -118,6 +119,17 @@ HEAD_SHA="$(git -C "$REPO_DIR" rev-parse --verify "$HEAD_REF" 2>/dev/null)" \
 BASE_SHA="$(git -C "$REPO_DIR" rev-parse --verify "$BASE_REF" 2>/dev/null)" \
     || die_usage "cannot resolve base ref: $BASE_REF"
 
+# `codex review` always reviews against the working tree's HEAD.  If the user
+# passed --range with a head that isn't the current HEAD, the cached output
+# would be labeled with a SHA that was never actually reviewed.  Refuse the
+# request and tell the user what to do instead.
+if [[ "$RANGE_MODE" -eq 1 ]]; then
+    CURRENT_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null)"
+    if [[ "$HEAD_SHA" != "$CURRENT_HEAD" ]]; then
+        die_usage "--range <base>..<head> requires <head> to be the currently checked-out HEAD ($CURRENT_HEAD), got $HEAD_SHA. Check out <head> first, or omit it to default to HEAD."
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # Diff size check
 # ---------------------------------------------------------------------------
@@ -169,11 +181,9 @@ fi
 # `codex review --commit <SHA>` reviews the diff that commit introduced.
 # `codex review --base <ref>` reviews HEAD vs that base.
 #
-# Limitation: --range <base>..<custom-head> where head != HEAD is not natively
-# supported by codex review (it always reviews against the working tree / HEAD).
-# We approximate it by checking out is not safe here, so we use --base <BASE_SHA>
-# and note the HEAD_REF in the title.  The head part of --range is used only to
-# build the cache key and the review title.
+# Unsupported configurations are rejected above (--range with head != current
+# HEAD exits with code 2 and a clear message), so by the time we reach here
+# HEAD_SHA is always the current HEAD.
 
 COMMIT_TITLE="$(git -C "$REPO_DIR" log --oneline -1 "$HEAD_SHA" 2>/dev/null || true)"
 
