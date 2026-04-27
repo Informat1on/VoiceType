@@ -8,6 +8,9 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Models to benchmark: label|filename|size_mb
 MODELS=(
+    "tiny|ggml-tiny.bin|75"
+    "base|ggml-base.bin|141"
+    "small-q5|ggml-small-q5_1.bin|181"
     "small|ggml-small.bin|465"
     "medium|ggml-medium.bin|1400"
     "turbo|ggml-large-v3-turbo.bin|1500"

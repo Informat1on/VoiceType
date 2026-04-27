@@ -61,6 +61,7 @@ def main() -> None:
             # Infer size from model name if not stored
             if model not in model_sizes:
                 sizes = {
+                    "tiny": "75 MB",
                     "base": "141 MB",
                     "small-q5": "181 MB",
                     "small": "465 MB",
