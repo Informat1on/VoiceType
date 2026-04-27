@@ -26,3 +26,4 @@ hotwords-log.md
 # Private architecture / decision notes. Public ADRs go in docs/decisions/ directly.
 docs/decisions/private/
 .gstack/
+Tests/Fixtures/bench/.bench-device

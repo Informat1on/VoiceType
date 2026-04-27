@@ -29,7 +29,83 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BENCH_DIR="${REPO_ROOT}/Tests/Fixtures/bench"
+DEVICE_FILE="${BENCH_DIR}/.bench-device"
 mkdir -p "${BENCH_DIR}"
+
+# ---------------------------------------------------------------------------
+# Audio device selection
+# ---------------------------------------------------------------------------
+# avfoundation device index 0 is often a virtual mic (Camo, OBS) that records
+# silence when its host app is not running. We list real audio devices and
+# let the user pick by name. The choice is cached in .bench-device for re-runs.
+
+select_audio_device() {
+    if [ -f "${DEVICE_FILE}" ]; then
+        AUDIO_DEVICE=$(cat "${DEVICE_FILE}")
+        printf '%b\n' "${C_BOLD}Cached audio device:${C_RESET} index ${C_GREEN}${AUDIO_DEVICE}${C_RESET} (from ${DEVICE_FILE})"
+        printf '%b' "Press ${C_GREEN}Enter${C_RESET} to keep, or ${C_YELLOW}c${C_RESET} to change: "
+        read -r resp
+        if [ "${resp}" != "c" ] && [ "${resp}" != "C" ]; then
+            return
+        fi
+    fi
+
+    printf '%b\n' "${C_BOLD}Detecting audio devices...${C_RESET}"
+    # Capture stderr (where avfoundation prints the device list).
+    raw=$(ffmpeg -f avfoundation -list_devices true -i "" 2>&1 || true)
+    # Extract audio devices section: lines after "AVFoundation audio devices:".
+    audio_section=$(printf '%s\n' "${raw}" | awk '/AVFoundation audio devices/{flag=1; next} flag{print}')
+
+    if [ -z "${audio_section}" ]; then
+        printf '%b\n' "${C_RED}Error:${C_RESET} could not detect audio devices via ffmpeg."
+        exit 1
+    fi
+
+    printf '\n%b\n' "${C_BOLD}Available audio inputs:${C_RESET}"
+    printf '%s\n' "${audio_section}" | grep -E '\[[0-9]+\]' | sed -E 's/.*\[([0-9]+)\] (.*)/  [\1] \2/'
+    printf '\n'
+    printf '%b\n' "${C_YELLOW}Tip:${C_RESET} pick the one you actually use for VoiceType."
+    printf '%b\n' "Skip virtual mics like ${C_YELLOW}Camo${C_RESET} or ${C_YELLOW}OBS Virtual Camera${C_RESET} unless their host app is running."
+    printf '%b' "Enter audio device index (e.g. ${C_GREEN}1${C_RESET}): "
+    read -r AUDIO_DEVICE
+
+    if ! [[ "${AUDIO_DEVICE}" =~ ^[0-9]+$ ]]; then
+        printf '%b\n' "${C_RED}Invalid index.${C_RESET} Aborting."
+        exit 1
+    fi
+
+    # Quick sanity check: try to record 0.5 seconds of audio and verify peak amplitude > 0.
+    printf '\n%b' "Testing device ${AUDIO_DEVICE} (1 second)... "
+    test_wav=$(mktemp -t bench-test-XXXXXXXX).wav
+    if ! ffmpeg -f avfoundation -i ":${AUDIO_DEVICE}" -t 1 -ar 16000 -ac 1 -y -loglevel error "${test_wav}" 2>/dev/null; then
+        printf '%b\n' "${C_RED}FAILED${C_RESET} — ffmpeg could not open device ${AUDIO_DEVICE}."
+        rm -f "${test_wav}"
+        printf '%b\n' "Common cause: Terminal lacks Microphone permission. Open"
+        printf '%b\n' "  System Settings → Privacy & Security → Microphone → enable Terminal/iTerm/your shell."
+        exit 1
+    fi
+    # Sox (optional) can verify peak; if not installed, just trust the recording.
+    if command -v sox &>/dev/null; then
+        peak=$(sox "${test_wav}" -n stat 2>&1 | awk '/Maximum amplitude/{print $3}')
+        # Use awk to compare (no bc dependency).
+        is_silent=$(awk -v p="${peak:-0}" 'BEGIN{print (p+0 < 0.001) ? 1 : 0}')
+        if [ "${is_silent}" = "1" ]; then
+            printf '%b\n' "${C_RED}SILENT${C_RESET} (peak=${peak}) — device is open but capturing nothing."
+            rm -f "${test_wav}"
+            printf '%b\n' "Pick a different device, or check that the mic is not muted in macOS Sound settings."
+            exit 1
+        fi
+        printf '%b (peak=%s)\n' "${C_GREEN}OK${C_RESET}" "${peak}"
+    else
+        printf '%b\n' "${C_GREEN}OK${C_RESET} (install sox for silence verification: brew install sox)"
+    fi
+    rm -f "${test_wav}"
+
+    printf '%s' "${AUDIO_DEVICE}" > "${DEVICE_FILE}"
+    printf 'Saved choice to %s (delete it to re-pick)\n\n' "${DEVICE_FILE}"
+}
+
+select_audio_device
 
 # ---------------------------------------------------------------------------
 # Phrase list (index 0 = phrase 01)
@@ -170,7 +246,7 @@ for i in "${!PHRASES[@]}"; do
         printf '%b\n' "${C_RED}* RECORDING${C_RESET} (${duration}s) — speak now!"
         ffmpeg \
             -f avfoundation \
-            -i ":0" \
+            -i ":${AUDIO_DEVICE}" \
             -t "${duration}" \
             -ar 16000 \
             -ac 1 \
