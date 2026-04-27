@@ -262,6 +262,43 @@ final class HistoryStoreEdgeCasesTests: XCTestCase {
         XCTAssertEqual(decoded.last?.text, "after-delete", "Newest entry must be last in file")
     }
 
+    // MARK: - testCorruptFileBlocksFlushProtectsExistingData
+
+    /// Edge case 5 (M4 fix): history file exists but contains non-UTF-8 bytes.
+    ///
+    /// Expected behaviour post-fix:
+    ///   a) entries() returns empty without crashing (loadFailed set, cache stays empty).
+    ///   b) append() does NOT overwrite the corrupt file (flush() is blocked by loadFailed).
+    ///   c) The file on disk is identical to the original garbage bytes after append.
+    ///
+    /// Pre-fix behaviour: `loaded = true` was set before the guard, so after a failed
+    /// read cachedEntries was empty. A subsequent append would flush that empty cache,
+    /// silently destroying the existing (possibly partially-recoverable) file.
+    func testCorruptFileBlocksFlushProtectsExistingData() throws {
+        let dir = try makeDir()
+        let url = dir.appendingPathComponent("history.jsonl")
+
+        // Write bytes that satisfy fileExists + Data(contentsOf:) but fail String(data:encoding:.utf8).
+        let corruptBytes = Data([0xFF, 0xFE, 0xC0, 0x80, 0xED, 0xA0, 0x80])
+        try corruptBytes.write(to: url, options: .atomic)
+
+        XCTAssertNil(String(data: corruptBytes, encoding: .utf8),
+                     "Precondition: test bytes must not be valid UTF-8")
+
+        let store = HistoryStore.test(storeURL: url)
+
+        // Load must silently return empty — no crash.
+        let loaded = store.entries()
+        XCTAssertEqual(loaded.count, 0, "Corrupt file must load as empty without crashing")
+
+        // Append must NOT flush (loadFailed prevents overwrite).
+        store.append(sampleEntry(text: "should-not-appear"))
+
+        let diskBytes = try Data(contentsOf: url)
+        XCTAssertEqual(diskBytes, corruptBytes,
+                       "Corrupt file must remain untouched after append when loadFailed is set")
+    }
+
     // MARK: - testDeletedFileReloadedByNewStoreInstanceReflectsCurrentState
 
     /// Complementary to testFileDeletedUnderUsNextAppendRecreatesFile:

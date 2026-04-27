@@ -94,6 +94,9 @@ final class TranscriptionService: ObservableObject {
         if let existing = _initialPrompt {
             free(existing)
             _initialPrompt = nil
+            // Clear the C-level pointer immediately so whisper params never reference freed memory
+            // if strdup fails below and we return early.
+            whisper?.params.initial_prompt = nil
         }
         currentInitialPromptText = text.flatMap { $0.isEmpty ? nil : $0 }
         guard let text, !text.isEmpty else {
@@ -226,8 +229,6 @@ final class TranscriptionService: ObservableObject {
         print("[TranscriptionService] Starting transcription with model: \(currentModelName ?? "unknown")")
         print("[TranscriptionService] Audio samples: \(audio.count), duration: \(String(format: "%.2f", Double(audio.count) / 16000.0))s, language: \(language.rawValue)")
 
-        applyRuntimeConfiguration(language: language)
-
         // Pre-flight check: Handle instanceBusy with retry for rapid sequential transcriptions
         if whisper.inProgress {
             print("[TranscriptionService] Whisper busy, waiting with backoff...")
@@ -248,6 +249,9 @@ final class TranscriptionService: ObservableObject {
             }
         }
 
+        // Apply runtime config only after confirming whisper is idle — prevents mutating
+        // language/thread params while whisper_full runs on a background thread.
+        applyRuntimeConfiguration(language: language)
         isTranscribing = true
         progress = 0.0
         lastResult = nil

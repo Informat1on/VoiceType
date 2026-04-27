@@ -368,6 +368,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func loadModel(for request: ModelLoadRequest) async {
         let model = request.model
 
+        guard model.isCompatibleWithCurrentEngine else {
+            AppLog.models.error("Refusing to load incompatible model \(model.rawValue, privacy: .public) — requires newer whisper.cpp engine")
+            showErrorToast(
+                title: "Model not supported",
+                body: "\(model.displayName) requires a newer transcription engine. Select a different model in Settings."
+            )
+            return
+        }
+
         let language = AppSettings.shared.language
         print("[AppDelegate] Reloading model: \(model.rawValue) with language: \(language.rawValue)")
         AppLog.models.notice("Reloading model \(model.rawValue, privacy: .public)")
@@ -486,6 +495,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             FocusCaptureService.shared.suppressNextRestore()
             voiceTypeWindow?.show(state: .errorInline(message: "Mic denied · Open Privacy"))
             voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss()
+            hotkeyService.syncIsRecording(false)
             appState = .idle
             return
         }
@@ -503,6 +513,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             ErrorLogger.shared.log(error, category: "app")
             voiceTypeWindow?.show(state: .errorInline(message: "Failed to start recording"))
             voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss()
+            hotkeyService.syncIsRecording(false)
             appState = .idle
         }
     }

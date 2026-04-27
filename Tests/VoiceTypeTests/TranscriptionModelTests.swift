@@ -42,4 +42,23 @@ final class TranscriptionModelTests: XCTestCase {
     func testCaseOrderingPlacesTurboLast() {
         XCTAssertEqual(TranscriptionModel.allCases.last, .largeV3Turbo)
     }
+
+    // MARK: - Engine compatibility (C2 fix)
+
+    func testLargeV3TurboIsNotCompatibleWithCurrentEngine() {
+        XCTAssertFalse(
+            TranscriptionModel.largeV3Turbo.isCompatibleWithCurrentEngine,
+            "largeV3Turbo requires whisper.cpp >= v1.7.0; SwiftWhisper bundles v1.4.2"
+        )
+    }
+
+    func testAllOtherModelsAreCompatibleWithCurrentEngine() {
+        let incompatible: Set<TranscriptionModel> = [.largeV3Turbo]
+        for model in TranscriptionModel.allCases where !incompatible.contains(model) {
+            XCTAssertTrue(
+                model.isCompatibleWithCurrentEngine,
+                "\(model.rawValue) should be compatible with the current engine"
+            )
+        }
+    }
 }

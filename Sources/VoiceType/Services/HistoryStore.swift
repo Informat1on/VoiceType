@@ -57,6 +57,9 @@ final class HistoryStore {
     /// Newest-first ordering in memory.
     private var cachedEntries: [Entry] = []
     private var loaded: Bool = false
+    /// True when the history file existed but could not be read on first load.
+    /// Blocks flush() from overwriting a file we couldn't parse.
+    private var loadFailed: Bool = false
 
     // MARK: - Init
 
@@ -118,6 +121,13 @@ final class HistoryStore {
         guard fileManager.fileExists(atPath: storeURL.path),
               let data = try? Data(contentsOf: storeURL),
               let raw = String(data: data, encoding: .utf8) else {
+            if fileManager.fileExists(atPath: storeURL.path) {
+                loadFailed = true
+                ErrorLogger.shared.log(
+                    message: "HistoryStore: history file exists but could not be read — writes disabled to protect data",
+                    category: "history"
+                )
+            }
             return
         }
         let decoder = JSONDecoder()
@@ -140,6 +150,7 @@ final class HistoryStore {
 
     /// Atomically rewrite the whole file in chronological (oldest-first) order.
     private func flush() {
+        guard !loadFailed else { return }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         // Persist chronologically so future appends are natural.
