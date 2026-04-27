@@ -11,6 +11,10 @@
 //
 // Prototype source of truth: v1-cool-inksteel.html (lines cited per
 // component). DESIGN.md § Layout / Color / Typography for tokens.
+//
+// swiftlint:disable file_length
+// Component catalogue files grow naturally as new UI primitives are added.
+// Each component is self-contained and individually testable.
 
 import SwiftUI
 
@@ -530,5 +534,128 @@ struct ModelRow: View {
     private var activeModelStatusTooltip: String {
         if case .error(let msg) = activeModelStatus { return msg }
         return activeModelStatusAccessibilityLabel
+    }
+}
+
+// MARK: - Model Preset Row
+//
+// Primary UI for Settings → Models tab. Shows one of three presets:
+// Fast / Balanced / Max Quality. Follows native-row layout per DESIGN.md —
+// no boxed cards, 1px dividers, Geist typography, Palette tokens.
+//
+// State ownership: the caller owns `isSelected` and `onSelect`. Selection
+// writes through to `AppSettings.selectedModel` (same UserDefaults key as
+// the Advanced model picker). The "Recommended" badge only appears on Balanced.
+
+struct ModelPresetRow: View {
+
+    // MARK: - Preset definition (pure value type, no model logic)
+
+    struct Preset: Equatable {
+        let name: String
+        let description: String
+        let sizeAndSpeed: String
+        let isRecommended: Bool
+        let model: TranscriptionModel
+    }
+
+    // MARK: - Static preset catalogue
+
+    /// Fast → smallQ5: compact Q5 small model, quick turnaround.
+    static let fast = Preset(
+        name: "Fast",
+        description: "Smaller model, faster transcription, slightly less accurate",
+        sizeAndSpeed: "~190 MB · Speed ⚡⚡⚡",
+        isRecommended: false,
+        model: .smallQ5
+    )
+
+    /// Balanced → largeV3TurboQ5: default since v1.2.0. Bench-proven WER parity
+    /// with largeV3Turbo, 30% faster, 64% smaller (547 MB vs ~810 MB).
+    static let balanced = Preset(
+        name: "Balanced",
+        description: "Best accuracy at fast speed, compact download",
+        sizeAndSpeed: "~547 MB · Speed ⚡⚡⚡⚡",
+        isRecommended: true,
+        model: .largeV3TurboQ5
+    )
+
+    /// Max Quality → largeV3Turbo: full fp16 weights, no quantization.
+    static let maxQuality = Preset(
+        name: "Max Quality",
+        description: "Full model, no quantization, maximum accuracy",
+        sizeAndSpeed: "~810 MB · Speed ⚡⚡⚡⚡",
+        isRecommended: false,
+        model: .largeV3Turbo
+    )
+
+    /// All three presets in display order (Fast → Balanced → Max Quality).
+    static let all: [Preset] = [fast, balanced, maxQuality]
+
+    // MARK: - Instance
+
+    let preset: Preset
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(alignment: .center, spacing: Spacing.md) {
+                // Radio-like selection indicator
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Palette.accent : Palette.textMuted)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    // Name + optional "Recommended" badge on same line
+                    HStack(spacing: Spacing.sm) {
+                        Text(preset.name)
+                            .font(Typography.body)
+                            .foregroundStyle(Palette.textPrimary)
+                        if preset.isRecommended {
+                            RecommendedBadge()
+                        }
+                    }
+                    Text(preset.description)
+                        .font(Typography.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                    Text(preset.sizeAndSpeed)
+                        .font(Typography.mono)
+                        .foregroundStyle(Palette.textMuted)
+                }
+
+                Spacer(minLength: Spacing.md)
+            }
+            .padding(.horizontal, Spacing.prefsRowHorizontal)
+            .padding(.vertical, Spacing.prefsRowVertical)
+            .frame(minHeight: Spacing.prefsRowMinHeight)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private var accessibilityLabel: String {
+        var label = "\(preset.name) preset. \(preset.description). \(preset.sizeAndSpeed)"
+        if preset.isRecommended { label += ". Recommended" }
+        if isSelected { label += ". Selected" }
+        return label
+    }
+}
+
+// MARK: - Recommended Badge
+//
+// Pill-shaped badge shown next to "Balanced" preset name.
+// Full-pill border radius per DESIGN.md § Border radius scale.
+
+private struct RecommendedBadge: View {
+    var body: some View {
+        Text("Recommended")
+            .font(Typography.badge)
+            .foregroundStyle(Palette.accent)
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, 2)
+            .background(Palette.accentSoft, in: Capsule(style: .continuous))
     }
 }
