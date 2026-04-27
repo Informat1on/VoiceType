@@ -80,9 +80,11 @@ final class EvalEditorWindow: NSWindow {
 
     private func handleSave(correction: String) {
         guard let entry = HistoryStore.shared.entry(byID: entryID) else {
-            // Entry was deleted while the window was open — just close.
-            print("[EvalEditor] Entry \(entryID) not found during save — closing.")
-            close()
+            // VT-REV-003: entry was evicted by history rotation while the window was
+            // open. Do NOT close — the rotation warning banner in EvalEditorView already
+            // tells the user to copy their correction. Closing silently here would discard
+            // their work. Log the event for diagnostics.
+            print("[EvalEditor] Save blocked: entry \(entryID) no longer in history (evicted by rotation). Window stays open so user can copy their correction.")
             return
         }
         let updated = entry.withEvalSaved(correction: correction)

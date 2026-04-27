@@ -38,6 +38,10 @@ struct EvalEditorView: View {
     @State private var audioPlayer: AVAudioPlayer?
     @State private var playbackProgress: Double = 0
     @State private var playbackTimer: Timer?
+    /// VT-REV-003: tracks whether the entry still exists in HistoryStore.
+    /// Polled every 2 s so the user sees a warning if history rotation evicts the entry.
+    @State private var stillExists: Bool = true
+    @State private var rotationPollTimer: Timer?
 
     /// Primary init: takes an explicit entry ID — works for any history entry.
     init(entryID: UUID, onSave: @escaping (_ correction: String) -> Void, onCancel: @escaping () -> Void) {
@@ -97,8 +101,21 @@ struct EvalEditorView: View {
             let resolved = HistoryStore.shared.entry(byID: entryID)
             entry = resolved
             correctionText = resolved?.text ?? ""
+            // VT-REV-003: poll every 2 s to detect entry rotation while the editor is open.
+            rotationPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+                Task { @MainActor in
+                    let exists = HistoryStore.shared.entry(byID: entryID) != nil
+                    if !exists && stillExists {
+                        stillExists = false
+                    }
+                }
+            }
         }
-        .onDisappear { stopPlayback() }
+        .onDisappear {
+            stopPlayback()
+            rotationPollTimer?.invalidate()
+            rotationPollTimer = nil
+        }
     }
 
     /// Shown while the entry is still in the history store.
@@ -113,10 +130,33 @@ struct EvalEditorView: View {
                 Palette.divider.frame(height: 1)
             }
             contentArea
+            // VT-REV-003: rotation warning — shown when entry was evicted from history
+            // while the editor was open. Saving will fail; user must copy corrections first.
+            if !stillExists {
+                rotationWarningBanner
+                Palette.divider.frame(height: 1)
+            }
             Palette.divider.frame(height: 1)
             footer
         }
         .background(Palette.bgWindow)
+    }
+
+    /// Banner displayed when the entry has been evicted from history rotation.
+    private var rotationWarningBanner: some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Palette.warning)
+            Text("This transcription was removed from history. Copy your correction before closing — saving will fail.")
+                .font(Typography.caption)
+                .foregroundStyle(Palette.warning)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, Spacing.xl)
+        .padding(.vertical, Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.warning.opacity(0.08))
+        .accessibilityLabel("Warning: this transcription was removed from history. Saving will fail.")
     }
 
     /// Fallback shown when the entry was deleted while the window was open.

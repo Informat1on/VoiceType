@@ -61,7 +61,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var settingsWindow: NSWindow?
     private var aboutWindow: NSWindow?
     private var firstLaunchWindow: FirstLaunchWindow?
-    private var evalEditorWindow: EvalEditorWindow?
+    /// Keyed by entry UUID so multiple eval editors can coexist without losing ownership.
+    /// VT-REV-001: replaced single `evalEditorWindow` optional with a dictionary.
+    private var evalEditorWindows: [UUID: EvalEditorWindow] = [:]
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Eval hotkey (Cmd+Opt+E, separate from the recording hotkey)
@@ -192,17 +194,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     // MARK: - Eval Editor Window
 
-    /// Open the eval editor for the last transcription.
+    /// Open an eval editor for a specific history entry.
+    /// If a window for this entry is already open, brings it to front instead of creating a duplicate.
+    /// VT-REV-001: strong ownership via dictionary; each window cleans itself up on close.
+    func openEvalEditorForEntry(_ entryID: UUID) {
+        print("[AppDelegate] openEvalEditorForEntry(\(entryID)) called")
+        if let existing = evalEditorWindows[entryID] {
+            existing.orderFrontRegardless()
+            return
+        }
+        let win = EvalEditorWindow.open(entryID: entryID)
+        evalEditorWindows[entryID] = win
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: win,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.evalEditorWindows.removeValue(forKey: entryID)
+            }
+        }
+    }
+
+    /// Open the eval editor for the last transcription (Cmd+Opt+E hotkey path).
     /// Shows a brief inline error if no transcription exists yet.
     func openEvalEditor() {
         print("[AppDelegate] openEvalEditor() called")
-        guard HistoryStore.shared.latestEntry() != nil else {
+        guard let last = HistoryStore.shared.latestEntry() else {
             showErrorToast(title: "No transcription yet", body: "Make a transcription first, then press Cmd+Opt+E to edit it.")
             return
         }
-        // Re-open with fresh entry each time (entry may have changed since last open).
-        evalEditorWindow = nil
-        evalEditorWindow = EvalEditorWindow.openForLatestEntry()
+        openEvalEditorForEntry(last.id)
     }
 
     // MARK: - Eval Hotkey (Cmd+Opt+E)

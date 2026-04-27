@@ -225,9 +225,16 @@ private struct HistorySheetView: View {
     }
 
     private func openEvalEditor(for entry: HistoryStore.Entry) {
-        // Open the EvalEditorWindow for this specific entry.
-        // The sheet stays open so the user can navigate history while editing.
-        EvalEditorWindow.open(entryID: entry.id)
+        // VT-REV-001: route through AppDelegate so the window gets strong ownership
+        // and duplicate windows are prevented. AppDelegate tracks all open editors
+        // in evalEditorWindows[UUID] and cleans up on NSWindow.willCloseNotification.
+        if let delegate = NSApp.delegate as? AppDelegate {
+            delegate.openEvalEditorForEntry(entry.id)
+        } else {
+            // Fallback: direct open (window ownership not tracked — acceptable for
+            // edge cases where AppDelegate is unavailable, e.g. previews/tests).
+            EvalEditorWindow.open(entryID: entry.id)
+        }
     }
 
     /// Synthesize Cmd+V via CGEvent so re-insert works identically to normal injection.

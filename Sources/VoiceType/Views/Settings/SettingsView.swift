@@ -329,14 +329,30 @@ struct SettingsView: View {
                     .padding(.vertical, Spacing.prefsRowVertical)
                 }
 
-                // Inline hint when accessibility is not granted —
-                // General tab is the single source of truth for permissions.
+                // VT-REV-004: actionable hint row — tapping "Go to General → Permissions"
+                // switches the tab, making it focusable by VoiceOver as a real Button.
                 if accessibilityPermState != .granted {
                     SectionGap()
-                    PrefsRow("Hotkey requires Accessibility",
-                             subtitle: "⚠ Hotkey-triggered text insertion requires Accessibility permission. See General → Permissions.") {
-                        EmptyView()
+                    HStack(alignment: .center, spacing: Spacing.sm) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Palette.warning)
+                            .font(.system(size: 12))
+                        Text("Hotkey requires Accessibility permission")
+                            .font(Typography.body)
+                            .foregroundStyle(Palette.textPrimary)
+                        Spacer()
+                        Button("Go to General → Permissions") {
+                            selectedTab = .general
+                        }
+                        .font(Typography.buttonLabel)
+                        .foregroundStyle(Palette.accent)
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        .accessibilityLabel("Open General tab to grant Accessibility permission")
                     }
+                    .padding(.horizontal, Spacing.prefsRowHorizontal)
+                    .padding(.vertical, Spacing.prefsRowVertical)
+                    .frame(minHeight: Spacing.prefsRowMinHeight)
                     RowDivider()
                 }
             }
@@ -500,18 +516,9 @@ struct SettingsView: View {
                 }
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(permissionsSectionAccessibilityLabel)
-    }
-
-    private var permissionsSectionAccessibilityLabel: String {
-        let mic = permissionManager.hasMicrophonePermission
-            ? "Microphone: granted."
-            : "Microphone: not granted."
-        let acc = permissionManager.hasAccessibilityPermission
-            ? "Accessibility: granted."
-            : "Accessibility: not granted. Required to insert transcribed text."
-        return "\(mic) \(acc)"
+        // VT-REV-002: use .contain instead of .combine so VoiceOver can individually
+        // reach each button (Refresh, Restart App, Open Privacy…) inside this section.
+        .accessibilityElement(children: .contain)
     }
 
     // MARK: - Permission State Helpers
