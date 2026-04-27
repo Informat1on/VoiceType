@@ -9,6 +9,11 @@ dist/
 .claude/.session/
 .claude/worktrees/
 
+# Bench output: runs and live recordings are local exploratory data.
+# RESULTS.md and results.csv stay committed as canonical reference.
+scripts/bench-output/live-*/
+scripts/bench-output/run-*.log
+
 # Local Xcode metadata
 **/xcuserdata/
 **/*.xcuserstate
