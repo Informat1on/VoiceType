@@ -26,34 +26,34 @@ The repository now supports both a safe prepare step and a one-command publish f
 Build artifacts only:
 
 ```bash
-./release.sh 1.0.2 --prepare
+./release.sh 1.2.0 --prepare
 ```
 
 One-button draft GitHub release:
 
 ```bash
-./release.sh 1.0.2 --draft
+./release.sh 1.2.0 --draft
 ```
 
 Public GitHub release:
 
 ```bash
-./release.sh 1.0.2 --publish
+./release.sh 1.2.0 --publish
 ```
 
 The script:
 
 1. Updates `VERSION`.
 2. Builds `dist/VoiceType.app`.
-3. Creates `dist/VoiceType-1.0.2.dmg`.
+3. Creates `dist/VoiceType-1.2.0.dmg`.
 4. Notarizes and staples the DMG if `NOTARY_PROFILE` is configured in `.signing-env`.
-5. Generates `dist/RELEASE_NOTES-v1.0.2.md`.
+5. Generates `dist/RELEASE_NOTES-v1.2.0.md`.
 6. In `--draft` / `--publish` mode: commits the version bump, creates the git tag, pushes branch + tag, and creates the GitHub release automatically.
 
 For a dry run without notarization, use:
 
 ```bash
-SKIP_NOTARIZATION=1 ./release.sh 1.0.2 --prepare
+SKIP_NOTARIZATION=1 ./release.sh 1.2.0 --prepare
 ```
 
 Recommended `.signing-env` for public releases:
