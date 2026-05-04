@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-05-04
+
+### Changed
+- **DMG releases are now signed with Developer ID Application and
+  notarized by Apple.** Previous releases were signed with an Apple
+  Development certificate, which triggered Gatekeeper warnings and
+  required users to right-click → Open or click "Open Anyway" through
+  System Settings → Privacy & Security on first launch. v1.3.1+ DMGs
+  are stapled with an Apple notarization ticket, so the app opens with
+  a single double-click — no warnings, no workarounds. No code or
+  behavior changes — same binary as v1.3.0, just a properly signed
+  distribution.
+
 ## [1.3.0] - 2026-04-27
 
 ### Added
