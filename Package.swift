@@ -8,7 +8,12 @@ let package = Package(
         .executable(name: "VoiceType", targets: ["VoiceType"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Informat1on/SwiftWhisper.git", branch: "master")
+        // Pinned to a revision, not a branch: a moving branch means two builds of the
+        // same VoiceType version can ship different whisper.cpp revisions.
+        // Not `exact:` — SwiftPM rejects unsafeFlags in version-pinned dependencies,
+        // and the fork needs them (-fno-objc-arc for ggml-metal, -fobjc-arc for CoreML).
+        // This revision is tagged v1.9.1-vt.1 in the fork.
+        .package(url: "https://github.com/Informat1on/SwiftWhisper.git", revision: "6b4286a4691c8284e665132e716d06e155cda60a")
     ],
     targets: [
         .executableTarget(

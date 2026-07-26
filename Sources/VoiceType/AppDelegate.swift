@@ -57,6 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var voiceTypeWindow: VoiceTypeWindow?
     private var errorToastWindow: ErrorToastWindow?
     private var modelLoadTask: Task<Void, Never>?
+    /// Guards applicationShouldTerminate against re-entry while the teardown runs.
+    private var isShuttingDown = false
     private var pendingModelLoadRequest: ModelLoadRequest?
     private var settingsWindow: NSWindow?
     private var aboutWindow: NSWindow?
@@ -88,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("[AppDelegate] === Launching VoiceType ===")
         AppLog.app.notice("Application launching")
+        configureGGMLResourcePath()
         registerEmbeddedFonts()
         NSApp.setActivationPolicy(.accessory)
 
@@ -130,6 +133,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         if appState == .recording {
             _ = try? audioCaptureService.stopRecording()
         }
+    }
+
+    /// Hold up termination until the whisper context is released.
+    ///
+    /// applicationWillTerminate is synchronous and cannot await the drain, so the
+    /// teardown lives here: reply .terminateLater, release the context (waiting out
+    /// any in-flight transcription), then let AppKit finish quitting.  Without this
+    /// the context survives into atexit and ggml aborts on
+    /// GGML_ASSERT([rsets->data count] == 0) — see TranscriptionService.shutdown().
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // A second quit request must not slip past the drain still in flight —
+        // keep waiting; the running teardown owns the reply.
+        guard !isShuttingDown else { return .terminateLater }
+        isShuttingDown = true
+
+        Task { @MainActor in
+            // Let a model load finish before releasing: bumping the generation only
+            // stops the result from being committed, while Whisper(fromFileURL:) keeps
+            // building a native context on its background queue. Awaiting the task
+            // means that context is created and then dropped by the generation guard.
+            if let task = modelLoadTask {
+                task.cancel()
+                _ = await task.value
+                modelLoadTask = nil
+            }
+
+            let released = await transcriptionService.shutdown()
+            guard released else {
+                // A transcription outlived the drain, so the context is still holding
+                // Metal buffers. Returning through a normal exit would run ggml's atexit
+                // teardown and abort; _exit skips it. We are quitting anyway — the OS
+                // reclaims everything.
+                AppLog.app.error("Quitting via _exit: whisper context could not be released in time")
+                ErrorLogger.shared.log(message: "Forced exit: transcription still running at quit", category: "app")
+                _exit(0)
+            }
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -327,6 +369,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Tokens.swift resolve to the actual typeface instead of falling back to
     /// San Francisco. Must be called BEFORE any SwiftUI view renders.
     /// DESIGN.md § Typography. Tier A Step 14 (accelerated to Step 6).
+    /// Point ggml at the Metal shader we ship in Contents/Resources.
+    ///
+    /// ggml compiles ggml-metal.metal at runtime (we have no precompiled
+    /// default.metallib) and resolves it in this order: default.metallib next to the
+    /// binary → $GGML_METAL_PATH_RESOURCES/ggml-metal.metal → the SwiftPM resource
+    /// bundle.  That last lookup expects <app>.bundle next to Contents/, which
+    /// codesign refuses, so a packaged app must use the environment variable.
+    /// Without it the Metal backend fails to initialise and whisper silently runs
+    /// on the CPU — roughly 3x slower on an M5 Pro.
+    ///
+    /// No-op under `swift run`, where the shader stays inside the SwiftPM bundle and
+    /// ggml's own lookup already works.  Must run before the first model load.
+    private func configureGGMLResourcePath() {
+        guard let resources = Bundle.main.resourceURL else { return }
+        let shader = resources.appendingPathComponent("ggml-metal.metal")
+        guard FileManager.default.fileExists(atPath: shader.path) else {
+            print("[AppDelegate] ggml-metal.metal not in Contents/Resources — leaving GGML_METAL_PATH_RESOURCES unset")
+            return
+        }
+        setenv("GGML_METAL_PATH_RESOURCES", resources.path, 1)
+        print("[AppDelegate] GGML_METAL_PATH_RESOURCES = \(resources.path)")
+    }
+
     private func registerEmbeddedFonts() {
         let fontNames = [
             "Geist-Regular",
@@ -337,7 +402,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             "GeistMono-SemiBold"
         ]
         for name in fontNames {
-            guard let url = Bundle.main.url(forResource: name, withExtension: "ttf") else {
+            // build-app.sh flattens VoiceType_VoiceType.bundle into Contents/Resources,
+            // so Bundle.main finds the TTFs in a packaged app; Bundle.module covers
+            // `swift run`, where the resources stay in the SwiftPM bundle.
+            guard let url = Bundle.main.url(forResource: name, withExtension: "ttf")
+                    ?? Bundle.module.url(forResource: name, withExtension: "ttf") else {
                 print("[AppDelegate] Font not found in bundle: \(name).ttf")
                 AppLog.app.error("Embedded font missing: \(name, privacy: .public).ttf")
                 continue

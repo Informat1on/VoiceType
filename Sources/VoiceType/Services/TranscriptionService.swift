@@ -227,7 +227,82 @@ final class TranscriptionService: ObservableObject {
         }
     }
 
+    /// Release the whisper context before the process exits.
+    ///
+    /// ggml's Metal device is owned by a C++ static and is destroyed during atexit.
+    /// If a whisper context is still holding Metal buffers at that point,
+    /// ggml_metal_rsets_free() aborts on `GGML_ASSERT([rsets->data count] == 0)` —
+    /// reproduced against whisper.cpp v1.9.1 by letting a context outlive main().
+    /// TranscriptionService is a long-lived singleton, so nothing would free the
+    /// context on its own: the terminate path must do it explicitly.
+    ///
+    /// Async because releasing the context out from under a running `whisper_full`
+    /// is a use-after-free: SwiftWhisper's transcribe() is not cancellation-aware
+    /// (it resumes a continuation from its own DispatchQueue), so the only safe
+    /// move is to wait for the C side to finish.  Callers must therefore hold up
+    /// termination — see AppDelegate.applicationShouldTerminate.
+    ///
+    /// - Returns: `true` if the context was released and a normal exit is safe.
+    ///   `false` means a transcription was still running past the deadline and the
+    ///   context is deliberately still alive — the caller must then bypass atexit
+    ///   (`_exit`) instead of returning through a normal exit, or ggml will abort.
+    @discardableResult
+    func shutdown() async -> Bool {
+        // Reject anything that would install a new context behind our back, and
+        // invalidate a loadModel() still awaiting Whisper(fromFileURL:).
+        isShuttingDown = true
+        modelLoadGeneration &+= 1
+
+        if let task = warmUpTask {
+            task.cancel()
+            _ = await task.value   // drain so whisper_full returns on the C side
+            warmUpTask = nil
+        }
+
+        // Wait out an in-flight transcription rather than freeing under it, and any
+        // model load still inside Whisper(fromFileURL:) — that constructor builds a
+        // native context which must not land after we declare the exit safe.
+        let deadline = Date().addingTimeInterval(Self.shutdownDrainTimeout)
+        while (isTranscribing || activeModelLoads > 0) && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        guard !isTranscribing, activeModelLoads == 0 else {
+            AppLog.models.error("shutdown timed out (transcribing=\(self.isTranscribing), loads=\(self.activeModelLoads)) — context left alive, caller must _exit")
+            return false
+        }
+
+        whisper = nil
+        modelStatus = .notLoaded
+        return true
+    }
+
+    /// How long shutdown() waits for a running transcription before giving up.
+    static let shutdownDrainTimeout: TimeInterval = 5.0
+
+    /// Set by shutdown(); makes loadModel/transcribe refuse to start new work while
+    /// the app is quitting, so nothing installs a context after the drain.
+    private var isShuttingDown = false
+
+    /// Number of loadModel() calls currently inside `Whisper(fromFileURL:)`.
+    ///
+    /// Counted here rather than by tracking Tasks in the caller: model loads are
+    /// started from more than one place (AppDelegate.modelLoadTask, but also the
+    /// on-demand ensureModelLoaded() path inside the transcription pipeline), and a
+    /// native context still under construction must not outlive the shutdown drain.
+    private var activeModelLoads = 0
+
     func loadModel(at url: URL, language: Language = .auto, model: TranscriptionModel? = nil) async throws {
+        // Nothing may create a native context once the teardown has started —
+        // it would outlive the drain and hit the atexit assert.  See shutdown().
+        guard !isShuttingDown else {
+            AppLog.models.warning("loadModel called during shutdown — rejected")
+            throw TranscriptionError.modelLoadFailed(NSError(
+                domain: "TranscriptionService",
+                code: -3,
+                userInfo: [NSLocalizedDescriptionKey: "The app is quitting."]
+            ))
+        }
+
         // C1: Guard against swapping the Whisper instance (and freeing the old one)
         // while whisper_full is running on a background thread holding a raw C pointer
         // into its context.  Replacing `whisper` mid-transcription is a UAF.
@@ -284,6 +359,10 @@ final class TranscriptionService: ObservableObject {
             "[TranscriptionService] Loading model: \(currentModelName ?? "unknown") (lang: \(whisperLanguageRawValue), detectLanguage: \(shouldDetectLanguage), threads: \(threadCount))"
         )
         let startTime = CFAbsoluteTimeGetCurrent()
+        // Bracket the native constructor so shutdown() can wait for it — see
+        // activeModelLoads.  Both @MainActor, so the ± pair cannot interleave.
+        activeModelLoads += 1
+        defer { activeModelLoads -= 1 }
         let newWhisper: Whisper = await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let params = WhisperParams(strategy: .greedy)
@@ -300,7 +379,12 @@ final class TranscriptionService: ObservableObject {
         }
         let loadTime = CFAbsoluteTimeGetCurrent() - startTime
         print("[TranscriptionService] Model \(currentModelName ?? "unknown") loaded in \(String(format: "%.2f", loadTime))s")
-        print("[TranscriptionService] GPU acceleration: \(hasCoreML ? "CoreML ENABLED" : "CPU only")")
+        // The CoreML encoder and the ggml Metal backend are independent: CoreML only
+        // replaces the encoder, everything else runs on Metal (or CPU if Metal failed
+        // to initialise).  Reporting "CPU only" whenever CoreML is absent used to hide
+        // a broken Metal backend — say what we actually know and let the ggml log lines
+        // (`whisper_backend_init_gpu: using Metal backend`) speak for the rest.
+        print("[TranscriptionService] CoreML encoder: \(hasCoreML ? "enabled" : "not used") — see ggml log above for the compute backend")
         AppLog.models.notice("Model load finished")
 
         // H1: If a newer loadModel call has already committed a different model,
@@ -422,6 +506,13 @@ final class TranscriptionService: ObservableObject {
     }
 
     func transcribe(audio: [Float], language: Language = .auto) async throws -> String {
+        // A transcription started after the drain would keep whisper_full running
+        // past the point where we report the app safe to quit.  See shutdown().
+        guard !isShuttingDown else {
+            AppLog.transcription.warning("transcribe called during shutdown — rejected")
+            throw TranscriptionError.modelNotLoaded
+        }
+
         guard let whisper else {
             print("[TranscriptionService] ERROR: Model not loaded")
             AppLog.transcription.error("Transcription requested without a loaded model")

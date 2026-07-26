@@ -5,8 +5,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Informat1on/SwiftWhisper.git",
       "state" : {
-        "branch" : "master",
-        "revision" : "3347f22b7fbee596da51c5acfb7815830016e4c1"
+        "revision" : "6b4286a4691c8284e665132e716d06e155cda60a"
       }
     }
   ],

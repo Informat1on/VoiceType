@@ -53,6 +53,46 @@ fi
 # Copy executable
 cp "$BUILD_PRODUCTS_DIR/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 
+# Copy SwiftPM resource bundles.  Without them the app is missing the Geist fonts
+# (VoiceType_VoiceType.bundle) and — more importantly — ggml-metal.metal
+# (SwiftWhisper_whisper_metal.bundle), in which case ggml cannot compile the Metal
+# shader at runtime and whisper silently falls back to the CPU backend.
+#
+# Their *contents* are flattened into Contents/Resources rather than copied as
+# nested .bundle directories, for two reasons:
+#   * the resource accessors SwiftPM generates look for
+#     Bundle.main.bundleURL/<Name>.bundle — i.e. the bundle root, next to
+#     Contents/ — and codesign rejects that with "unsealed contents present in
+#     the bundle root";
+#   * flat Contents/Resources is what Bundle.main.url(forResource:) and ggml's
+#     GGML_METAL_PATH_RESOURCES both expect (see AppDelegate.configureGGMLResourcePath).
+for bundle in "$BUILD_PRODUCTS_DIR"/*.bundle; do
+    [ -e "$bundle" ] || continue
+    find "$bundle" -type f -exec cp {} "$RESOURCES_DIR/" \;
+    echo "   • $(basename "$bundle") → Contents/Resources"
+done
+
+# Fail loudly rather than shipping a build that silently loses the GPU or the fonts.
+# A dangling symlink also lands here: -f follows the link.
+METAL_SHADER="$RESOURCES_DIR/ggml-metal.metal"
+if [ ! -f "$METAL_SHADER" ]; then
+    echo "❌ ggml-metal.metal missing or dangling at $METAL_SHADER — Metal backend would fall back to CPU" >&2
+    exit 1
+fi
+
+# The shipped shader must be self-contained: the runtime Metal compiler has no
+# include search path, so a leftover local #include means a CPU fallback.
+if grep -qE '^[[:space:]]*#include[[:space:]]*"' "$METAL_SHADER"; then
+    echo "❌ $METAL_SHADER still has local #include directives — regenerate it with the fork's scripts/sync-metal-shader.sh" >&2
+    exit 1
+fi
+
+FONT_COUNT=$(find "$RESOURCES_DIR" -maxdepth 1 -name "*.ttf" | wc -l | tr -d ' ')
+if [ "$FONT_COUNT" -ne 6 ]; then
+    echo "❌ Expected 6 Geist TTFs in Contents/Resources, found $FONT_COUNT" >&2
+    exit 1
+fi
+
 # Create Info.plist
 cat > "$CONTENTS_DIR/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -126,6 +166,13 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
 else
     echo "🔏 Signing with ad-hoc identity (set SIGN_IDENTITY for dev signing)"
     codesign --force --deep --entitlements "$BUILD_TEMP_DIR/entitlements.plist" --sign - "$APP_DIR"
+fi
+
+# Never report success for an artifact that would be rejected at launch — e.g. if
+# anything touched the bundle between the copy step and codesign.
+if ! codesign --verify --deep --strict "$APP_DIR"; then
+    echo "❌ codesign --verify --deep --strict failed for $APP_DIR" >&2
+    exit 1
 fi
 
 echo "✅ App bundle created at: $APP_DIR"
