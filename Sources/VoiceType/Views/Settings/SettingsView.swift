@@ -760,10 +760,10 @@ struct SettingsView: View {
             // structurally has none (small-q5_1 has no CoreML variant at all),
             // say so plainly regardless of mode — DESIGN.md's "solvable errors
             // shown inline" principle over a disabled control. `coreMLExplanation`
-            // itself now states the true outcome ("always runs on the GPU via
-            // Metal") for every mode, so no mode-specific append is needed here
-            // anymore — code review caught the old append contradicting a stale
-            // "(CPU only)" clause in the base copy.
+            // itself deliberately names no chip (it has no access to the
+            // resolved capability), so no mode-specific append is needed here
+            // anymore — code review caught two successive wrong claims there,
+            // first "(CPU only)" and then "always runs on the GPU".
             return explanation
         }
         guard let decision = accelerationDecision else {

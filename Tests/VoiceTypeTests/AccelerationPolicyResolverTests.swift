@@ -356,11 +356,10 @@ final class AccelerationPolicyResolverTests: XCTestCase {
         XCTAssertTrue(shouldInstall, "on mode must request install even while resolve() is currently metalOnly")
     }
 
-    /// Mirror case: `.auto` on metalWithTensor hardware must never ask to keep
-    /// the encoder installed, even if a prior state left one on disk —
-    /// the hypothetical query intentionally ignores the caller's real
-    /// coreMLInstalled state, so this can't drift into "keep whatever's
-    /// already there".
+    /// Mirror case: `.off` must never ask to keep the encoder installed, even
+    /// if a prior state left one on disk — the hypothetical query intentionally
+    /// ignores the caller's real coreMLInstalled state, so this can't drift
+    /// into "keep whatever's already there".
     /// Tensor-capable hardware does not change what `.auto` picks.
     ///
     /// The feature was originally planned the other way round — `.auto` was to
