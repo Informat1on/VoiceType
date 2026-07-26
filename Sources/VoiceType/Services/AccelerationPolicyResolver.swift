@@ -106,7 +106,7 @@ enum AccelerationPolicyResolver {
             // from. That plan expected the tensor API to win on M5 and had
             // `.auto` bypass CoreML there. Measurement on the real app scenario
             // says otherwise: with the model resident and warmed, CoreML is
-            // 192ms vs 231ms on a 5.4s phrase and 1209ms vs 1359ms on 81s.
+            // 189ms vs 225ms on a 5.4s phrase and 1209ms vs 1356ms on 81s.
             // The earlier "420ms vs 855ms" figure came from whisper-cli, which
             // reloads the model on every run and therefore charged each run for
             // loading the .mlmodelc into the ANE (~250-435ms). VoiceType loads
@@ -117,9 +117,9 @@ enum AccelerationPolicyResolver {
             // Capability still matters here only through `coreMLInstalled`
             // below and through the reason string — do not reintroduce a
             // per-tier branch without a fresh measurement on that tier.
-            // Не дописывать сюда «— using GPU»: при мёртвом Metal это будет CPU,
-            // а называть уже выбранный путь — работа вызывающей стороны, у неё
-            // есть capability. Причина обязана оставаться причиной.
+            // Do not append "— using GPU" to the reason below: with Metal down
+            // that outcome is the CPU. Naming the resulting path is the caller's
+            // job — it has the capability; a reason must stay a reason.
             guard coreMLInstalled else {
                 return AccelerationDecision(policy: .metalOnly, reason: "CoreML encoder not installed")
             }

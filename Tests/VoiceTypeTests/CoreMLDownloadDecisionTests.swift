@@ -25,7 +25,7 @@ final class CoreMLDownloadDecisionTests: XCTestCase {
 
     /// Tensor-capable hardware still wants the encoder. Measured on M5 Pro
     /// 2026-07-26: with the model resident and warm the ANE beats Metal+tensor
-    /// (192ms vs 231ms on a 5.4s phrase) — see
+    /// (189ms vs 225ms on a 5.4s phrase) — see
     /// scripts/bench-output/RESULTS-coreml-vs-metal-app-2026-07-26.md.
     func testAutoOnTensorHardwareStillRequestsCoreMLForSupportedModel() async {
         AppSettings.shared.coreMLMode = .auto

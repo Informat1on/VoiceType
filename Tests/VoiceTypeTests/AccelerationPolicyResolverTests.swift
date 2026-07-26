@@ -32,7 +32,7 @@ final class AccelerationPolicyResolverTests: XCTestCase {
         let table: [Row] = [
             // auto
             // Measured 2026-07-26 on M5 Pro: the ANE still wins on tensor-capable
-            // hardware once the model is resident and warm (192ms vs 231ms on a
+            // hardware once the model is resident and warm (189ms vs 225ms on a
             // 5.4s phrase). See RESULTS-coreml-vs-metal-app-2026-07-26.md — this
             // row is the one the original plan expected to go the other way.
             Row(
@@ -356,17 +356,13 @@ final class AccelerationPolicyResolverTests: XCTestCase {
         XCTAssertTrue(shouldInstall, "on mode must request install even while resolve() is currently metalOnly")
     }
 
-    /// Mirror case: `.off` must never ask to keep the encoder installed, even
-    /// if a prior state left one on disk — the hypothetical query intentionally
-    /// ignores the caller's real coreMLInstalled state, so this can't drift
-    /// into "keep whatever's already there".
     /// Tensor-capable hardware does not change what `.auto` picks.
     ///
     /// The feature was originally planned the other way round — `.auto` was to
     /// bypass CoreML on M5-class chips. Measurement on the real app scenario
     /// (model resident and warmed, which is how VoiceType runs) reversed it:
-    /// 192ms via ANE vs 231ms via Metal+tensor on a 5.4s phrase, 1209ms vs
-    /// 1359ms on 81s. The plan's "420ms vs 855ms" came from whisper-cli, which
+    /// 189ms via ANE vs 225ms via Metal+tensor on a 5.4s phrase, 1209ms vs
+    /// 1356ms on 81s. The plan's "420ms vs 855ms" came from whisper-cli, which
     /// reloads the model every run and so paid the ANE load cost each time.
     /// Full write-up: scripts/bench-output/RESULTS-coreml-vs-metal-app-2026-07-26.md
     ///
