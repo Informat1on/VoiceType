@@ -796,8 +796,8 @@ struct SettingsView: View {
         if accelerationDecision?.policy == .coreML {
             return Palette.success
         }
-        // GPU-only by resolved policy is a normal, often faster outcome (M5 Auto,
-        // or mode .off) — not a problem state, so no warning tint here anymore.
+        // GPU-only by resolved policy is a normal outcome (mode .off, or a model
+        // that ships no encoder) — not a problem state, so no warning tint here.
         return Palette.textSecondary
     }
 

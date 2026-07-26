@@ -89,16 +89,28 @@ final class TranscriptionModelTests: XCTestCase {
     /// CPU-bound. The explanation text used to say "(CPU only)" while
     /// SettingsView's footnote said "always runs on the GPU" right next to it;
     /// this guards against that contradiction resurfacing.
-    func testSmallQ5ExplanationDoesNotClaimCPUOnly() {
+    /// This string must not name a chip at all.
+    ///
+    /// It went through both wrong answers already: "(CPU only)" was false
+    /// because whisper.cpp falls through to the Metal encoder, and the "runs on
+    /// the GPU" that replaced it is false whenever Metal failed to initialise —
+    /// then it really is the CPU. `coreMLExplanation` has no access to the
+    /// resolved `AcceleratorCapability`, so it cannot know which is true;
+    /// naming the chip is the Settings footnote's job, and it does have that
+    /// input. Here we state only what holds unconditionally: this model ships
+    /// no CoreML encoder, so the Neural Engine setting does nothing for it.
+    func testSmallQ5ExplanationNamesNoChip() {
         let explanation = TranscriptionModel.smallQ5.coreMLExplanation
         XCTAssertNotNil(explanation)
-        XCTAssertFalse(
-            explanation?.localizedCaseInsensitiveContains("CPU only") ?? true,
-            "coreMLExplanation must not claim CPU-only — small-q5_1 runs on the GPU via Metal (code review)"
-        )
+        for chip in ["CPU", "GPU", "Metal"] {
+            XCTAssertFalse(
+                explanation?.localizedCaseInsensitiveContains(chip) ?? true,
+                "coreMLExplanation must not name \(chip) — it cannot know which one actually runs (code review)"
+            )
+        }
         XCTAssertTrue(
-            explanation?.localizedCaseInsensitiveContains("GPU") ?? false,
-            "coreMLExplanation must state the true outcome: this model runs on the GPU"
+            explanation?.localizedCaseInsensitiveContains("Neural Engine") ?? false,
+            "coreMLExplanation should say what the setting does for this model"
         )
     }
 

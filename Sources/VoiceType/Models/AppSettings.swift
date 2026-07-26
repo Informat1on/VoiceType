@@ -147,15 +147,17 @@ enum TranscriptionModel: String, Codable, CaseIterable {
     var coreMLExplanation: String? {
         switch self {
         case .smallQ5:
-            // Not CPU-only: whisper.cpp still falls through to the Metal
-            // encoder when no CoreML bundle is present (WHISPER_COREML_ALLOW_FALLBACK
-            // — see TranscriptionService.shadowModelURL's doc comment for the
-            // same mechanism used deliberately elsewhere). The old "(CPU only)"
-            // wording contradicted SettingsView's own "always runs on the GPU"
-            // follow-up text — this is the single source of truth now, valid
-            // for every coreMLMode (code review, DESIGN.md Decisions Log 2026-07-26).
-            return "Q5 quantized models don't support CoreML — this model always runs"
-                + " on the GPU via Metal, regardless of the Neural Engine setting."
+            // Deliberately says nothing about which chip ends up running this.
+            // The old "(CPU only)" was wrong (whisper.cpp falls through to the
+            // Metal encoder — WHISPER_COREML_ALLOW_FALLBACK), and the "always
+            // runs on the GPU" that replaced it is wrong too whenever Metal
+            // failed to come up, in which case it really is the CPU. Only the
+            // Settings footnote knows the resolved `AcceleratorCapability`, so
+            // naming the chip is its job — this string states just the fact
+            // that holds in every case (code review, DESIGN.md Decisions Log
+            // 2026-07-26).
+            return "Q5 quantized models don't ship a CoreML encoder — the Neural Engine"
+                + " setting has no effect on this model."
         default: return nil
         }
     }

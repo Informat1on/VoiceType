@@ -117,8 +117,11 @@ enum AccelerationPolicyResolver {
             // Capability still matters here only through `coreMLInstalled`
             // below and through the reason string — do not reintroduce a
             // per-tier branch without a fresh measurement on that tier.
+            // Не дописывать сюда «— using GPU»: при мёртвом Metal это будет CPU,
+            // а называть уже выбранный путь — работа вызывающей стороны, у неё
+            // есть capability. Причина обязана оставаться причиной.
             guard coreMLInstalled else {
-                return AccelerationDecision(policy: .metalOnly, reason: "CoreML encoder not installed — using GPU")
+                return AccelerationDecision(policy: .metalOnly, reason: "CoreML encoder not installed")
             }
             switch capability {
             case .metalWithTensor, .metal:

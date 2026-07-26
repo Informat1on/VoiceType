@@ -1,11 +1,14 @@
 import XCTest
 @testable import VoiceType
 
-// Coverage for the CoreML/Metal accelerator selection policy introduced to
-// stop whisper.cpp from unconditionally routing the encoder to CoreML/ANE
-// on M5-class Metal 4 tensor hardware, where the Metal path is faster
-// (measured on M5 Pro: 420ms Metal-only vs 855ms with CoreML for a short
-// phrase).
+// Coverage for the CoreML/Metal accelerator selection policy.
+//
+// The policy exists because whisper.cpp otherwise routes the encoder to
+// CoreML/ANE unconditionally, with no way for the app to decide. It was built
+// expecting M5-class tensor hardware to want the opposite — measurement said
+// no, the ANE stays faster (189ms vs 225ms on a short phrase; see
+// scripts/bench-output/RESULTS-coreml-vs-metal-app-2026-07-26.md), so Auto
+// keeps CoreML everywhere and GPU-only is a manual choice.
 //
 // AccelerationPolicyResolver is pure (no file system, ModelManager, or
 // AppSettings access), so every row of both spec tables is exercised
