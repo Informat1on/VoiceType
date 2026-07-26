@@ -81,4 +81,36 @@ final class TranscriptionModelTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - Defect 2 (code review): coreMLExplanation must not contradict SettingsView's GPU claim
+
+    /// small-q5_1 has no CoreML encoder, but whisper.cpp still falls through to
+    /// Metal for its encoder (WHISPER_COREML_ALLOW_FALLBACK) — it is not
+    /// CPU-bound. The explanation text used to say "(CPU only)" while
+    /// SettingsView's footnote said "always runs on the GPU" right next to it;
+    /// this guards against that contradiction resurfacing.
+    func testSmallQ5ExplanationDoesNotClaimCPUOnly() {
+        let explanation = TranscriptionModel.smallQ5.coreMLExplanation
+        XCTAssertNotNil(explanation)
+        XCTAssertFalse(
+            explanation?.localizedCaseInsensitiveContains("CPU only") ?? true,
+            "coreMLExplanation must not claim CPU-only — small-q5_1 runs on the GPU via Metal (code review)"
+        )
+        XCTAssertTrue(
+            explanation?.localizedCaseInsensitiveContains("GPU") ?? false,
+            "coreMLExplanation must state the true outcome: this model runs on the GPU"
+        )
+    }
+
+    /// Regression guard: every other model has no CoreML explanation at all
+    /// (they all ship a CoreML variant), so this text path only ever applies
+    /// to small-q5_1.
+    func testOnlySmallQ5HasACoreMLExplanation() {
+        for model in TranscriptionModel.allCases where model != .smallQ5 {
+            XCTAssertNil(
+                model.coreMLExplanation,
+                "\(model.rawValue) ships a CoreML variant and should have no explanation text"
+            )
+        }
+    }
 }

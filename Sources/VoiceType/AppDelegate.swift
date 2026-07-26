@@ -113,6 +113,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupServices()
         setupHotkeyCallbacks()
         setupBindings()
+
+        // One-shot sweep for scratch directories a hard crash could have left
+        // behind (CoreML unzip staging, Metal-only shadow-symlink staging —
+        // see ModelManager.cleanUpOrphanedScratchDirectories). Every normal
+        // code path already cleans up after itself; this only matters after
+        // an abnormal exit, so once per launch — before anything else touches
+        // the models directory — is enough.
+        modelManager.cleanUpOrphanedScratchDirectories()
+
         preloadModelIfNeeded()
         registerEvalHotkey()
 
@@ -578,6 +587,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         return pendingModelLoadRequest.model != request.model
     }
 
+    /// Polls `isBusy` until it clears or `deadline` passes, sleeping
+    /// `pollInterval` nanoseconds between checks rather than busy-waiting.
+    ///
+    /// Mirrors `TranscriptionService.shutdown()`'s own drain loop, but with a
+    /// much longer deadline (`modelLoadDrainTimeout` vs `shutdownDrainTimeout`):
+    /// `shutdown()` bounds its wait to keep app-quit latency reasonable and has
+    /// a hard fallback (`_exit`) if it times out. This wait runs unobserved in
+    /// the background while the app is otherwise idle, so it can afford to be
+    /// generous with any legitimate (if long) transcription instead of giving
+    /// up on the pending request too early.
+    ///
+    /// Exposed `internal` (not `private`) so `AppDelegateModelLoadDrainTests`
+    /// can exercise the polling/deadline behaviour directly — the caller
+    /// (`loadModel(for:)`) also touches `ModelManager.downloadModel` (real
+    /// network) and `TranscriptionService.loadModel` (a real Whisper context),
+    /// neither of which this test target can drive; see the "Coverage gaps"
+    /// notes in ModelStatusTests.swift for the established precedent.
+    ///
+    /// - Returns: `true` once `isBusy()` reports false, `false` if `deadline`
+    ///   passed while it was still true — callers must treat that as "give up
+    ///   and log", never as license to retry in a tight loop.
+    static func drain(
+        until isBusy: () -> Bool,
+        deadline: Date,
+        pollInterval: UInt64 = 50_000_000
+    ) async -> Bool {
+        while isBusy() && Date() < deadline {
+            try? await Task.sleep(nanoseconds: pollInterval)
+        }
+        return !isBusy()
+    }
+
+    /// How long `loadModel(for:)` waits for an in-flight transcription to
+    /// finish before giving up on applying a pending model/accelerator-mode
+    /// change. Much longer than `TranscriptionService.shutdownDrainTimeout`
+    /// (5s) on purpose — see `drain`'s doc comment.
+    private static let modelLoadDrainTimeout: TimeInterval = 60.0
+
     private func loadModel(for request: ModelLoadRequest) async {
         let model = request.model
 
@@ -598,7 +645,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             print("[AppDelegate] Model not downloaded, downloading...")
             AppLog.models.notice("Downloading model \(model.rawValue, privacy: .public)")
             do {
-                try await modelManager.downloadModel(model: model)
+                let includeCoreML = await CoreMLDownloadDecision.shouldInstall(for: model)
+                try await modelManager.downloadModel(model: model, includeCoreML: includeCoreML)
                 print("[AppDelegate] Model downloaded successfully")
                 AppLog.models.notice("Model download finished for \(model.rawValue, privacy: .public)")
             } catch {
@@ -611,11 +659,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 )
                 return
             }
-        } else if request.downloadCoreMLIfNeeded && model.hasCoreMLSupport && !modelManager.isCoreMLModelDownloaded(model: model) {
+        } else if request.downloadCoreMLIfNeeded && !modelManager.isCoreMLModelDownloaded(model: model),
+                  await CoreMLDownloadDecision.shouldInstall(for: model) {
             print("[AppDelegate] CoreML not downloaded, downloading for GPU acceleration...")
             AppLog.models.notice("Downloading CoreML assets for \(model.rawValue, privacy: .public)")
             do {
-                try await modelManager.downloadModel(model: model)
+                try await modelManager.downloadModel(model: model, includeCoreML: true)
                 print("[AppDelegate] CoreML downloaded successfully")
                 AppLog.models.notice("CoreML assets ready for \(model.rawValue, privacy: .public)")
             } catch {
@@ -630,6 +679,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             print("[AppDelegate] Skipping stale model load for \(model.rawValue)")
             AppLog.models.notice("Skipping stale model load for \(model.rawValue, privacy: .public)")
             return
+        }
+
+        // Wait out an in-flight transcription instead of losing this request.
+        // `unloadModel()`/`loadModel()` below both refuse to touch the context
+        // while `isTranscribing` (UAF guard — see their doc comments in
+        // TranscriptionService), and calling them unconditionally used to mean
+        // the request — already popped off `pendingModelLoadRequest` — was
+        // simply discarded on that guard, leaving the old model/accelerator in
+        // place until the next reload or app restart (Codex review finding on
+        // the M5 acceleration-policy work; pre-existing for plain model
+        // switches too, just less visible there). See `drain`'s doc comment.
+        if transcriptionService.isTranscribing {
+            let deadline = Date().addingTimeInterval(Self.modelLoadDrainTimeout)
+            let drained = await Self.drain(
+                until: { [weak self] in self?.transcriptionService.isTranscribing ?? false },
+                deadline: deadline
+            )
+            guard drained else {
+                let message = "Could not apply change for \(model.rawValue): transcription still active after \(Self.modelLoadDrainTimeout)s wait"
+                print("[AppDelegate] \(message)")
+                AppLog.models.error("\(message, privacy: .public)")
+                ErrorLogger.shared.log(message: message, category: "models", context: ["model": model.rawValue])
+                return
+            }
+
+            // A newer request may have superseded this one while we waited.
+            if hasNewerModelLoadRequest(than: request) {
+                print("[AppDelegate] Skipping stale model load for \(model.rawValue) after drain wait")
+                AppLog.models.notice("Skipping stale model load for \(model.rawValue, privacy: .public) after drain wait")
+                return
+            }
         }
 
         let modelURL = modelManager.modelURL(for: model)
@@ -652,6 +732,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func applyInitialPrompt() {
         transcriptionService.applyInitialPrompt()
+    }
+
+    /// Called when the user changes `AppSettings.shared.coreMLMode` — the
+    /// Settings UI owns the subscription (see SettingsView) and calls this on
+    /// every change. Routes through the same queued load path as a model
+    /// switch (`scheduleModelLoad`/`pendingModelLoadRequest`): switching into
+    /// `.on` needs `downloadCoreMLIfNeeded: true` so a missing encoder gets
+    /// backfilled, and reusing the queue — rather than reloading inline —
+    /// means a request arriving mid-transcription waits (via `drain` inside
+    /// `loadModel(for:)`) for the current transcription to finish instead of
+    /// yanking the model out from under it, exactly like an ordinary model
+    /// switch does.
+    func reloadModelForAccelerationModeChange() {
+        scheduleModelLoad(AppSettings.shared.selectedModel, downloadCoreMLIfNeeded: true)
     }
 
     private func preloadModelIfNeeded() {

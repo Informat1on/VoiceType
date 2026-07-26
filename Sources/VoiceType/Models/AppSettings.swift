@@ -36,6 +36,38 @@ enum TextInjectionMode: String, Codable, CaseIterable {
     }
 }
 
+enum CoreMLMode: String, Codable, CaseIterable {
+    // No explicit raw string literals: rawValue already equals the case name
+    // for all three, and spelling it out would trip the `redundant_string_enum_value`
+    // opt-in lint rule (unlike e.g. TranscriptionModel's largeV3Turbo, where the
+    // literal differs from the case name and the explicit form earns its keep).
+    case auto
+    case on
+    case off
+
+    /// Short label for the Settings → Models "Accelerator" segmented control.
+    /// Mirrors `Language.displayName` (short) / `longDisplayName` (full) split —
+    /// see DESIGN.md Decisions Log 2026-07-26. Replaces an engineer-facing
+    /// draft ("Auto (Recommended)" / "Always On" / "Always Off") with copy that
+    /// names the chip, not the settings state.
+    var displayName: String {
+        switch self {
+        case .auto: return "Auto"
+        case .on:   return "Neural Engine"
+        case .off:  return "GPU"
+        }
+    }
+
+    /// Full sentence for VoiceOver and accessibility values.
+    var longDisplayName: String {
+        switch self {
+        case .auto: return "Auto — VoiceType picks the fastest chip for this Mac"
+        case .on:   return "Always use the Neural Engine"
+        case .off:  return "Always use the GPU"
+        }
+    }
+}
+
 enum TranscriptionModel: String, Codable, CaseIterable {
     case tiny = "tiny"
     case base = "base"
@@ -114,7 +146,16 @@ enum TranscriptionModel: String, Codable, CaseIterable {
 
     var coreMLExplanation: String? {
         switch self {
-        case .smallQ5: return "Q5 quantized models don't support CoreML (CPU only)"
+        case .smallQ5:
+            // Not CPU-only: whisper.cpp still falls through to the Metal
+            // encoder when no CoreML bundle is present (WHISPER_COREML_ALLOW_FALLBACK
+            // — see TranscriptionService.shadowModelURL's doc comment for the
+            // same mechanism used deliberately elsewhere). The old "(CPU only)"
+            // wording contradicted SettingsView's own "always runs on the GPU"
+            // follow-up text — this is the single source of truth now, valid
+            // for every coreMLMode (code review, DESIGN.md Decisions Log 2026-07-26).
+            return "Q5 quantized models don't support CoreML — this model always runs"
+                + " on the GPU via Metal, regardless of the Neural Engine setting."
         default: return nil
         }
     }
@@ -224,6 +265,10 @@ final class AppSettings: ObservableObject {
         didSet { save() }
     }
 
+    @Published var coreMLMode: CoreMLMode {
+        didSet { save() }
+    }
+
     private let defaults = UserDefaults.standard
 
     private init() {
@@ -280,6 +325,10 @@ final class AppSettings: ObservableObject {
         self.textInjectionMode = TextInjectionMode(rawValue: defaults.string(forKey: "textInjectionMode") ?? "") ?? .paste
         self.trimWhitespaceAfterInsert = defaults.object(forKey: "trimWhitespaceAfterInsert") as? Bool ?? true
 
+        // Default .auto — including for existing users who never saw this setting
+        // before it existed (no stored raw value falls through to .auto).
+        self.coreMLMode = CoreMLMode(rawValue: defaults.string(forKey: "coreMLMode") ?? "") ?? .auto
+
         // Persist migrated Control bit back to UserDefaults so subsequent launches
         // skip the remap. Only writes when migration actually changed the value.
         if storedModifiers != 0 && storedModifiers != self.hotkeyModifiers {
@@ -298,6 +347,7 @@ final class AppSettings: ObservableObject {
         defaults.set(indicatorStyle.rawValue, forKey: "indicatorStyle")
         defaults.set(textInjectionMode.rawValue, forKey: "textInjectionMode")
         defaults.set(trimWhitespaceAfterInsert, forKey: "trimWhitespaceAfterInsert")
+        defaults.set(coreMLMode.rawValue, forKey: "coreMLMode")
     }
 }
 

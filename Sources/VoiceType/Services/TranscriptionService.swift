@@ -291,6 +291,125 @@ final class TranscriptionService: ObservableObject {
     /// native context still under construction must not outlive the shutdown drain.
     private var activeModelLoads = 0
 
+    // MARK: - Metal-only shadow path
+
+    /// Builds (or reuses) `<Models>/.metal-only/<same filename>` as a relative
+    /// symlink to `../<same filename>` and returns its URL.
+    ///
+    /// Why this works without touching whisper.cpp: `whisper_get_coreml_path_encoder`
+    /// (whisper.cpp:3328, `src/whisper.cpp` in the SwiftWhisper fork) derives the
+    /// CoreML encoder path from the *string* passed to `Whisper(fromFileURL:)` —
+    /// it never calls `realpath`. Handing it a same-named symlink that lives one
+    /// directory away from the real `-encoder.mlmodelc` bundle makes its own
+    /// lookup fail (no sibling encoder next to the symlink), and the fork —
+    /// built with `WHISPER_COREML_ALLOW_FALLBACK` — falls through to Metal. The
+    /// real model file never moves and is never touched.
+    ///
+    /// Exposed `internal` (not `private`) so `TranscriptionServiceShadowPathTests`
+    /// can exercise the filesystem logic directly without booting a Whisper context.
+    ///
+    /// - Throws: whenever a correct symlink cannot be produced. Never falls back
+    ///   to returning `url` itself on failure — a silent fallback here would
+    ///   silently re-enable CoreML against the resolved policy, which is exactly
+    ///   the class of quiet lie the M5 CoreML-bypass work was fixing in the
+    ///   first place (a stale "CoreML: enabled" log line that had been wrong for
+    ///   years). Callers must treat a throw as a hard model-load failure.
+    static func shadowModelURL(for url: URL) throws -> URL {
+        // Shared with ModelManager.deleteModel, which must remove this same
+        // symlink when its target model is deleted — see the constant's doc
+        // comment for why it isn't a private literal here.
+        let metalOnlyShadowDirectoryName = AccelerationPolicyResolver.metalOnlyShadowDirectoryName
+        let fm = FileManager.default
+        let modelsDir = url.deletingLastPathComponent()
+        let shadowDir = modelsDir.appendingPathComponent(metalOnlyShadowDirectoryName, isDirectory: true)
+        let filename = url.lastPathComponent
+        let target = shadowDir.appendingPathComponent(filename)
+        // Must match exactly what createSymbolicLink below writes — this is the
+        // string compared against destinationOfSymbolicLink() when reusing.
+        let relativeDestination = "../" + filename
+
+        func shadowError(_ reason: String) -> NSError {
+            NSError(
+                domain: "TranscriptionService.ShadowSymlink",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Metal-only shadow path for \(filename): \(reason)"]
+            )
+        }
+
+        // shadowDir may already exist as a plain file from some unrelated cause —
+        // fail loudly instead of trying (and failing) to mkdir over it.
+        var shadowDirIsDirectory: ObjCBool = false
+        if fm.fileExists(atPath: shadowDir.path, isDirectory: &shadowDirIsDirectory) {
+            guard shadowDirIsDirectory.boolValue else {
+                throw shadowError("\(metalOnlyShadowDirectoryName) exists and is not a directory")
+            }
+        } else {
+            do {
+                try fm.createDirectory(at: shadowDir, withIntermediateDirectories: true)
+            } catch {
+                throw shadowError("could not create \(metalOnlyShadowDirectoryName) directory: \(error.localizedDescription)")
+            }
+        }
+
+        // Reuse-as-is: if a correct symlink is already sitting there (the common
+        // case — most loads reload the same model), skip the write entirely and
+        // avoid any window where `target` doesn't exist.
+        if let existingDestination = try? fm.destinationOfSymbolicLink(atPath: target.path),
+           existingDestination == relativeDestination {
+            return target
+        }
+
+        // Something else occupies `target` that is not the correct symlink — a
+        // stray regular file/directory (as opposed to a symlink pointing
+        // elsewhere, e.g. left over from a renamed model) must not be silently
+        // clobbered by the rename() below, which replaces whatever is there.
+        var targetIsDirectory: ObjCBool = false
+        if fm.fileExists(atPath: target.path, isDirectory: &targetIsDirectory) {
+            var isSymlink = false
+            if let attrs = try? fm.attributesOfItem(atPath: target.path) {
+                isSymlink = (attrs[.type] as? FileAttributeType) == .typeSymbolicLink
+            }
+            guard isSymlink else {
+                throw shadowError("a non-symlink already exists at the shadow path")
+            }
+        }
+
+        // Atomic install: write a uniquely-named symlink, then rename() it onto
+        // `target`. rename(2) is atomic at the filesystem level and simply
+        // replaces whatever inode (including a stale symlink) is at the
+        // destination — there is no window where `target` is missing. This
+        // matters because loadModel() only serialises via a generation counter,
+        // not a mutex (see modelLoadGeneration doc above loadModel): two
+        // overlapping loads of the same model can both reach this function, and
+        // Whisper(fromFileURL:) opens `target` on a background queue. A
+        // remove-then-create would let the second call's create observe a
+        // momentarily-missing path and hand the first call's still-running
+        // constructor an ENOENT. FileManager.replaceItemAt is not used here —
+        // it is documented and implemented around swapping regular
+        // files/directories (backup-and-restore semantics) and is not the
+        // primitive for atomically repointing a symlink; rename(2) is.
+        let tempURL = shadowDir.appendingPathComponent(".shadow-\(UUID().uuidString)")
+        do {
+            try fm.createSymbolicLink(atPath: tempURL.path, withDestinationPath: relativeDestination)
+        } catch {
+            throw shadowError("failed to create symlink: \(error.localizedDescription)")
+        }
+
+        let renameResult: Int32 = tempURL.withUnsafeFileSystemRepresentation { tempFS in
+            target.withUnsafeFileSystemRepresentation { targetFS in
+                guard let tempFS, let targetFS else { return -1 }
+                return rename(tempFS, targetFS)
+            }
+        }
+        guard renameResult == 0 else {
+            let errnoMessage = String(cString: strerror(errno))
+            try? fm.removeItem(at: tempURL)
+            throw shadowError("rename() failed: \(errnoMessage)")
+        }
+
+        return target
+    }
+
     func loadModel(at url: URL, language: Language = .auto, model: TranscriptionModel? = nil) async throws {
         // Nothing may create a native context once the teardown has started —
         // it would outlive the drain and hit the atexit assert.  See shutdown().
@@ -353,7 +472,71 @@ final class TranscriptionService: ObservableObject {
         // Use ModelManager's authoritative CoreML URL instead of fragile string replacement
         let coreMLURL: URL? = model.map { ModelManager.shared.coreMLModelURL(for: $0) }
         let hasCoreML = coreMLURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-        print("[TranscriptionService] CoreML encoder available: \(hasCoreML) at \(coreMLURL?.lastPathComponent ?? "N/A")")
+
+        // Contract from AccelerationPolicyResolver.resolve's doc comment: a model
+        // that doesn't ship a CoreML encoder (hasCoreMLSupport == false) must never
+        // report one as "installed" here, even if a *different* model's encoder
+        // bundle happens to sit on disk under a name whisper.cpp's own `-qX_X`
+        // suffix stripping would also match (see ModelManager.needsCoreMLDownload) —
+        // otherwise e.g. smallQ5 could silently pick up small's encoder.
+        let modelSupportsCoreML = model?.hasCoreMLSupport ?? false
+        let coreMLInstalledForPolicy = modelSupportsCoreML && hasCoreML
+
+        let tensorCapability = await AcceleratorCapabilityProvider.shared.current()
+        let decision = AccelerationPolicyResolver.resolve(
+            mode: AppSettings.shared.coreMLMode,
+            capability: tensorCapability,
+            coreMLInstalled: coreMLInstalledForPolicy
+        )
+
+        // .coreML: effectiveURL is `url`, byte-for-byte identical to pre-M5
+        // behavior — there is no M3/M4 hardware available here to verify a
+        // changed CoreML path against, so it must not change at all.
+        // .metalOnly: route through the shadow symlink so whisper.cpp's own
+        // CoreML lookup fails and it falls through to Metal. See
+        // shadowModelURL's doc comment for the mechanism.
+        let effectiveURL: URL
+        switch decision.policy {
+        case .coreML:
+            effectiveURL = url
+        case .metalOnly:
+            do {
+                effectiveURL = try Self.shadowModelURL(for: url)
+            } catch {
+                // Never fall back to `url` on failure — that would silently
+                // re-enable CoreML against the resolved policy. See
+                // shadowModelURL's doc comment for why that is unacceptable.
+                let message = "Failed to prepare Metal-only shadow path for \(url.lastPathComponent): \(error.localizedDescription)"
+                print("[TranscriptionService] \(message)")
+                AppLog.models.error("\(message, privacy: .public)")
+                ErrorLogger.shared.log(message: message, category: "models", context: ["stage": "shadow-symlink"])
+                modelStatus = .error(message)
+                throw TranscriptionError.modelLoadFailed(error)
+            }
+        }
+
+        if decision.policy == .metalOnly {
+            // ggml is about to print its own "whisper_init_state: failed to load
+            // Core ML model ..." line below — that failure is the whole point of
+            // the shadow path, not a regression. Say so up front so the next
+            // person reading the log doesn't go "fix" it.
+            print("[TranscriptionService] Expected next: whisper.cpp will report it could not find a CoreML encoder — intentional (Metal-only policy: \(decision.reason)).")
+        }
+
+        let coreMLRequested = decision.policy == .coreML
+        // whisper.cpp never exposes state->ctx_coreml, so "loaded" can't be
+        // observed from here — coreMLAttempted only says whether we left the
+        // real path in place for whisper.cpp to *try* CoreML on, not whether it
+        // actually succeeded. Do not rename this to "coreMLActuallyLoaded" or
+        // similar; that would repeat the exact false-confidence bug this
+        // diagnostic replaces (see CLAUDE.md task context / prior session).
+        let coreMLAttempted = effectiveURL == url
+        print(
+            "[TranscriptionService] Acceleration decision: policy=\(decision.policy), reason=\"\(decision.reason)\", tensorCapability=\(tensorCapability), coreMLInstalled=\(coreMLInstalledForPolicy), coreMLRequested=\(coreMLRequested), coreMLAttempted=\(coreMLAttempted)"
+        )
+        AppLog.models.notice(
+            "Acceleration decision: policy=\(String(describing: decision.policy), privacy: .public) reason=\(decision.reason, privacy: .public) tensorCapability=\(String(describing: tensorCapability), privacy: .public) coreMLInstalled=\(coreMLInstalledForPolicy) coreMLRequested=\(coreMLRequested) coreMLAttempted=\(coreMLAttempted)"
+        )
 
         print(
             "[TranscriptionService] Loading model: \(currentModelName ?? "unknown") (lang: \(whisperLanguageRawValue), detectLanguage: \(shouldDetectLanguage), threads: \(threadCount))"
@@ -374,17 +557,11 @@ final class TranscriptionService: ObservableObject {
                 params.print_special = false
                 params.print_realtime = false
 
-                continuation.resume(returning: Whisper(fromFileURL: url, withParams: params))
+                continuation.resume(returning: Whisper(fromFileURL: effectiveURL, withParams: params))
             }
         }
         let loadTime = CFAbsoluteTimeGetCurrent() - startTime
         print("[TranscriptionService] Model \(currentModelName ?? "unknown") loaded in \(String(format: "%.2f", loadTime))s")
-        // The CoreML encoder and the ggml Metal backend are independent: CoreML only
-        // replaces the encoder, everything else runs on Metal (or CPU if Metal failed
-        // to initialise).  Reporting "CPU only" whenever CoreML is absent used to hide
-        // a broken Metal backend — say what we actually know and let the ggml log lines
-        // (`whisper_backend_init_gpu: using Metal backend`) speak for the rest.
-        print("[TranscriptionService] CoreML encoder: \(hasCoreML ? "enabled" : "not used") — see ggml log above for the compute backend")
         AppLog.models.notice("Model load finished")
 
         // H1: If a newer loadModel call has already committed a different model,

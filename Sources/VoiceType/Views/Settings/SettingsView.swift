@@ -41,6 +41,15 @@ struct SettingsView: View {
     /// so presets are the primary UI; power users can expand to pick any model.
     @State private var isAdvancedModelsExpanded = false
 
+    /// Hardware accelerator capability, loaded once via `.task {}` in `modelsTab`.
+    /// `AcceleratorCapabilityProvider` caches this for the process lifetime (see its
+    /// doc comment), so re-reading it on every tab visit is cheap — the awaited call
+    /// resolves immediately once the first probe (usually already run by
+    /// `AppDelegate.preloadModelIfNeeded()` at launch) has completed. `nil` means
+    /// "still probing" and drives the neutral loading state in the CoreML badges
+    /// below, so the view never blocks on this or shows a stale answer.
+    @State private var acceleratorCapability: AcceleratorCapability?
+
     var body: some View {
         // Flat HStack layout per prototype .settings-window { display:flex }
         // Replaces NavigationSplitView + List (codex audit P1).
@@ -180,6 +189,41 @@ struct SettingsView: View {
         ModelPresetRow.all.first { $0.model == settings.selectedModel }
     }
 
+    /// What will actually happen on the next transcription, given the current
+    /// mode, hardware, and what's on disk for the selected model. `nil` while
+    /// `acceleratorCapability` is still probing (see its doc comment) — every
+    /// caller must handle that as a neutral "checking" state, not fall back to
+    /// guessing from disk presence the way this view used to.
+    private var accelerationDecision: AccelerationDecision? {
+        guard let acceleratorCapability else { return nil }
+        let model = settings.selectedModel
+        // Caller contract on AccelerationPolicyResolver.resolve: coreMLInstalled
+        // must be false for a model with no CoreML variant at all, regardless of
+        // what's on disk for some other model.
+        let coreMLInstalled = model.hasCoreMLSupport && modelManager.isCoreMLModelDownloaded(model: model)
+        return AccelerationPolicyResolver.resolve(
+            mode: settings.coreMLMode,
+            capability: acceleratorCapability,
+            coreMLInstalled: coreMLInstalled
+        )
+    }
+
+    /// Whether tapping "Download" for the selected model will also fetch its
+    /// CoreML encoder — the same query `CoreMLDownloadDecision.shouldInstall`
+    /// answers live at tap time, computed here synchronously from the already-
+    /// probed capability so the button label doesn't lie before it's pressed
+    /// (DESIGN.md Decisions Log 2026-07-26). Falls back to `hasCoreMLSupport`
+    /// while the capability probe is still in flight — a brief, harmless
+    /// overstatement that self-corrects the moment `acceleratorCapability` resolves.
+    private var willIncludeCoreMLOnDownload: Bool {
+        guard let acceleratorCapability else { return settings.selectedModel.hasCoreMLSupport }
+        return AccelerationPolicyResolver.shouldInstallCoreML(
+            mode: settings.coreMLMode,
+            capability: acceleratorCapability,
+            modelSupportsCoreML: settings.selectedModel.hasCoreMLSupport
+        )
+    }
+
     private var modelsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -257,6 +301,29 @@ struct SettingsView: View {
                 // MARK: CORE ML group
                 GroupHeader(title: "Core ML")
                 RowDivider()
+
+                // Accelerator mode — segmented control instead of the single toggle
+                // DESIGN.md:187 reserved for this group. Three states (auto/pin
+                // Neural Engine/pin GPU) don't fold into a toggle's two; see
+                // DESIGN.md Decisions Log 2026-07-26. Changing this must reload the
+                // model through AppDelegate's existing queue, or the new mode has no
+                // effect until the app restarts.
+                PrefsRow("Accelerator",
+                         subtitle: "Auto picks the fastest chip for this Mac. Pin Neural Engine or GPU to override it.") {
+                    SegmentedControl(
+                        options: CoreMLMode.allCases.map {
+                            (label: $0.displayName, value: $0, accessibilityLabel: $0.longDisplayName)
+                        },
+                        selection: $settings.coreMLMode
+                    )
+                    .accessibilityLabel("Accelerator")
+                    .accessibilityValue(settings.coreMLMode.longDisplayName)
+                    .onChange(of: settings.coreMLMode) { _ in
+                        (NSApp.delegate as? AppDelegate)?.reloadModelForAccelerationModeChange()
+                    }
+                }
+                RowDivider()
+
                 PrefsRow("Main model") {
                     modelStatusBadge
                 }
@@ -285,9 +352,16 @@ struct SettingsView: View {
                 } else {
                     HStack {
                         Spacer()
-                        Button("Download (with CoreML)") {
+                        // Label reflects the live policy decision, not a hardcoded
+                        // assumption — in mode Off, or for a model that ships no
+                        // encoder, this download fetches no encoder at all, so the
+                        // old unconditional "(with CoreML)" suffix was false there.
+                        // DESIGN.md Decisions Log 2026-07-26.
+                        Button(willIncludeCoreMLOnDownload ? "Download (with Neural Engine)" : "Download") {
                             Task {
-                                try? await modelManager.downloadModel(model: settings.selectedModel)
+                                let model = settings.selectedModel
+                                let includeCoreML = await CoreMLDownloadDecision.shouldInstall(for: model)
+                                try? await modelManager.downloadModel(model: model, includeCoreML: includeCoreML)
                             }
                         }
                         .buttonStyle(.borderedProminent)
@@ -311,6 +385,14 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .scrollIndicators(.hidden)
+        // Probe once per Models-tab visit; AcceleratorCapabilityProvider caches
+        // forever after the first real probe (see its doc comment), so repeat
+        // visits resolve immediately. Usually already warm by the time Settings
+        // opens — AppDelegate.preloadModelIfNeeded() triggers the same probe at
+        // launch — so this rarely shows the "Checking…" state in practice.
+        .task {
+            acceleratorCapability = await AcceleratorCapabilityProvider.shared.current()
+        }
     }
 
     // MARK: - Tab 3: Shortcuts
@@ -639,46 +721,83 @@ struct SettingsView: View {
         }
     }
 
+    /// Reflects the live `AccelerationDecision`, not disk presence. The old
+    /// version inferred "GPU acceleration enabled" purely from the encoder file
+    /// existing on disk — wrong whenever the resolved policy skips CoreML despite
+    /// the file being there (mode `.off`), and equally wrong when Metal itself
+    /// never came up. DESIGN.md Decisions Log 2026-07-26.
     private var coreMLStatusBadge: some View {
         Group {
             if !settings.selectedModel.hasCoreMLSupport {
                 StatusBadge("Not supported")
             } else if modelManager.isDownloading {
                 StatusBadge("Downloading", tone: .accent)
+            } else if acceleratorCapability == nil {
+                StatusBadge("Checking…")
+            } else if accelerationDecision?.policy == .coreML {
+                StatusBadge("Active", tone: .positive)
             } else if modelManager.isCoreMLModelDownloaded(model: settings.selectedModel) {
-                StatusBadge("Ready", tone: .positive)
+                // On disk but the resolved policy is routing around it — mode Off,
+                // or a model whose encoder does not match the selected variant.
+                StatusBadge("On disk · not used")
             } else {
-                StatusBadge("Not available", tone: .warning)
+                StatusBadge("Not installed")
             }
         }
     }
 
-    // MARK: - Model Footnote (logic preserved, colors migrated to Palette tokens)
+    // MARK: - Model Footnote
+    //
+    // Rewritten to state the real outcome (which chip, and why) instead of
+    // inferring it from encoder-file presence. DESIGN.md Decisions Log 2026-07-26.
 
     private var modelFootnote: String {
-        if settings.selectedModel.hasCoreMLSupport && modelManager.isCoreMLModelDownloaded(model: settings.selectedModel) {
-            return "GPU acceleration is enabled via CoreML for this model."
+        if !modelManager.isModelDownloaded(model: settings.selectedModel) {
+            return "Download the selected model bundle before starting transcription."
         }
         if let explanation = settings.selectedModel.coreMLExplanation {
+            // Item 5: rather than block picking "Neural Engine" for a model that
+            // structurally has none (small-q5_1 has no CoreML variant at all),
+            // say so plainly regardless of mode — DESIGN.md's "solvable errors
+            // shown inline" principle over a disabled control. `coreMLExplanation`
+            // itself now states the true outcome ("always runs on the GPU via
+            // Metal") for every mode, so no mode-specific append is needed here
+            // anymore — code review caught the old append contradicting a stale
+            // "(CPU only)" clause in the base copy.
             return explanation
         }
-        if modelManager.isModelDownloaded(model: settings.selectedModel) {
-            return "Download the matching CoreML encoder to unlock faster local inference on Apple Silicon."
+        guard let decision = accelerationDecision else {
+            return "Checking which chip this Mac will use…"
         }
-        return "Download the selected model bundle before starting transcription."
+        let acceleratorLabel: String
+        switch decision.policy {
+        case .coreML:
+            acceleratorLabel = "Neural Engine"
+        case .metalOnly:
+            // `.metalOnly` does not guarantee Metal is actually available —
+            // e.g. mode `.on` with no encoder installed resolves to
+            // `.metalOnly` even when the hardware probe came back
+            // `.unavailable`, in which case whisper.cpp falls all the way
+            // through to plain CPU. Say so instead of calling a CPU-bound run
+            // "GPU" (code review).
+            acceleratorLabel = acceleratorCapability == .unavailable ? "CPU" : "GPU"
+        }
+        return "\(acceleratorLabel) · \(decision.reason)"
     }
 
     /// Migrated from `.green` / `.orange` / `.secondary` to Palette tokens.
     private var modelFootnoteToneColor: Color {
-        if settings.selectedModel.hasCoreMLSupport && modelManager.isCoreMLModelDownloaded(model: settings.selectedModel) {
-            return Palette.success
+        if !modelManager.isModelDownloaded(model: settings.selectedModel) {
+            return Palette.warning
         }
         if settings.selectedModel.coreMLExplanation != nil {
             return Palette.textSecondary
         }
-        if modelManager.isModelDownloaded(model: settings.selectedModel) {
-            return Palette.warning
+        if accelerationDecision?.policy == .coreML {
+            return Palette.success
         }
+        // GPU-only by resolved policy is a normal, often faster outcome (M5 Auto,
+        // or mode .off) — not a problem state, so no warning tint here anymore.
         return Palette.textSecondary
     }
 

@@ -434,7 +434,8 @@ struct FirstLaunchView: View {
         let model = AppSettings.shared.selectedModel
         Task {
             do {
-                try await modelManager.downloadModel(model: model)
+                let includeCoreML = await CoreMLDownloadDecision.shouldInstall(for: model)
+                try await modelManager.downloadModel(model: model, includeCoreML: includeCoreML)
                 await MainActor.run {
                     isDownloadingModel = false
                     downloadFailed = false
