@@ -175,5 +175,84 @@ if ! codesign --verify --deep --strict "$APP_DIR"; then
     exit 1
 fi
 
+# --- Self-containment check -------------------------------------------------
+#
+# The generated SwiftPM resource accessors carry an absolute fallback path into
+# *this machine's* .build directory. That fallback makes a badly packaged .app
+# look healthy on the build machine and only on the build machine: it loads
+# ggml-metal.metal out of .build instead of out of itself.
+#
+# That is not hypothetical. On 2026-07-26 the installed /Applications copy had
+# nothing but an icon in Contents/Resources and had been running off .build for
+# who knows how long. It kept working until a dependency bump rewrote the file
+# in .build, and then it died at launch with
+# "computeFunction must not be nil" — a crash with no obvious link to packaging.
+#
+# So: hide the .build bundles, actually launch the binary, and require it to
+# report a resource path *inside* the .app. Checking that the files exist is not
+# enough — that check passed the whole time the installed copy was broken.
+echo "🧪 Verifying the bundle does not depend on .build..."
+HIDDEN_BUNDLES=()
+for bundle in "$BUILD_PRODUCTS_DIR"/*.bundle; do
+    [ -e "$bundle" ] || continue
+    mv "$bundle" "$bundle.selfcheck-hidden"
+    HIDDEN_BUNDLES+=("$bundle")
+done
+
+restore_hidden_bundles() {
+    for bundle in "${HIDDEN_BUNDLES[@]:-}"; do
+        [ -e "$bundle.selfcheck-hidden" ] && mv "$bundle.selfcheck-hidden" "$bundle"
+    done
+}
+trap restore_hidden_bundles EXIT
+
+SELFCHECK_LOG="$BUILD_TEMP_DIR/selfcheck.log"
+"$MACOS_DIR/$APP_NAME" > "$SELFCHECK_LOG" 2>&1 &
+SELFCHECK_PID=$!
+# Long enough to load a model and initialise Metal on a cold shader cache.
+sleep 30
+kill "$SELFCHECK_PID" 2>/dev/null || true
+wait "$SELFCHECK_PID" 2>/dev/null || true
+
+restore_hidden_bundles
+trap - EXIT
+
+if grep -q "GGML_METAL_PATH_RESOURCES = $(cd "$RESOURCES_DIR" && pwd)" "$SELFCHECK_LOG"; then
+    echo "   • Metal resources resolved inside the .app"
+else
+    echo "❌ The app did not load its Metal resources from inside the bundle." >&2
+    echo "   Expected GGML_METAL_PATH_RESOURCES = $(cd "$RESOURCES_DIR" && pwd)" >&2
+    echo "   See $SELFCHECK_LOG" >&2
+    exit 1
+fi
+
+if grep -qE "metal library is nil|failed to initialize Metal backend|computeFunction must not be nil" "$SELFCHECK_LOG"; then
+    echo "❌ Metal backend failed to initialise without .build present." >&2
+    echo "   See $SELFCHECK_LOG" >&2
+    exit 1
+fi
+echo "   • Metal backend initialised standalone"
+
 echo "✅ App bundle created at: $APP_DIR"
-echo "🚀 Run with: open $APP_DIR"
+
+# --- Optional install -------------------------------------------------------
+#
+# Offered here because the failure above was caused by a *stale install*, not by
+# a bad build: dist/ was fine while /Applications held a months-old copy with the
+# packaging bug. Building and installing in one step keeps the two from drifting.
+if [ "${1:-}" = "--install" ]; then
+    INSTALL_PATH="/Applications/$APP_NAME.app"
+    echo "📥 Installing to $INSTALL_PATH..."
+    pkill -f "$INSTALL_PATH/Contents/MacOS/$APP_NAME" 2>/dev/null || true
+    sleep 1
+    rm -rf "$INSTALL_PATH"
+    cp -R "$APP_DIR" "$INSTALL_PATH"
+    if ! codesign --verify --deep --strict "$INSTALL_PATH"; then
+        echo "❌ codesign --verify failed for the installed copy" >&2
+        exit 1
+    fi
+    echo "✅ Installed. Launch with: open $INSTALL_PATH"
+else
+    echo "🚀 Run with: open $APP_DIR"
+    echo "📥 Install with: ./build-app.sh --install"
+fi
