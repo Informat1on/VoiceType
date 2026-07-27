@@ -20,7 +20,7 @@ final class PostProcessChainTests: XCTestCase {
     /// post-processing errors.
     func testRawKeepsUntouchedWhisperOutputEvenWhenEverythingIsFiltered() {
         let segments = [" Продолжение следует..."]
-        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true)
+        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true, removeFillers: false)
 
         XCTAssertEqual(result.raw, " Продолжение следует...", "raw must predate the filter")
         XCTAssertEqual(result.text, "", "the whole output was boilerplate — nothing to insert")
@@ -30,7 +30,7 @@ final class PostProcessChainTests: XCTestCase {
     /// `raw` is also untouched by the normalizer.
     func testRawIsNotNormalized() {
         let segments = [" Спроси у кодекса про хендов."]
-        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true)
+        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true, removeFillers: false)
 
         XCTAssertEqual(result.raw, " Спроси у кодекса про хендов.")
         XCTAssertTrue(result.text.contains("Codex"), "text must be normalized")
@@ -46,7 +46,7 @@ final class PostProcessChainTests: XCTestCase {
     /// filter needs no longer exist after the join.
     func testFilterRunsBeforeNormalizer() {
         let segments = [" Смотри, спроси у кодекса.", " Продолжение следует."]
-        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true)
+        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true, removeFillers: false)
 
         XCTAssertFalse(result.text.contains("Продолжение следует"), "trailing boilerplate must go")
         XCTAssertTrue(result.text.contains("Codex"), "surviving speech must still be normalized")
@@ -58,10 +58,10 @@ final class PostProcessChainTests: XCTestCase {
     func testTrimRunsLast() {
         let segments = [" Спроси у кодекса.  ", " Продолжение следует."]
 
-        let trimmed = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true)
+        let trimmed = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true, removeFillers: false)
         XCTAssertEqual(trimmed.text, " Спроси у Codex.", "trailing whitespace must be gone")
 
-        let untrimmed = TranscriptionService.postProcess(segments: segments, trim: false, normalize: true)
+        let untrimmed = TranscriptionService.postProcess(segments: segments, trim: false, normalize: true, removeFillers: false)
         XCTAssertEqual(untrimmed.text, " Спроси у Codex.  ", "toggle off must preserve it")
     }
 
@@ -71,7 +71,7 @@ final class PostProcessChainTests: XCTestCase {
     /// one must not become the sole exception.
     func testLeadingWhitespaceSurvivesFiltering() {
         let segments = [" Продолжение следует...", " Спасибо."]
-        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true)
+        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true, removeFillers: false)
 
         XCTAssertEqual(result.text, " Спасибо.", "the surviving segment keeps its own leading space")
     }
@@ -83,7 +83,7 @@ final class PostProcessChainTests: XCTestCase {
     /// either — it simply is not a template.
     func testWhitespaceSegmentNextToTemplate() {
         let segments = [" Смотри.", "   ", " Продолжение следует."]
-        let result = TranscriptionService.postProcess(segments: segments, trim: false, normalize: true)
+        let result = TranscriptionService.postProcess(segments: segments, trim: false, normalize: true, removeFillers: false)
 
         XCTAssertEqual(result.text, " Смотри.   ", "only the template is dropped")
         XCTAssertEqual(result.removedTemplates, [" Продолжение следует."])
@@ -93,7 +93,7 @@ final class PostProcessChainTests: XCTestCase {
     /// removals at all.
     func testTemplateInMiddleIsNotRemovedByTheChain() {
         let segments = [" Смотри.", " Продолжение следует.", " А дальше про пайплайн."]
-        let result = TranscriptionService.postProcess(segments: segments, trim: false, normalize: true)
+        let result = TranscriptionService.postProcess(segments: segments, trim: false, normalize: true, removeFillers: false)
 
         XCTAssertEqual(result.text, result.raw, "nothing matched the dictionary, nothing filtered")
         XCTAssertTrue(result.removedTemplates.isEmpty)
@@ -103,14 +103,14 @@ final class PostProcessChainTests: XCTestCase {
     /// out byte-identical apart from the trim.
     func testOrdinarySpeechIsUnchanged() {
         let segments = [" Смотри, давай сегодня разберём эту задачу до конца."]
-        let result = TranscriptionService.postProcess(segments: segments, trim: false, normalize: true)
+        let result = TranscriptionService.postProcess(segments: segments, trim: false, normalize: true, removeFillers: false)
 
         XCTAssertEqual(result.text, result.raw)
         XCTAssertTrue(result.removedTemplates.isEmpty)
     }
 
     func testEmptyInput() {
-        let result = TranscriptionService.postProcess(segments: [], trim: true, normalize: true)
+        let result = TranscriptionService.postProcess(segments: [], trim: true, normalize: true, removeFillers: false)
 
         XCTAssertEqual(result.raw, "")
         XCTAssertEqual(result.text, "")
@@ -124,7 +124,7 @@ final class PostProcessChainTests: XCTestCase {
     /// ordinary Russian words, so "off" has to mean off, not "milder".
     func testNormalizeOffLeavesDictionaryFormsAlone() {
         let segments = [" Спроси у кодекса про хендов."]
-        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: false)
+        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: false, removeFillers: false)
 
         XCTAssertEqual(result.text, " Спроси у кодекса про хендов.")
         XCTAssertEqual(result.raw, " Спроси у кодекса про хендов.")
@@ -134,7 +134,7 @@ final class PostProcessChainTests: XCTestCase {
     /// toggle by design, because it removes text the user never spoke.
     func testNormalizeOffStillFiltersHallucinations() {
         let segments = [" Спроси у кодекса.", " Продолжение следует."]
-        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: false)
+        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: false, removeFillers: false)
 
         XCTAssertEqual(result.text, " Спроси у кодекса.", "boilerplate goes, dictionary stays out")
         XCTAssertEqual(result.removedTemplates, [" Продолжение следует."])
@@ -145,22 +145,108 @@ final class PostProcessChainTests: XCTestCase {
     func testTrimStillAppliesWithNormalizeOff() {
         let segments = [" Спроси у кодекса.  "]
 
-        let trimmed = TranscriptionService.postProcess(segments: segments, trim: true, normalize: false)
+        let trimmed = TranscriptionService.postProcess(segments: segments, trim: true, normalize: false, removeFillers: false)
         XCTAssertEqual(trimmed.text, " Спроси у кодекса.")
 
-        let untrimmed = TranscriptionService.postProcess(segments: segments, trim: false, normalize: false)
+        let untrimmed = TranscriptionService.postProcess(segments: segments, trim: false, normalize: false, removeFillers: false)
         XCTAssertEqual(untrimmed.text, " Спроси у кодекса.  ")
     }
 
-    /// The stamp must say which pipeline actually ran: claiming `n1` for an
-    /// entry produced with the dictionary switched off would make history
-    /// unattributable, which is the one job the stamp has.
-    func testStampMarksSkippedNormalization() {
-        let on = TranscriptionService.pipelineStamp(forPrompt: "same prompt", normalizing: true)
-        let off = TranscriptionService.pipelineStamp(forPrompt: "same prompt", normalizing: false)
+    // MARK: - both toggles, all four combinations
 
-        XCTAssertEqual(on, "n1:p66fddd00ccb8")
-        XCTAssertEqual(off, "n1-nolex:p66fddd00ccb8", "same prompt hash, different pipeline")
+    /// One input that exercises both stages: a filler to drop and a dictionary
+    /// form to rewrite. Each combination must produce exactly its own result —
+    /// this is what catches a stage wired to the wrong flag.
+    func testAllFourToggleCombinations() {
+        let segments = [" Смотри, мне вот это у кодекса спросить."]
+
+        let both = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true, removeFillers: true)
+        XCTAssertEqual(both.text, " Смотри, мне это у Codex спросить.")
+
+        let fillersOnly = TranscriptionService.postProcess(segments: segments, trim: true, normalize: false, removeFillers: true)
+        XCTAssertEqual(fillersOnly.text, " Смотри, мне это у кодекса спросить.")
+
+        let lexiconOnly = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true, removeFillers: false)
+        XCTAssertEqual(lexiconOnly.text, " Смотри, мне вот это у Codex спросить.")
+
+        let neither = TranscriptionService.postProcess(segments: segments, trim: true, normalize: false, removeFillers: false)
+        XCTAssertEqual(neither.text, " Смотри, мне вот это у кодекса спросить.")
+
+        XCTAssertEqual(neither.raw, " Смотри, мне вот это у кодекса спросить.", "raw never changes")
+    }
+
+    /// Fillers run BEFORE the dictionary so a filler cannot hide a multi-word
+    /// dictionary entry by standing between its halves.
+    func testFillersRunBeforeTheDictionary() {
+        let segments = [" Запусти сонет ну агенты сегодня."]
+        let result = TranscriptionService.postProcess(segments: segments, trim: true, normalize: true, removeFillers: true)
+
+        XCTAssertTrue(
+            result.text.contains("Sonnet-агенты"),
+            "removing the filler must expose the composite entry, got: \(result.text)"
+        )
+    }
+
+    /// Each stage logs against its own input, and applying a batch to that
+    /// input must reproduce the batch's output. Without this the log would be
+    /// an unverifiable claim — plan review's exact objection.
+    func testStageEditLogsReconstructTheirOwnStageOutput() {
+        let segments = [" Смотри, мне вот это у кодекса спросить, ну ладно."]
+        let result = TranscriptionService.postProcess(segments: segments, trim: false, normalize: true, removeFillers: true)
+
+        XCTAssertEqual(result.stages.map(\.stage), [.fillers, .lexicon], "batches are in execution order")
+
+        var current = Array(result.raw)
+        for batch in result.stages {
+            XCTAssertEqual(
+                TextEdit.validate(batch.edits, against: current),
+                [],
+                "\(batch.stage.rawValue) batch violates the edit contract"
+            )
+            current = Array(TextEdit.apply(batch.edits, to: current))
+        }
+        XCTAssertEqual(String(current), result.text, "applying every batch in order must rebuild the final text")
+    }
+
+    /// A stage that is off must contribute no batch at all — an empty batch
+    /// would read as "ran and changed nothing", which is a different fact.
+    func testDisabledStagesContributeNoBatch() {
+        let segments = [" Смотри, мне вот это у кодекса спросить."]
+
+        XCTAssertEqual(
+            TranscriptionService.postProcess(segments: segments, trim: false, normalize: false, removeFillers: true)
+                .stages.map(\.stage), [.fillers])
+        XCTAssertEqual(
+            TranscriptionService.postProcess(segments: segments, trim: false, normalize: true, removeFillers: false)
+                .stages.map(\.stage), [.lexicon])
+        XCTAssertTrue(
+            TranscriptionService.postProcess(segments: segments, trim: false, normalize: false, removeFillers: false)
+                .stages.isEmpty)
+    }
+
+    func testStampCoversBothToggles() {
+        let prompt = "same prompt"
+        XCTAssertEqual(
+            TranscriptionService.pipelineStamp(forPrompt: prompt, normalizing: true, removingFillers: true),
+            "n2:p66fddd00ccb8")
+        XCTAssertEqual(
+            TranscriptionService.pipelineStamp(forPrompt: prompt, normalizing: false, removingFillers: true),
+            "n2-nolex:p66fddd00ccb8")
+        XCTAssertEqual(
+            TranscriptionService.pipelineStamp(forPrompt: prompt, normalizing: true, removingFillers: false),
+            "n2-nofill:p66fddd00ccb8")
+        XCTAssertEqual(
+            TranscriptionService.pipelineStamp(forPrompt: prompt, normalizing: false, removingFillers: false),
+            "n2-nofill-nolex:p66fddd00ccb8",
+            "suffixes follow pipeline order, so each state has exactly one spelling")
+    }
+
+    func testStampMarksSkippedNormalization() {
+        let on = TranscriptionService.pipelineStamp(forPrompt: "same prompt", normalizing: true, removingFillers: true)
+        let off = TranscriptionService.pipelineStamp(forPrompt: "same prompt", normalizing: false, removingFillers: true)
+
+        XCTAssertEqual(on, "n2:p66fddd00ccb8")
+        XCTAssertEqual(off, "n2-nolex:p66fddd00ccb8", "same prompt hash, different pipeline")
         XCTAssertNotEqual(on, off)
     }
 }

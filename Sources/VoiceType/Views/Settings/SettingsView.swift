@@ -162,6 +162,12 @@ struct SettingsView: View {
                         .labelsHidden()
                 }
                 RowDivider()
+                PrefsRow("Remove filler words",
+                         subtitle: "Drop «вот», «ну», «короче» inside sentences") {
+                    Toggle("", isOn: $settings.removeFillerWords)
+                        .labelsHidden()
+                }
+                RowDivider()
                 PrefsRow("Paste method") {
                     Picker("Paste method", selection: $settings.textInjectionMode) {
                         ForEach(TextInjectionMode.allCases, id: \.self) { mode in

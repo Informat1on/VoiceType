@@ -60,41 +60,57 @@ enum LexiconNormalizer {
     // MARK: - Public API
 
     static func normalize(_ text: String) -> String {
+        normalizeWithEdits(text).text
+    }
+
+    /// The same pass, with the audit trail. The text is produced by APPLYING
+    /// the edits — there is no second code path that computes it separately, so
+    /// the log cannot describe a transformation other than the one that
+    /// happened. See TextEdit.swift for the full contract.
+    static func normalizeWithEdits(_ text: String) -> (text: String, edits: [TextEdit]) {
         let chars = Array(text)
-        guard !chars.isEmpty else { return text }
+        guard !chars.isEmpty else { return (text, []) }
 
         let mask = ProtectedRegions.mask(for: chars)
         let tokens = tokenize(chars)
 
-        var output = ""
-        output.reserveCapacity(text.count)
+        var edits: [TextEdit] = []
 
         var i = 0
         while i < tokens.count {
             let token = tokens[i]
             guard token.kind == .word, !isProtected(token, mask: mask) else {
-                output += token.text
                 i += 1
                 continue
             }
 
             if let replaced = homoglyphReplacement(tokens: tokens, at: i, mask: mask) {
-                output += replaced
+                edits.append(TextEdit(
+                    matchedRange: token.range,
+                    original: token.text,
+                    replacement: replaced,
+                    rule: .homoglyph
+                ))
                 i += 1
                 continue
             }
 
             if let (replacement, consumed) = dictionaryMatch(tokens: tokens, at: i, mask: mask) {
-                output += replacement
+                let range = tokens[i].range.lowerBound..<tokens[i + consumed - 1].range.upperBound
+                edits.append(TextEdit(
+                    matchedRange: range,
+                    original: String(chars[range]),
+                    replacement: replacement,
+                    rule: .lexicon(form: String(chars[range]))
+                ))
                 i += consumed
                 continue
             }
 
-            output += token.text
             i += 1
         }
 
-        return output
+        return (TextEdit.apply(edits, to: chars), edits)
     }
 
     // MARK: - Tokenization

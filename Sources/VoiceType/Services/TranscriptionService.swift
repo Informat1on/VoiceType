@@ -100,6 +100,12 @@ struct PostProcessResult {
     let raw: String
     let text: String
     let removedTemplates: [String]
+    /// What each rewriting stage changed, in execution order. Each batch is in
+    /// its OWN stage's coordinate system (filler offsets predate the dictionary
+    /// pass, lexicon offsets follow it), which is why this is a list of batches
+    /// and not one flat array — flattening would produce ranges that cannot be
+    /// applied or compared together. See TextEdit.swift.
+    let stages: [StageEdits]
 }
 
 @MainActor
@@ -821,11 +827,16 @@ final class TranscriptionService: ObservableObject {
             // toggle flipped mid-transcription produce a history entry whose
             // stamp contradicts its own text.
             let normalize = AppSettings.shared.normalizeTranscript
+            let removeFillers = AppSettings.shared.removeFillerWords
 
             // Snapshot the pipeline stamp BEFORE whisper runs — see
             // pipelineStamp(forPrompt:)'s doc comment for why capturing it
             // after this call would describe the wrong transcription.
-            let stamp = Self.pipelineStamp(forPrompt: currentInitialPromptText, normalizing: normalize)
+            let stamp = Self.pipelineStamp(
+                forPrompt: currentInitialPromptText,
+                normalizing: normalize,
+                removingFillers: removeFillers
+            )
 
             let transcribeStart = CFAbsoluteTimeGetCurrent()
 
@@ -868,7 +879,8 @@ final class TranscriptionService: ObservableObject {
             let processed = TranscriptionService.postProcess(
                 segments: segmentTexts,
                 trim: AppSettings.shared.trimWhitespaceAfterInsert,
-                normalize: normalize
+                normalize: normalize,
+                removeFillers: removeFillers
             )
 
             // A dropped subtitle-boilerplate segment is the whole signal T16
@@ -952,27 +964,53 @@ final class TranscriptionService: ObservableObject {
     ///      artifact and must never reflect any filtering.
     ///   2. The hallucination filter runs on whisper's own segment boundaries,
     ///      which only exist before the join.
-    ///   3. The lexicon normalizer runs on joined text.
-    ///   4. `conditionallyTrim` runs last, so it also trims whitespace that
+    ///   3. Fillers are removed from the joined text.
+    ///   4. The lexicon normalizer runs after them, so a filler standing
+    ///      between the halves of a multi-word dictionary entry cannot hide it
+    ///      ("сонет ну агенты"). Measured on the owner's 1096-record corpus,
+    ///      that collision never actually occurs — but the guard is free and
+    ///      the failure would be silent, so the order is chosen to make it
+    ///      impossible rather than unlikely.
+    ///   5. `conditionallyTrim` runs last, so it also trims whitespace that
     ///      earlier steps may have exposed.
     ///
-    /// `trim` and `normalize` are passed in rather than read from
-    /// `AppSettings` so the chain stays pure and testable in every toggle
+    /// `trim`, `normalize` and `removeFillers` are passed in rather than read
+    /// from `AppSettings` so the chain stays pure and testable in every toggle
     /// combination.
     ///
-    /// `normalize == false` skips step 3 only. The hallucination filter has no
-    /// toggle by design (see `AppSettings.normalizeTranscript`): it removes
-    /// text the user never spoke, which nobody wants inserted.
-    static func postProcess(segments: [String], trim: Bool, normalize: Bool) -> PostProcessResult {
+    /// The hallucination filter has no toggle by design (see
+    /// `AppSettings.normalizeTranscript`): it removes text the user never
+    /// spoke, which nobody wants inserted.
+    static func postProcess(
+        segments: [String],
+        trim: Bool,
+        normalize: Bool,
+        removeFillers: Bool
+    ) -> PostProcessResult {
         let raw = segments.joined()
 
         let (kept, removed) = HallucinationFilter.split(segments: segments)
 
-        let joined = kept.joined()
-        let normalized = normalize ? LexiconNormalizer.normalize(joined) : joined
-        let text = trim ? trimTrailingWhitespace(normalized) : normalized
+        var text = kept.joined()
+        var stages: [StageEdits] = []
 
-        return PostProcessResult(raw: raw, text: text, removedTemplates: removed)
+        if removeFillers {
+            let pass = FillerRemover.removeWithEdits(text)
+            text = pass.text
+            stages.append(StageEdits(stage: .fillers, edits: pass.edits))
+        }
+
+        if normalize {
+            let pass = LexiconNormalizer.normalizeWithEdits(text)
+            text = pass.text
+            stages.append(StageEdits(stage: .lexicon, edits: pass.edits))
+        }
+
+        if trim {
+            text = trimTrailingWhitespace(text)
+        }
+
+        return PostProcessResult(raw: raw, text: text, removedTemplates: removed, stages: stages)
     }
 
     // MARK: - Trim helper
@@ -1012,7 +1050,8 @@ final class TranscriptionService: ObservableObject {
     ///
     /// `0` — no post-processing at all (whisper output + optional trim).
     /// `1` — hallucination filter + lexicon normalizer (2026-07-27).
-    private static let postProcessingVersion = 1
+    /// `2` — filler removal added ahead of the normalizer (2026-07-27).
+    private static let postProcessingVersion = 2
 
     /// Snapshot of the pipeline that produced a transcription's final text,
     /// built from the initial prompt active for that run. Must be called
@@ -1029,16 +1068,22 @@ final class TranscriptionService: ObservableObject {
     /// Swift.Hasher — Hasher is seeded randomly per process, so it is not
     /// stable across app launches, which a persisted stamp requires.
     ///
-    /// The `-nolex` suffix marks an entry produced with the normalizer toggle
-    /// off. Without it the stamp would claim a dictionary pass that never ran,
-    /// and the whole point of the stamp is attributing an entry's text to the
-    /// pipeline that actually produced it. It is a suffix on the version, not
-    /// a separate version number: the rules did not change, only whether one
-    /// stage ran.
-    static func pipelineStamp(forPrompt prompt: String?, normalizing: Bool) -> String {
+    /// Suffixes mark stages that were switched OFF for that entry: `-nofill`
+    /// for filler removal, `-nolex` for the dictionary. Without them the stamp
+    /// would claim passes that never ran, and attributing an entry's text to
+    /// the pipeline that actually produced it is the stamp's only job. They are
+    /// suffixes on the version rather than separate version numbers: the rules
+    /// did not change, only whether a stage ran.
+    ///
+    /// Canonical order is pipeline order — `-nofill` before `-nolex` — so the
+    /// four combinations produce exactly four strings and never two spellings
+    /// of the same state.
+    static func pipelineStamp(forPrompt prompt: String?, normalizing: Bool, removingFillers: Bool) -> String {
         let digest = SHA256.hash(data: Data((prompt ?? "").utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined()
-        let version = normalizing ? "n\(postProcessingVersion)" : "n\(postProcessingVersion)-nolex"
+        var version = "n\(postProcessingVersion)"
+        if !removingFillers { version += "-nofill" }
+        if !normalizing { version += "-nolex" }
         return "\(version):p\(hex.prefix(12))"
     }
 }

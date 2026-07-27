@@ -47,7 +47,12 @@ final class CorpusDumpTests: XCTestCase {
             // hallucination filter (no corpus record is boilerplate — verified
             // separately on the 1000-file relabeled set, which does have
             // segment boundaries).
-            let result = TranscriptionService.postProcess(segments: [raw], trim: false, normalize: true)
+            let result = TranscriptionService.postProcess(
+                segments: [raw],
+                trim: false,
+                normalize: normalizeEnabled(env),
+                removeFillers: fillersEnabled(env)
+            )
 
             let n = file.replacingOccurrences(of: ".raw.txt", with: "")
             try result.text.write(
@@ -55,7 +60,49 @@ final class CorpusDumpTests: XCTestCase {
                 atomically: true,
                 encoding: .utf8
             )
+
+            // The edit log, in the coordinate system the corpus annotates spans
+            // in (code points). This is what makes the filler measurement
+            // positional: categorized-eval.py compares multisets of surfaces,
+            // which cannot tell "deleted the annotated вот" from "deleted a
+            // different вот and kept the annotated one".
+            let chars = Array(raw)
+            let editReport: [[String: Any]] = result.stages.flatMap { batch in
+                batch.edits.map { edit -> [String: Any] in
+                    // Both ranges, because they answer different questions: the
+                    // metric aligns on the matched token, while `original` is
+                    // the text actually replaced (token plus any comma and
+                    // whitespace seam). Reporting one offset pair with the
+                    // other's text is how an audit quietly starts lying.
+                    let matched = TextEdit.codePointOffsets(for: edit.matchedRange, in: chars)
+                    let full = TextEdit.codePointOffsets(for: edit.editRange, in: chars)
+                    return [
+                        "stage": batch.stage.rawValue,
+                        "matchStart": matched.lowerBound,
+                        "matchEnd": matched.upperBound,
+                        "editStart": full.lowerBound,
+                        "editEnd": full.upperBound,
+                        "matched": String(chars[edit.matchedRange]),
+                        "original": edit.original,
+                        "replacement": edit.replacement,
+                        "rule": String(describing: edit.rule)
+                    ]
+                }
+            }
+            let encoded = try JSONSerialization.data(withJSONObject: editReport)
+            try encoded.write(to: outDir.appendingPathComponent("\(n).edits.json"))
         }
+    }
+
+    /// Both stages default to ON so an unparameterised run measures the shipping
+    /// pipeline; set the variable to "0" to measure a single stage in isolation
+    /// or to compare stage orders.
+    private func normalizeEnabled(_ env: [String: String]) -> Bool {
+        env["VOICETYPE_NORMALIZE"] != "0"
+    }
+
+    private func fillersEnabled(_ env: [String: String]) -> Bool {
+        env["VOICETYPE_REMOVE_FILLERS"] != "0"
     }
 
     /// Runs the chain over a JSONL corpus (one object per line with a `text`
@@ -90,12 +137,28 @@ final class CorpusDumpTests: XCTestCase {
             let segments = env["VOICETYPE_JSONL_SPLIT"] == "1"
                 ? text.components(separatedBy: "\n")
                 : [text]
-            let result = TranscriptionService.postProcess(segments: segments, trim: false, normalize: true)
+            let result = TranscriptionService.postProcess(
+                segments: segments,
+                trim: false,
+                normalize: normalizeEnabled(env),
+                removeFillers: fillersEnabled(env)
+            )
 
             let report: [String: Any] = [
                 "input": text,
                 "output": result.text,
-                "removed": result.removedTemplates
+                "removed": result.removedTemplates,
+                "edits": result.stages.flatMap { batch in
+                    batch.edits.map { edit in
+                        [
+                            "stage": batch.stage.rawValue,
+                            "matched": String(Array(text)[edit.matchedRange]),
+                            "original": edit.original,
+                            "replacement": edit.replacement,
+                            "rule": String(describing: edit.rule)
+                        ]
+                    }
+                }
             ]
             let encoded = try JSONSerialization.data(withJSONObject: report)
             guard let encodedLine = String(data: encoded, encoding: .utf8) else { continue }

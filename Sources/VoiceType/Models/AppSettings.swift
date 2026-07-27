@@ -280,6 +280,16 @@ final class AppSettings: ObservableObject {
         didSet { save() }
     }
 
+    /// Gates filler-word removal (`вот`, `ну`, `короче`) — a heavier operation
+    /// than the dictionary's replacements, because it deletes rather than
+    /// rewrites: it touches 43% of the owner's records, and a wrong deletion
+    /// removes something that was actually said. Its own toggle rather than a
+    /// shared one, because "fix tool names" and "drop filler words" are
+    /// different promises and a user may well want one without the other.
+    @Published var removeFillerWords: Bool {
+        didSet { save() }
+    }
+
     @Published var coreMLMode: CoreMLMode {
         didSet { save() }
     }
@@ -344,6 +354,7 @@ final class AppSettings: ObservableObject {
         // post-processing: the measured collateral damage on the owner's
         // corpus is 0.00%, so the feature earns its default.
         self.normalizeTranscript = defaults.object(forKey: "normalizeTranscript") as? Bool ?? true
+        self.removeFillerWords = defaults.object(forKey: "removeFillerWords") as? Bool ?? true
 
         // Default .auto — including for existing users who never saw this setting
         // before it existed (no stored raw value falls through to .auto).
@@ -368,6 +379,7 @@ final class AppSettings: ObservableObject {
         defaults.set(textInjectionMode.rawValue, forKey: "textInjectionMode")
         defaults.set(trimWhitespaceAfterInsert, forKey: "trimWhitespaceAfterInsert")
         defaults.set(normalizeTranscript, forKey: "normalizeTranscript")
+        defaults.set(removeFillerWords, forKey: "removeFillerWords")
         defaults.set(coreMLMode.rawValue, forKey: "coreMLMode")
     }
 }
