@@ -93,6 +93,60 @@ if [ "$FONT_COUNT" -ne 6 ]; then
     exit 1
 fi
 
+# --- Metal shader library precompilation ------------------------------------
+#
+# Without this, ggml compiles ggml-metal.metal at runtime on first launch —
+# measured ~5.8s on a cold Metal shader compiler cache (see report for the
+# repeated measurement). Precompiling default.metallib here moves that cost to
+# build time.
+#
+# Source: the already-validated, already-#include-free copy at $METAL_SHADER
+# (Contents/Resources/ggml-metal.metal, flattened from the SwiftPM bundle
+# above) rather than the fork's Sources/whisper_metal/ggml-metal.metal —
+# using the in-bundle copy means this step has no dependency on the SwiftWhisper
+# checkout living at any particular sibling path, and it's the exact source
+# this same script already verified is self-contained.
+#
+# Built WITHOUT feature macros — upstream's own recipe (ggml/src/ggml-metal/
+# CMakeLists.txt:94-96) — because GGML_METAL_HAS_TENSOR does not add kernels,
+# it swaps 7 existing kernels between a Metal-4-tensor implementation and a
+# simdgroup one, and the runtime picks dispatch geometry from a live
+# has_tensor probe (ggml-metal-device.cpp:698) independent of which one was
+# actually compiled in. One library cannot correctly serve both an M5 (tensor)
+# and an M1-M4 (simdgroup) device, so we ship the simdgroup build for
+# everyone and force has_tensor off at runtime instead
+# (AppDelegate.configureGGMLResourcePath sets GGML_METAL_TENSOR_DISABLE) so the
+# shipped library and the runtime's dispatch choice always agree.
+#
+# -mmacosx-version-min=13.0 matches Info.plist's LSMinimumSystemVersion above:
+# without it the AIR bytecode inherits the build machine's SDK deployment
+# target (e.g. 26.5) and may refuse to load on older macOS.
+#
+# Placed here — after resource copy, before Info.plist/signing — so the file
+# exists before codesign seals the bundle; a file added after signing would
+# make codesign --verify fail.
+#
+# Graceful skip (not a hard failure) when the Metal Toolchain isn't installed:
+# ggml-metal.metal stays in Contents/Resources as the runtime-compile fallback
+# (checked above), so a release build must still succeed on a machine that
+# never ran `xcodebuild -downloadComponent MetalToolchain`.
+METALLIB_BUILT=0
+if command -v xcrun >/dev/null 2>&1 \
+    && xcrun -sdk macosx metal --version >/dev/null 2>&1 \
+    && xcrun -sdk macosx metallib --version >/dev/null 2>&1; then
+    echo "⚙️  Precompiling default.metallib..."
+    if xcrun -sdk macosx metal -O3 -mmacosx-version-min=13.0 -c "$METAL_SHADER" -o - \
+        | xcrun -sdk macosx metallib - -o "$MACOS_DIR/default.metallib"; then
+        METALLIB_BUILT=1
+        echo "   • default.metallib → Contents/MacOS ($(du -h "$MACOS_DIR/default.metallib" | cut -f1 | tr -d ' '))"
+    else
+        echo "⚠️  default.metallib compilation failed — shipping ggml-metal.metal only (runtime compile, ~5.8s cold start)" >&2
+        rm -f "$MACOS_DIR/default.metallib"
+    fi
+else
+    echo "⚠️  Metal Toolchain not found (xcrun metal/metallib unavailable) — shipping ggml-metal.metal only (runtime compile, ~5.8s cold start)"
+fi
+
 # Create Info.plist
 cat > "$CONTENTS_DIR/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -211,23 +265,71 @@ SELFCHECK_LOG="$BUILD_TEMP_DIR/selfcheck.log"
 SELFCHECK_PID=$!
 # Long enough to load a model and initialise Metal on a cold shader cache.
 sleep 30
-kill "$SELFCHECK_PID" 2>/dev/null || true
-wait "$SELFCHECK_PID" 2>/dev/null || true
+if kill -0 "$SELFCHECK_PID" 2>/dev/null; then
+    kill "$SELFCHECK_PID" 2>/dev/null || true
+    wait "$SELFCHECK_PID" 2>/dev/null || true
+else
+    # A background menu-bar app (LSUIElement) has no reason to exit on its own —
+    # if it's already gone, that's a crash, not a clean shutdown.
+    echo "⚠️  App process had already exited before the self-check timeout — possible crash, see $SELFCHECK_LOG" >&2
+fi
 
 restore_hidden_bundles
 trap - EXIT
 
-if grep -q "GGML_METAL_PATH_RESOURCES = $(cd "$RESOURCES_DIR" && pwd)" "$SELFCHECK_LOG"; then
-    echo "   • Metal resources resolved inside the .app"
-else
-    echo "❌ The app did not load its Metal resources from inside the bundle." >&2
-    echo "   Expected GGML_METAL_PATH_RESOURCES = $(cd "$RESOURCES_DIR" && pwd)" >&2
+# Error check MUST run before the path-resolution check below: a broken
+# default.metallib still logs "loading '.../default.metallib'" right before it
+# fails (ggml-metal-device.m:172-181 does NOT fall back to compiling from
+# source on failure — a broken/incompatible library kills Metal outright), so
+# checking the positive marker first would print a false "loaded fine" line
+# ahead of catching the real failure. Verified live: a deliberately corrupted
+# default.metallib produces exactly "failed to create library" +
+# "failed to initialize the Metal library" here, with no other symptom before
+# the process later aborts trying to schedule a graph on the dead backend.
+#
+# Real ggml v1.9.1 error strings (the previous three — "metal library is nil",
+# "failed to initialize Metal backend", "computeFunction must not be nil" —
+# do not exist in this submodule version and would never fire):
+#   ggml-metal-device.m:863  "failed to create library"        (library load/compile failed)
+#   ggml-metal-device.m:405  "failed to compile pipeline"       (a kernel failed to build)
+#   ggml-metal-context.m:120 "failed to initialize the Metal library"
+if grep -qE "failed to create library|failed to compile pipeline|failed to initialize the Metal library" "$SELFCHECK_LOG"; then
+    echo "❌ Metal backend failed to initialise without .build present." >&2
     echo "   See $SELFCHECK_LOG" >&2
     exit 1
 fi
 
-if grep -qE "metal library is nil|failed to initialize Metal backend|computeFunction must not be nil" "$SELFCHECK_LOG"; then
-    echo "❌ Metal backend failed to initialise without .build present." >&2
+# ggml v1.9.1 resolves the Metal shader library one of two ways, and this
+# check must recognise whichever one this build actually took:
+#   * default.metallib built above → loaded via newLibraryWithURL, which logs
+#     "loading '<path ending in default.metallib>'" (ggml-metal-device.m:175).
+#   * no default.metallib → compiled from source, which logs
+#     "GGML_METAL_PATH_RESOURCES = <path>" (ggml-metal-device.m:188) — the
+#     invariant the old version of this check already relied on.
+if [ "$METALLIB_BUILT" -eq 1 ]; then
+    if grep -qE "loading '.*default\.metallib'" "$SELFCHECK_LOG"; then
+        echo "   • Metal loaded the precompiled default.metallib from inside the .app"
+    else
+        echo "❌ default.metallib was built into the bundle but the app did not load it from there." >&2
+        echo "   See $SELFCHECK_LOG" >&2
+        exit 1
+    fi
+else
+    if grep -q "GGML_METAL_PATH_RESOURCES = $(cd "$RESOURCES_DIR" && pwd)" "$SELFCHECK_LOG"; then
+        echo "   • Metal resources resolved inside the .app (compiled from source — no default.metallib)"
+    else
+        echo "❌ The app did not load its Metal resources from inside the bundle." >&2
+        echo "   Expected GGML_METAL_PATH_RESOURCES = $(cd "$RESOURCES_DIR" && pwd)" >&2
+        echo "   See $SELFCHECK_LOG" >&2
+        exit 1
+    fi
+fi
+# "loaded in %.3f sec" (ggml-metal-device.m:249) only prints once
+# ggml_metal_library_init reaches the end with a non-nil MTLLibrary — i.e. it
+# is proof the library actually came up, not just that no error string
+# happened to appear.
+if ! grep -q "loaded in" "$SELFCHECK_LOG"; then
+    echo "❌ No 'loaded in ... sec' line — the Metal library never finished initialising." >&2
     echo "   See $SELFCHECK_LOG" >&2
     exit 1
 fi

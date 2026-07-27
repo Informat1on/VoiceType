@@ -77,11 +77,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Eval hotkey (Cmd+Opt+E, separate from the recording hotkey)
-    private var evalHotKeyRef: EventHotKeyRef?
-    private var evalEventHandler: EventHandlerRef?
+    // Internal rather than private: the Carbon plumbing lives in
+    // AppDelegate+EvalHotkey.swift, and `private` would not reach across files.
+    var evalHotKeyRef: EventHotKeyRef?
+    var evalEventHandler: EventHandlerRef?
     /// Static id distinct from HotkeyService.hotKeySignature ('hk11' = 0x686B3131)
-    private static let evalHotKeySignature: UInt32 = 0x65766C31 // 'evl1'
-    private static let evalHotKeyId: UInt32 = 42
+    static let evalHotKeySignature: UInt32 = 0x65766C31 // 'evl1'
+    static let evalHotKeyId: UInt32 = 42
 
     /// Set to `true` by `injectText` when it shows an `.errorInline` capsule state.
     /// Cleared by `transcribeAndInject`'s else-branch so the capsule is NOT hidden
@@ -291,90 +293,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         openEvalEditorForEntry(last.id)
     }
 
-    // MARK: - Eval Hotkey (Cmd+Opt+E)
-
-    private func registerEvalHotkey() {
-        // Key code for 'E' = 14 (Carbon virtual key code)
-        // Modifiers: cmdKey (256) | optionKey (2048)
-        let keyCode: UInt32 = 14
-        let modifiers = UInt32(cmdKey | optionKey)
-
-        var eventSpecs: [EventTypeSpec] = [
-            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        ]
-        let target = GetApplicationEventTarget()
-
-        let regError = RegisterEventHotKey(
-            keyCode,
-            modifiers,
-            EventHotKeyID(signature: Self.evalHotKeySignature, id: Self.evalHotKeyId),
-            target,
-            0,
-            &evalHotKeyRef
-        )
-
-        guard regError == noErr else {
-            print("[AppDelegate] Failed to register eval hotkey (Cmd+Opt+E), error: \(regError)")
-            return
-        }
-
-        let handlerError = InstallEventHandler(
-            target,
-            { _, event, userData -> OSStatus in
-                guard let event, let userData else { return OSStatus(eventNotHandledErr) }
-                let delegate = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
-                return delegate.handleEvalHotkeyEvent(event)
-            },
-            Int(eventSpecs.count),
-            &eventSpecs,
-            Unmanaged.passUnretained(self).toOpaque(),
-            &evalEventHandler
-        )
-
-        guard handlerError == noErr else {
-            print("[AppDelegate] Failed to install eval event handler, error: \(handlerError)")
-            UnregisterEventHotKey(evalHotKeyRef)
-            evalHotKeyRef = nil
-            return
-        }
-
-        print("[AppDelegate] Eval hotkey registered: Cmd+Opt+E")
-    }
-
-    private func unregisterEvalHotkey() {
-        if let handler = evalEventHandler {
-            RemoveEventHandler(handler)
-            evalEventHandler = nil
-        }
-        if let hotkey = evalHotKeyRef {
-            UnregisterEventHotKey(hotkey)
-            evalHotKeyRef = nil
-        }
-    }
-
-    private func handleEvalHotkeyEvent(_ event: EventRef) -> OSStatus {
-        var hotKeyId = EventHotKeyID()
-        let error = GetEventParameter(
-            event,
-            EventParamName(kEventParamDirectObject),
-            EventParamType(typeEventHotKeyID),
-            nil,
-            MemoryLayout<EventHotKeyID>.size,
-            nil,
-            &hotKeyId
-        )
-        guard error == noErr,
-              hotKeyId.signature == Self.evalHotKeySignature,
-              hotKeyId.id == Self.evalHotKeyId else {
-            return OSStatus(eventNotHandledErr)
-        }
-
-        DispatchQueue.main.async { [weak self] in
-            self?.openEvalEditor()
-        }
-        return noErr
-    }
-
     // MARK: - Font Registration
 
     /// Register Geist and Geist Mono TTFs bundled in Resources/Fonts/ so that
@@ -382,19 +300,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Tokens.swift resolve to the actual typeface instead of falling back to
     /// San Francisco. Must be called BEFORE any SwiftUI view renders.
     /// DESIGN.md § Typography. Tier A Step 14 (accelerated to Step 6).
-    /// Point ggml at the Metal shader we ship in Contents/Resources.
+    /// Point ggml at the Metal shader we ship in Contents/Resources, and pin the
+    /// tensor-API flag so the runtime never disagrees with what `default.metallib`
+    /// actually contains.
     ///
-    /// ggml compiles ggml-metal.metal at runtime (we have no precompiled
-    /// default.metallib) and resolves it in this order: default.metallib next to the
-    /// binary → $GGML_METAL_PATH_RESOURCES/ggml-metal.metal → the SwiftPM resource
-    /// bundle.  That last lookup expects <app>.bundle next to Contents/, which
-    /// codesign refuses, so a packaged app must use the environment variable.
-    /// Without it the Metal backend fails to initialise and whisper silently runs
-    /// on the CPU — roughly 3x slower on an M5 Pro.
+    /// build-app.sh now precompiles `Contents/MacOS/default.metallib` ahead of time
+    /// (upstream recipe, no feature macros — see its "Metal shader library
+    /// precompilation" comment). That library is built WITHOUT
+    /// `GGML_METAL_HAS_TENSOR`, i.e. every kernel that has a tensor-API/simdgroup
+    /// fork (7 of them in ggml-metal.metal) is compiled as the simdgroup version.
+    /// The runtime, left to itself, still picks dispatch geometry from a live
+    /// hardware probe (`has_tensor = supportsFamily:MTLGPUFamilyMetal4_GGML`,
+    /// ggml-metal-device.m:708) — so on M5-family hardware it would probe "tensor
+    /// available" and dispatch tensor-shaped work against simdgroup kernels.
+    /// `GGML_METAL_TENSOR_DISABLE` is ggml's own escape hatch for exactly this
+    /// (ggml-metal-device.m:709-710): it forces `has_tensor = false` before any
+    /// dispatch decision is made, keeping the library and the runtime in
+    /// agreement on every chip. This must be set before ggml ever touches Metal —
+    /// hence first thing in this function, which itself runs first in
+    /// `applicationDidFinishLaunching`.
     ///
-    /// No-op under `swift run`, where the shader stays inside the SwiftPM bundle and
-    /// ggml's own lookup already works.  Must run before the first model load.
+    /// Side effect, and the reason this doubles as a diagnostics fix rather than
+    /// just a crash fix: `AcceleratorCapabilityProvider`'s probe reads the same
+    /// `has_tensor` flag, so with it forced off the probe honestly reports
+    /// `.metal` instead of `.metalWithTensor` on M5 — it does not have to be told
+    /// separately. Cost: the Metal encoder loses the tensor-API speedup on M5
+    /// (`.auto` is unaffected — it already prefers the Neural Engine over Metal on
+    /// every tier; only a manual Metal-only choice or the Fast preset pays this).
+    ///
+    /// ggml then compiles ggml-metal.metal at runtime only when no precompiled
+    /// library is found (older/unbuilt bundle) — resolution order: default.metallib
+    /// next to the binary → $GGML_METAL_PATH_RESOURCES/ggml-metal.metal → the
+    /// SwiftPM resource bundle. That last lookup expects <app>.bundle next to
+    /// Contents/, which codesign refuses, so a packaged app must use the
+    /// environment variable. Without it (and without default.metallib) the Metal
+    /// backend fails to initialise and whisper silently runs on the CPU — roughly
+    /// 3x slower on an M5 Pro.
+    ///
+    /// The GGML_METAL_PATH_RESOURCES branch is a no-op under `swift run`, where the
+    /// shader stays inside the SwiftPM bundle and ggml's own lookup already works.
     private func configureGGMLResourcePath() {
+        // Must precede any ggml/Metal call — see the doc comment above.
+        setenv("GGML_METAL_TENSOR_DISABLE", "1", 1)
+        print("[AppDelegate] GGML_METAL_TENSOR_DISABLE = 1 (default.metallib ships without tensor-API kernels)")
+
         guard let resources = Bundle.main.resourceURL else { return }
         let shader = resources.appendingPathComponent("ggml-metal.metal")
         guard FileManager.default.fileExists(atPath: shader.path) else {
