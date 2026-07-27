@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "eval-ru span annotation",
+  "description": "Разметка одной записи корпуса: NN.spans.json. Спаны задают участки СЫРОГО текста (NN.raw.txt), про которые конвенция говорит что-то определённое. Всё, что не покрыто спанами, считается текстом, который постобработка обязана оставить в покое — по нему считается collateral damage.",
+  "type": "object",
+  "required": ["n", "spans"],
+  "additionalProperties": false,
+  "properties": {
+    "n": {
+      "type": "string",
+      "pattern": "^[0-9]{2}$",
+      "description": "Номер записи, совпадает с именем файла."
+    },
+    "spans": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["start", "end", "category", "needsChange", "expected"],
+        "additionalProperties": false,
+        "properties": {
+          "start": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Смещение начала спана в NN.raw.txt, в символах Unicode (не в байтах)."
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Смещение конца, полуинтервал [start, end)."
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "propn",
+              "loanword",
+              "anglicism-verb",
+              "handoff",
+              "doubling",
+              "eio",
+              "homoglyph",
+              "number-word",
+              "number-digit",
+              "filler",
+              "punct",
+              "protected"
+            ],
+            "description": "Категория по документу конвенции. propn — имя продукта или компании (латиница). loanword — обрусевшее заимствование (кириллица). anglicism-verb — спрягаемая глагольная калька. handoff — вынесен отдельно из-за 24 написаний. doubling — удвоение согласной. eio — э/е в заимствовании. homoglyph — кириллическая буква внутри латинского токена. number-word / number-digit — числа. filler — слово-паразит из закрытого списка. punct — пунктуация и регистр. protected — неприкосновенная зона (кавычки, бэктики, пути, уже корректная латиница); для неё needsChange всегда false."
+          },
+          "needsChange": {
+            "type": "boolean",
+            "description": "true — конвенция требует изменить этот участок. false — участок УЖЕ правильный, и его изменение является регрессией. Без этого поля нельзя отличить «не исправил» от «испортил уже верное», а уже корректной латиницы в корпусе много."
+          },
+          "expected": {
+            "type": "string",
+            "description": "Целевой текст этого участка по конвенции. Для needsChange=false совпадает с исходным текстом спана дословно."
+          },
+          "note": {
+            "type": "string",
+            "description": "Необязательное пояснение, если решение неочевидно или спорно. Читается человеком при вычитке."
+          }
+        }
+      }
+    }
+  }
+}
