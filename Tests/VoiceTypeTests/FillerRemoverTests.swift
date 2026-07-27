@@ -63,6 +63,7 @@ final class FillerRemoverTests: XCTestCase {
             "\u{2014} ну ладно",         // dialogue dash at the start
             "\u{1F389} ну ладно",        // emoji at the start
             "\n ну ладно",               // newline at the start
+            "готово\n ну ладно",         // newline after content is a break too
             " ну ладно"                  // leading space whisper always emits
         ]
         for text in kept {
@@ -155,6 +156,31 @@ final class FillerRemoverTests: XCTestCase {
     func testNoDoubleSpaceIsLeftBehind() {
         for text in ["мне вот это", "и ну, дальше", "слово, ну.", "чтобы, ну, их"] {
             XCTAssertFalse(FillerRemover.remove(text).contains("  "), "double space after removing in: \(text)")
+        }
+    }
+
+    // MARK: - Adjacent fillers
+
+    /// Two fillers in a row must not produce overlapping edits: the first one's
+    /// seam would swallow the space the second one then claims from the left.
+    /// Found by code review; the naive implementation produced "слово ." and a
+    /// contract violation.
+    func testAdjacentFillersProduceOneCleanEdit() {
+        XCTAssertEqual(FillerRemover.remove("сделаем слово ну ну."), "сделаем слово.")
+        XCTAssertEqual(FillerRemover.remove("это вот ну прям то самое"), "это прям то самое")
+        XCTAssertEqual(FillerRemover.remove("и ну, короче, дальше"), "и дальше")
+    }
+
+    /// The same input, checked against the edit contract rather than the text —
+    /// overlapping ranges are exactly what `validate` exists to catch.
+    func testAdjacentFillersKeepTheLogValid() {
+        for text in ["сделаем слово ну ну.", "это вот ну прям то самое", "и ну, короче, дальше"] {
+            let (output, edits) = FillerRemover.removeWithEdits(text)
+            let chars = Array(text)
+            XCTAssertEqual(TextEdit.validate(edits, against: chars), [], "contract violated for: \(text)")
+            XCTAssertEqual(TextEdit.apply(edits, to: chars), output)
+            XCTAssertFalse(output.contains("  "), "no double space in: \(output)")
+            XCTAssertFalse(output.contains(" ."), "no space before the full stop in: \(output)")
         }
     }
 

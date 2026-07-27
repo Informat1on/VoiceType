@@ -61,34 +61,18 @@ final class CorpusDumpTests: XCTestCase {
                 encoding: .utf8
             )
 
-            // The edit log, in the coordinate system the corpus annotates spans
-            // in (code points). This is what makes the filler measurement
-            // positional: categorized-eval.py compares multisets of surfaces,
-            // which cannot tell "deleted the annotated вот" from "deleted a
-            // different вот and kept the annotated one".
-            let chars = Array(raw)
-            let editReport: [[String: Any]] = result.stages.flatMap { batch in
-                batch.edits.map { edit -> [String: Any] in
-                    // Both ranges, because they answer different questions: the
-                    // metric aligns on the matched token, while `original` is
-                    // the text actually replaced (token plus any comma and
-                    // whitespace seam). Reporting one offset pair with the
-                    // other's text is how an audit quietly starts lying.
-                    let matched = TextEdit.codePointOffsets(for: edit.matchedRange, in: chars)
-                    let full = TextEdit.codePointOffsets(for: edit.editRange, in: chars)
-                    return [
-                        "stage": batch.stage.rawValue,
-                        "matchStart": matched.lowerBound,
-                        "matchEnd": matched.upperBound,
-                        "editStart": full.lowerBound,
-                        "editEnd": full.upperBound,
-                        "matched": String(chars[edit.matchedRange]),
-                        "original": edit.original,
-                        "replacement": edit.replacement,
-                        "rule": String(describing: edit.rule)
-                    ]
-                }
-            }
+            // The edit log, in the coordinate system the corpus annotates
+            // spans in (code points). This is what makes the filler
+            // measurement positional: categorized-eval.py compares multisets of
+            // surfaces, which cannot tell "deleted the annotated вот" from
+            // "deleted a different вот and kept the annotated one".
+            //
+            // Each batch is reported against ITS OWN input, reconstructed by
+            // replaying the previous batches. Reporting every batch against
+            // `raw` would be wrong the moment a stage changes length: lexicon
+            // offsets follow the filler pass, not the raw text. Code review
+            // caught that.
+            let editReport = try stageReport(for: result, raw: raw)
             let encoded = try JSONSerialization.data(withJSONObject: editReport)
             try encoded.write(to: outDir.appendingPathComponent("\(n).edits.json"))
         }
@@ -99,6 +83,41 @@ final class CorpusDumpTests: XCTestCase {
     /// or to compare stage orders.
     private func normalizeEnabled(_ env: [String: String]) -> Bool {
         env["VOICETYPE_NORMALIZE"] != "0"
+    }
+
+    /// One JSON object per edit, each carrying the offsets AND the stage input
+    /// they refer to. Consumers (scripts/filler-audit.py) must not search for
+    /// the text: with eight «вот» in a record, a search finds the first one and
+    /// reports an occurrence the pipeline never touched.
+    private func stageReport(for result: PostProcessResult, raw: String) throws -> [[String: Any]] {
+        // The filler stage sees the text AFTER the hallucination filter, which
+        // is not `raw` whenever boilerplate was dropped.
+        var stageInput = Array(HallucinationFilter.split(segments: [raw]).kept.joined())
+        var report: [[String: Any]] = []
+
+        for batch in result.stages {
+            let violations = TextEdit.validate(batch.edits, against: stageInput)
+            XCTAssertEqual(violations, [], "edit log violates its contract on a corpus record")
+
+            for edit in batch.edits {
+                let matched = TextEdit.codePointOffsets(for: edit.matchedRange, in: stageInput)
+                let full = TextEdit.codePointOffsets(for: edit.editRange, in: stageInput)
+                report.append([
+                    "stage": batch.stage.rawValue,
+                    "matchStart": matched.lowerBound,
+                    "matchEnd": matched.upperBound,
+                    "editStart": full.lowerBound,
+                    "editEnd": full.upperBound,
+                    "matched": String(stageInput[edit.matchedRange]),
+                    "original": edit.original,
+                    "replacement": edit.replacement,
+                    "rule": String(describing: edit.rule),
+                    "stageInput": String(stageInput)
+                ])
+            }
+            stageInput = Array(TextEdit.apply(batch.edits, to: stageInput))
+        }
+        return report
     }
 
     private func fillersEnabled(_ env: [String: String]) -> Bool {
@@ -148,17 +167,7 @@ final class CorpusDumpTests: XCTestCase {
                 "input": text,
                 "output": result.text,
                 "removed": result.removedTemplates,
-                "edits": result.stages.flatMap { batch in
-                    batch.edits.map { edit in
-                        [
-                            "stage": batch.stage.rawValue,
-                            "matched": String(Array(text)[edit.matchedRange]),
-                            "original": edit.original,
-                            "replacement": edit.replacement,
-                            "rule": String(describing: edit.rule)
-                        ]
-                    }
-                }
+                "edits": try stageReport(for: result, raw: text)
             ]
             let encoded = try JSONSerialization.data(withJSONObject: report)
             guard let encodedLine = String(data: encoded, encoding: .utf8) else { continue }

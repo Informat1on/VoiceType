@@ -55,7 +55,12 @@ enum FillerRemover {
     /// Words after which `вот` is demonstrative rather than filler.
     private static let stopWordsAfterVot: Set<String> = ["так", "и"]
 
-    private static let sentenceTerminators: Set<Character> = [".", "!", "?", "\u{2026}", ":", ";"]
+    /// A newline counts as a boundary too: in a `whisper-cli` dump it is a
+    /// segment break and in any other source it is a paragraph or turn break.
+    /// The app's own output never contains one (0 of 100 history entries), so
+    /// this only matters for corpora — but a filler opening a line is opening
+    /// something, and keeping it is the conservative side.
+    private static let sentenceTerminators: Set<Character> = [".", "!", "?", "\u{2026}", ":", ";", "\n"]
 
     private static let hyphens: Set<Character> = ["-", "\u{2010}", "\u{2011}"]
 
@@ -85,13 +90,21 @@ enum FillerRemover {
             let word = String(chars[range])
 
             if shouldRemove(word: word, at: range, in: chars, mask: mask) {
-                let editRange = seamRange(for: range, in: chars)
+                // A run of fillers ("ну ну", "ну, короче,") becomes ONE edit.
+                // Emitting one edit per word made their seams overlap — the
+                // first took the space on its right, the second claimed the
+                // same space on its left — which both violated the edit
+                // contract and produced "слово ." instead of "слово.".
+                // Code review caught it; the fix is to treat the run as the
+                // unit it actually is.
+                let matchedRange = range.lowerBound..<runEnd(from: range, in: chars, mask: mask)
+                let editRange = seamRange(for: matchedRange, in: chars)
                 edits.append(TextEdit(
-                    matchedRange: range,
+                    matchedRange: matchedRange,
                     editRange: editRange,
                     original: String(chars[editRange]),
                     replacement: "",
-                    rule: .filler(word: word)
+                    rule: .filler(word: String(chars[matchedRange]))
                 ))
                 index = editRange.upperBound
                 continue
@@ -209,6 +222,32 @@ enum FillerRemover {
             return (range.lowerBound - 1)..<range.upperBound
         }
         return range
+    }
+
+    /// End of the run of removable fillers starting at `range`. Words are
+    /// joined across spaces and commas only — anything else ends the run, so
+    /// "ну и ну" is not a run (the "и" between them is content).
+    ///
+    /// Each subsequent word must pass the SAME conditions, which is what keeps
+    /// "вот вот так" honest: the second `вот` is followed by `так`, fails
+    /// condition 3, and the run stops at the first word.
+    private static func runEnd(from range: Range<Int>, in chars: [Character], mask: [Bool]) -> Int {
+        var end = range.upperBound
+        var cursor = range.upperBound
+
+        while true {
+            var next = cursor
+            while next < chars.count, chars[next] == " " || chars[next] == "," { next += 1 }
+            guard next < chars.count, isWordCharacter(chars[next]) else { return end }
+
+            var wordEnd = next
+            while wordEnd < chars.count, isWordCharacter(chars[wordEnd]) { wordEnd += 1 }
+            let word = String(chars[next..<wordEnd])
+            guard shouldRemove(word: word, at: next..<wordEnd, in: chars, mask: mask) else { return end }
+
+            end = wordEnd
+            cursor = wordEnd
+        }
     }
 
     /// True when the next significant character after the filler ends the
