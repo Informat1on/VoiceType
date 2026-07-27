@@ -75,12 +75,31 @@ enum TranscriptionError: LocalizedError {
 /// the accumulated corpus can never separate ASR errors from post-processing
 /// errors.
 struct TranscriptionOutcome {
-    /// Segments joined, before conditionallyTrim — the untouched whisper output.
+    /// Segments joined, before ANY post-processing — the untouched whisper
+    /// output. Deliberately captured before the hallucination filter too, so
+    /// the corpus keeps the artifact even when the filter removes all of it.
     let rawText: String
-    /// What actually gets inserted (currently rawText after conditionallyTrim).
+    /// What actually gets inserted: rawText after the post-processing chain
+    /// (hallucination filter → lexicon normalizer → conditionallyTrim).
     let text: String
     /// Snapshot of the pipeline that produced `text`, taken before whisper ran.
     let pipelineStamp: String
+    /// Subtitle-boilerplate segments the hallucination filter removed, in the
+    /// order they appeared. Empty on the overwhelming majority of runs.
+    /// Carried out of the pure chain so the caller can log them: the filter
+    /// itself stays side-effect free, but a dropped segment is exactly the
+    /// signal T16 exists to measure, and it must not vanish silently.
+    let removedTemplates: [String]
+}
+
+/// Result of the pure post-processing chain. Separate from
+/// `TranscriptionOutcome` because it carries no pipeline stamp — the stamp
+/// depends on the prompt active at whisper time, which the chain knows nothing
+/// about.
+struct PostProcessResult {
+    let raw: String
+    let text: String
+    let removedTemplates: [String]
 }
 
 @MainActor
@@ -831,7 +850,7 @@ final class TranscriptionService: ObservableObject {
                 return result
             }
 
-            let text = segments.map { $0.text }.joined()
+            let segmentTexts = segments.map { $0.text }
 
             let transcribeTime = CFAbsoluteTimeGetCurrent() - transcribeStart
             let audioDuration = Double(audio.count) / 16000.0
@@ -840,14 +859,41 @@ final class TranscriptionService: ObservableObject {
                 "[TranscriptionService] Transcription completed in \(String(format: "%.2f", transcribeTime))s (\(String(format: "%.2fx", realtimeFactor)) realtime)"
             )
 
-            let trimmed = TranscriptionService.conditionallyTrim(text)
+            let processed = TranscriptionService.postProcess(
+                segments: segmentTexts,
+                trim: AppSettings.shared.trimWhitespaceAfterInsert
+            )
+
+            // A dropped subtitle-boilerplate segment is the whole signal T16
+            // exists to measure, and it never reaches history when the filter
+            // empties the text: AppDelegate returns on the empty-text guard
+            // before recordPending runs. Log it so the artifact is not lost
+            // silently. errors.log rotates after 7 days, so this is a
+            // frequency counter, not a permanent corpus — a deliberate trade
+            // against putting blank rows in the user's History list.
+            if !processed.removedTemplates.isEmpty {
+                let joined = processed.removedTemplates
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .joined(separator: " | ")
+                ErrorLogger.shared.log(
+                    message: "Hallucination filter dropped \(processed.removedTemplates.count) "
+                        + "segment(s) [\(joined)]; result empty: \(processed.text.isEmpty); "
+                        + "pipeline: \(stamp)",
+                    category: "transcription"
+                )
+            }
 
             progress = 1.0
-            lastResult = trimmed
+            lastResult = processed.text
 
-            print("[TranscriptionService] Result ready (characters: \(trimmed.count))")
+            print("[TranscriptionService] Result ready (characters: \(processed.text.count))")
             AppLog.transcription.notice("Transcription result is ready")
-            return TranscriptionOutcome(rawText: text, text: trimmed, pipelineStamp: stamp)
+            return TranscriptionOutcome(
+                rawText: processed.raw,
+                text: processed.text,
+                pipelineStamp: stamp,
+                removedTemplates: processed.removedTemplates
+            )
         } catch TranscriptionError.transcriptionTimeout {
             progress = 0.0
             AppLog.transcription.error("Transcription timed out after \(self.transcriptionTimeout)s")
@@ -884,6 +930,38 @@ final class TranscriptionService: ObservableObject {
         modelStatus = .notLoaded
     }
 
+    // MARK: - Post-processing chain
+
+    /// The whole post-processing chain as one pure function.
+    ///
+    /// Exposed (rather than inlined into `transcribe`) because unit tests of
+    /// `HallucinationFilter` and `LexiconNormalizer` in isolation cannot catch
+    /// the defects that actually matter here: a missing call, the two steps in
+    /// the wrong order, a mutated `raw`, or trim running before normalization.
+    /// Plan review flagged exactly this gap.
+    ///
+    /// Order is load-bearing:
+    ///   1. `raw` is captured from the untouched segments — it is the corpus
+    ///      artifact and must never reflect any filtering.
+    ///   2. The hallucination filter runs on whisper's own segment boundaries,
+    ///      which only exist before the join.
+    ///   3. The lexicon normalizer runs on joined text.
+    ///   4. `conditionallyTrim` runs last, so it also trims whitespace that
+    ///      earlier steps may have exposed.
+    ///
+    /// `trim` is passed in rather than read from `AppSettings` so the chain
+    /// stays pure and testable in both toggle positions.
+    static func postProcess(segments: [String], trim: Bool) -> PostProcessResult {
+        let raw = segments.joined()
+
+        let (kept, removed) = HallucinationFilter.split(segments: segments)
+
+        let normalized = LexiconNormalizer.normalize(kept.joined())
+        let text = trim ? trimTrailingWhitespace(normalized) : normalized
+
+        return PostProcessResult(raw: raw, text: text, removedTemplates: removed)
+    }
+
     // MARK: - Trim helper
 
     /// Gate trim on the user-facing toggle in Settings > General > Insertion.
@@ -899,6 +977,13 @@ final class TranscriptionService: ObservableObject {
     /// Code Reviewer O P2.
     static func conditionallyTrim(_ text: String) -> String {
         guard AppSettings.shared.trimWhitespaceAfterInsert else { return text }
+        return trimTrailingWhitespace(text)
+    }
+
+    /// The trim itself, without the settings lookup. Split out so
+    /// `postProcess(segments:trim:)` can stay a pure function testable in both
+    /// toggle positions.
+    static func trimTrailingWhitespace(_ text: String) -> String {
         var result = text
         while result.last?.isWhitespace == true {
             result.removeLast()
@@ -908,10 +993,13 @@ final class TranscriptionService: ObservableObject {
 
     // MARK: - Pipeline stamp
 
-    /// Post-processing pipeline version. `0` means "no normalizer" — the
-    /// current state. Bump on every change to normalizer rules/dictionary so
-    /// history entries stay attributable to the pipeline that produced them.
-    private static let postProcessingVersion = 0
+    /// Post-processing pipeline version. Bump on every change to the filter
+    /// templates or the normalizer rules/dictionary, so history entries stay
+    /// attributable to the pipeline that produced them.
+    ///
+    /// `0` — no post-processing at all (whisper output + optional trim).
+    /// `1` — hallucination filter + lexicon normalizer (2026-07-27).
+    private static let postProcessingVersion = 1
 
     /// Snapshot of the pipeline that produced a transcription's final text,
     /// built from the initial prompt active for that run. Must be called

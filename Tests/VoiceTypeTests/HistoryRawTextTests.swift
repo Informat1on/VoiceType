@@ -139,9 +139,13 @@ final class HistoryRawTextTests: XCTestCase {
         // this test exists to rule out. These literals are SHA-256 prefixes of
         // the prompt string ("" for nil), independently computed outside Swift;
         // they pin the algorithm, so switching to a seeded hash breaks here.
+        // The `n` prefix is the post-processing version: bumped 0 → 1 on
+        // 2026-07-27 when the hallucination filter and lexicon normalizer
+        // entered the pipeline. The hash halves are unchanged, which is the
+        // point — only the pipeline changed, not the prompt hashing.
         XCTAssertEqual(
-            TranscriptionService.pipelineStamp(forPrompt: "same prompt"), "n0:p66fddd00ccb8")
-        XCTAssertEqual(TranscriptionService.pipelineStamp(forPrompt: nil), "n0:pe3b0c44298fc")
+            TranscriptionService.pipelineStamp(forPrompt: "same prompt"), "n1:p66fddd00ccb8")
+        XCTAssertEqual(TranscriptionService.pipelineStamp(forPrompt: nil), "n1:pe3b0c44298fc")
 
         let stampA1 = TranscriptionService.pipelineStamp(forPrompt: "same prompt")
         let stampA2 = TranscriptionService.pipelineStamp(forPrompt: "same prompt")

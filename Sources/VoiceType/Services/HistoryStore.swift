@@ -25,8 +25,13 @@
 // pipeline (post-processing version + prompt hash) produced `text`.
 // Both are nil on legacy entries (absent keys decode to nil). On new entries
 // pipelineStamp is always written, while rawText is written only when it
-// differs from `text` — today that means "conditionallyTrim changed something",
-// so nil legitimately reads as "raw == text". Consumers: `rawText ?? text`.
+// differs from `text`, so nil legitimately reads as "raw == text".
+// Consumers: `rawText ?? text`.
+//
+// Since 2026-07-27 (pipeline n1) the two differ whenever the hallucination
+// filter or the lexicon normalizer changed anything, not just when
+// conditionallyTrim did — so rawText is now populated on most entries rather
+// than almost none.
 //
 // DESIGN.md § Transcription History. Step 9.
 
