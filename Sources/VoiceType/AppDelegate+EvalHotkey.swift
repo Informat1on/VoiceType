@@ -75,7 +75,7 @@ extension AppDelegate {
         }
     }
 
-    func handleEvalHotkeyEvent(_ event: EventRef) -> OSStatus {
+    private func handleEvalHotkeyEvent(_ event: EventRef) -> OSStatus {
         var hotKeyId = EventHotKeyID()
         let error = GetEventParameter(
             event,
@@ -97,5 +97,4 @@ extension AppDelegate {
         }
         return noErr
     }
-
 }

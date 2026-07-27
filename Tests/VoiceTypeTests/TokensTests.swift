@@ -1,4 +1,6 @@
 import XCTest
+import SwiftUI
+import AppKit
 @testable import VoiceType
 
 // swiftlint:disable inline_color_hex
@@ -200,33 +202,46 @@ final class TokensTests: XCTestCase {
         return (lighter + 0.05) / (darker + 0.05)
     }
 
+    /// Resolves a (possibly dynamic) SwiftUI colour for one appearance.
+    private func resolved(_ color: Color, dark: Bool) -> NSColor {
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        var out = NSColor.black
+        appearance?.performAsCurrentDrawingAppearance {
+            out = NSColor(color).usingColorSpace(.sRGB) ?? NSColor(color)
+        }
+        return out
+    }
+
+    /// The primary button's own text/background pair must clear WCAG AA in both
+    /// appearances.
+    ///
+    /// This reads the colours FROM the style (ChecklistPrimaryButtonStyle
+    /// .enabledForeground/.enabledBackground) rather than restating them here.
+    /// The earlier version of this test hard-coded the accent hexes next to the
+    /// assertion, so it proved only that black contrasts with two literals —
+    /// it would have stayed green if the style itself had switched back to
+    /// white text. Review finding, wave B.
     func testPrimaryButtonTextContrastMeetsWCAG_AA() {
-        let black = NSColor.black
-        let white = NSColor.white
-        let accentDark = NSColor(hex: "#59C7FF")   // Palette.accent, dark mode
-        let accentLight = NSColor(hex: "#099DDF")  // Palette.accent, light mode
+        for dark in [true, false] {
+            let foreground = resolved(ChecklistPrimaryButtonStyle.enabledForeground, dark: dark)
+            let background = resolved(ChecklistPrimaryButtonStyle.enabledBackground, dark: dark)
+            let ratio = contrastRatio(foreground, background)
+            XCTAssertGreaterThanOrEqual(
+                ratio,
+                4.5,
+                "ChecklistPrimaryButtonStyle must meet WCAG AA 4.5:1 in \(dark ? "dark" : "light") mode; got \(ratio)"
+            )
 
-        let blackOnAccentDark = contrastRatio(black, accentDark)
-        let blackOnAccentLight = contrastRatio(black, accentLight)
-        XCTAssertGreaterThanOrEqual(
-            blackOnAccentDark,
-            4.5,
-            "ChecklistPrimaryButtonStyle text (black) on Palette.accent (dark #59C7FF) must meet WCAG AA 4.5:1; got \(blackOnAccentDark)"
-        )
-        XCTAssertGreaterThanOrEqual(
-            blackOnAccentLight,
-            4.5,
-            "ChecklistPrimaryButtonStyle text (black) on Palette.accent (light #099DDF) must meet WCAG AA 4.5:1; got \(blackOnAccentLight)"
-        )
-
-        // Sanity check: the regression this test exists to catch (white text on
-        // accent) must FAIL AA — otherwise the assertions above aren't discriminating.
-        let whiteOnAccentDark = contrastRatio(white, accentDark)
-        XCTAssertLessThan(
-            whiteOnAccentDark,
-            4.5,
-            "Sanity check failed: white-on-accent should fail WCAG AA (this was the actual regression) — got \(whiteOnAccentDark)"
-        )
+            // Sanity check: white on the same background — the actual regression
+            // this test exists to catch — must FAIL, otherwise the assertion
+            // above is not discriminating.
+            let whiteRatio = contrastRatio(.white, background)
+            XCTAssertLessThan(
+                whiteRatio,
+                4.5,
+                "White-on-accent must fail AA in \(dark ? "dark" : "light") mode — that was the regression; got \(whiteRatio)"
+            )
+        }
     }
 }
 

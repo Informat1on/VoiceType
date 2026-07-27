@@ -206,6 +206,10 @@ final class HistoryStore {
     private let maxEntries: Int = 100
     /// Maximum number of unsaved audio files to keep in rolling buffer.
     private let maxUnsavedAudio: Int = 100
+    /// Upper bound on the deferred-deletion queue, so a persistently failing
+    /// disk cannot grow it without limit. Generous on purpose: reaching it
+    /// means writes have failed thousands of times in a row.
+    private let maxPendingAudioDeletions: Int = 1000
     private let fileManager = FileManager.default
     /// Newest-first ordering in memory.
     private var cachedEntries: [Entry] = []
@@ -276,10 +280,31 @@ final class HistoryStore {
     /// Writes the cache and, only on success, deletes every audio file queued so
     /// far. Failed flushes leave the queue intact so a later successful write
     /// still reaps them.
+    ///
+    /// EVERY successful write goes through here, not just append(): update(),
+    /// delete() and clear() also persist the cache, and if one of them were the
+    /// first write to succeed after a disk problem, a queue drained only by
+    /// append() would be stranded until the process exited. Review finding, wave B.
     private func flushAndReapAudio() {
-        guard flush() else { return }
-        deleteAudioFiles(pendingAudioDeletions)
-        pendingAudioDeletions.removeAll()
+        guard flush() else {
+            // A disk that stays broken would otherwise grow this queue by one
+            // filename per eviction forever. Bound it: past the cap the oldest
+            // names are dropped, which leaks those files on disk but keeps
+            // memory finite. Leaking is the lesser failure, and reaching this
+            // cap already means writes have been failing for a very long time.
+            if pendingAudioDeletions.count > maxPendingAudioDeletions {
+                let overflow = pendingAudioDeletions.count - maxPendingAudioDeletions
+                pendingAudioDeletions.removeFirst(overflow)
+                ErrorLogger.shared.log(
+                    message: "HistoryStore: dropped \(overflow) queued audio deletions — history writes have been failing long enough to exceed the queue cap",
+                    category: "history"
+                )
+            }
+            return
+        }
+        // Files that could not be removed stay queued — dropping them here would
+        // leak them silently, which is the very thing the queue exists to avoid.
+        pendingAudioDeletions = deleteAudioFiles(pendingAudioDeletions)
     }
 
     /// All entries, newest first.
@@ -299,20 +324,20 @@ final class HistoryStore {
         loadIfNeeded()
         guard let idx = cachedEntries.firstIndex(where: { $0.id == updated.id }) else { return }
         cachedEntries[idx] = updated
-        flush()
+        flushAndReapAudio()
     }
 
     /// Delete a single entry by ID. Flushes to disk.
     func delete(_ id: UUID) {
         loadIfNeeded()
         cachedEntries.removeAll { $0.id == id }
-        flush()
+        flushAndReapAudio()
     }
 
     /// Delete all entries and truncate the file.
     func clear() {
         cachedEntries.removeAll()
-        flush()
+        flushAndReapAudio()
     }
 
     /// Count of entries where isSavedEval == true.
@@ -405,10 +430,20 @@ final class HistoryStore {
 
     /// Removes audio files whose owning entries no longer reference them.
     /// Always called after a successful flush(), never before.
-    private func deleteAudioFiles(_ filenames: [String]) {
+    /// Returns the ones that could not be removed, so they stay queued.
+    private func deleteAudioFiles(_ filenames: [String]) -> [String] {
+        var failed: [String] = []
         for filename in filenames {
-            try? fileManager.removeItem(at: audioDirectory.appendingPathComponent(filename))
+            let url = audioDirectory.appendingPathComponent(filename)
+            do {
+                try fileManager.removeItem(at: url)
+            } catch CocoaError.fileNoSuchFile {
+                // Already gone — nothing to retry.
+            } catch {
+                failed.append(filename)
+            }
         }
+        return failed
     }
 
     // MARK: - Private helpers

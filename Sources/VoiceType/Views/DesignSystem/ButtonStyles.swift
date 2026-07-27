@@ -33,15 +33,21 @@ import SwiftUI
 struct ChecklistPrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
+    /// Exposed so TokensTests can assert the real contrast pair instead of
+    /// re-declaring the colours next to the test, where they could drift out of
+    /// sync with the style and still pass. Review finding, wave B.
+    static let enabledForeground: Color = .black
+    static let enabledBackground: Color = Palette.accent
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Typography.buttonLabel)
-            .foregroundStyle(isEnabled ? Color.black : Palette.textMuted)
+            .foregroundStyle(isEnabled ? Self.enabledForeground : Palette.textMuted)
             .padding(.horizontal, ButtonPadding.horizontal)
             .padding(.vertical, ButtonPadding.vertical)
             .background(
                 RoundedRectangle(cornerRadius: Radius.control)
-                    .fill(isEnabled ? Palette.accent : Palette.strokeSubtle)
+                    .fill(isEnabled ? Self.enabledBackground : Palette.strokeSubtle)
             )
             .contentShape(RoundedRectangle(cornerRadius: Radius.control))
             .opacity(configuration.isPressed ? 0.85 : 1.0)

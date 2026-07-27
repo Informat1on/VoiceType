@@ -263,15 +263,35 @@ trap restore_hidden_bundles EXIT
 SELFCHECK_LOG="$BUILD_TEMP_DIR/selfcheck.log"
 "$MACOS_DIR/$APP_NAME" > "$SELFCHECK_LOG" 2>&1 &
 SELFCHECK_PID=$!
-# Long enough to load a model and initialise Metal on a cold shader cache.
-sleep 30
+# Poll for the completion marker instead of sleeping a fixed interval. With a
+# precompiled metallib this finishes in milliseconds, but the fallback path
+# (runtime shader compilation, no Metal Toolchain) took 7s on this machine and
+# can take considerably longer on a slower one — a fixed 30s wait would report
+# a false failure there. Review finding, wave B.
+SELFCHECK_DEADLINE=$((SECONDS + 180))
+while [ "$SECONDS" -lt "$SELFCHECK_DEADLINE" ]; do
+    grep -q "loaded in" "$SELFCHECK_LOG" 2>/dev/null && break
+    kill -0 "$SELFCHECK_PID" 2>/dev/null || break
+    sleep 1
+done
 if kill -0 "$SELFCHECK_PID" 2>/dev/null; then
     kill "$SELFCHECK_PID" 2>/dev/null || true
     wait "$SELFCHECK_PID" 2>/dev/null || true
 else
     # A background menu-bar app (LSUIElement) has no reason to exit on its own —
     # if it's already gone, that's a crash, not a clean shutdown.
-    echo "⚠️  App process had already exited before the self-check timeout — possible crash, see $SELFCHECK_LOG" >&2
+    #
+    # This MUST fail the build rather than warn and carry on. A crash that
+    # happens after Metal already logged "loading ..." and "loaded in ..."
+    # would satisfy every check below, so continuing here turns exactly the
+    # scenario this self-check exists to catch into a green build.
+    # Review finding, wave B.
+    restore_hidden_bundles
+    trap - EXIT
+    echo "❌ App exited before the self-check timeout — a background menu-bar app has no reason to quit on its own." >&2
+    echo "   This is a crash. Log: $SELFCHECK_LOG" >&2
+    tail -20 "$SELFCHECK_LOG" >&2 || true
+    exit 1
 fi
 
 restore_hidden_bundles
