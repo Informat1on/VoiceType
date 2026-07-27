@@ -502,4 +502,114 @@ final class HistoryStoreTests: XCTestCase {
             "Audio of entries still in the history must not be touched"
         )
     }
+
+    /// The queue must also drain when the first write to succeed after a failure
+    /// is update(), delete() or clear() rather than append().
+    ///
+    /// These three used to call flush() directly, bypassing the reap step — so a
+    /// queue built up during a disk problem stayed stranded until the process
+    /// exited, even though the disk had recovered. Review finding, wave B.
+    func testQueuedAudioIsReapedWhenUpdateIsFirstSuccessfulWrite() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let audioDir = root.appendingPathComponent("audio")
+        let storeDir = root.appendingPathComponent("store")
+        try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let store = HistoryStore.test(
+            storeURL: storeDir.appendingPathComponent("history.jsonl"),
+            audioDirectory: audioDir
+        )
+
+        func makeAudioFile(_ name: String) throws {
+            try Data("fake audio".utf8).write(to: audioDir.appendingPathComponent(name))
+        }
+
+        for i in 0..<101 {
+            try makeAudioFile("a\(i).caf")
+            store.append(HistoryStore.Entry(
+                text: "entry \(i)",
+                targetAppName: "TestApp",
+                targetAppBundleID: "com.test",
+                language: "en",
+                audioPath: "a\(i).caf"
+            ))
+        }
+        // Eviction happened while every write was failing, so the file is still there.
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: audioDir.appendingPathComponent("a0.caf").path),
+            "Precondition: the evicted entry's audio survives while writes fail"
+        )
+
+        // Disk recovers, and the next write is an update — not an append.
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+        guard let newest = store.latestEntry() else {
+            return XCTFail("Expected the store to hold entries in memory")
+        }
+        store.update(newest.withInsertOutcome(true))
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: audioDir.appendingPathComponent("a0.caf").path),
+            "update() must drain the deferred-deletion queue once its write succeeds"
+        )
+    }
+
+    /// A file that cannot be deleted stays queued instead of being dropped, so a
+    /// later attempt can still reap it.
+    func testUndeletableAudioStaysQueued() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let audioDir = root.appendingPathComponent("audio")
+        try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: audioDir.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let store = HistoryStore.test(
+            storeURL: root.appendingPathComponent("history.jsonl"),
+            audioDirectory: audioDir
+        )
+
+        for i in 0..<100 {
+            try Data("x".utf8).write(to: audioDir.appendingPathComponent("a\(i).caf"))
+            store.append(HistoryStore.Entry(
+                text: "entry \(i)",
+                targetAppName: "TestApp",
+                targetAppBundleID: "com.test",
+                language: "en",
+                audioPath: "a\(i).caf"
+            ))
+        }
+
+        // Make the directory immutable so the next eviction's unlink fails.
+        try Data("x".utf8).write(to: audioDir.appendingPathComponent("doomed.caf"))
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: audioDir.path)
+        store.append(HistoryStore.Entry(
+            text: "overflow",
+            targetAppName: "TestApp",
+            targetAppBundleID: "com.test",
+            language: "en",
+            audioPath: "doomed.caf"
+        ))
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: audioDir.appendingPathComponent("a0.caf").path),
+            "The file could not be deleted, so it must still exist"
+        )
+
+        // Lift the restriction and trigger another successful write: the retained
+        // queue entry must now be reaped.
+        try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: audioDir.path)
+        guard let newest = store.latestEntry() else {
+            return XCTFail("Expected the store to hold entries in memory")
+        }
+        store.update(newest.withInsertOutcome(true))
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: audioDir.appendingPathComponent("a0.caf").path),
+            "A retry after the restriction is lifted must delete the previously stuck file"
+        )
+    }
 }

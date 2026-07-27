@@ -590,6 +590,24 @@ final class TranscriptionService: ObservableObject {
 
     // MARK: - Warm-up
 
+    /// Writes a marker to stderr once warm-up has actually run a compute graph,
+    /// but only when build-app.sh asks for it via VOICETYPE_SELFCHECK.
+    ///
+    /// The self-check needs to outlive lazy pipeline compilation: ggml logs
+    /// "loaded in ... sec" as soon as the MTLLibrary is up, long before any
+    /// compute pipeline is built, so waiting on that marker alone would kill the
+    /// app before "failed to compile pipeline" could ever appear. Warm-up pushes
+    /// 500 ms of silence through whisper, which forces those pipelines to be
+    /// built for real. Review finding, wave B re-review.
+    ///
+    /// stderr rather than AppLog because print() is a no-op in release builds and
+    /// os_log does not reach the pipe build-app.sh captures.
+    static func emitSelfCheckMarker() {
+        guard ProcessInfo.processInfo.environment["VOICETYPE_SELFCHECK"] == "1" else { return }
+        FileHandle.standardError.write(Data("VOICETYPE_SELFCHECK: warm-up complete\n".utf8))
+    }
+
+
     /// Primes Metal/CoreML/ANE caches by running 500ms of silence (8000 zero-samples
     /// @ 16 kHz) through whisper.transcribe. Must not affect user-facing state or the
     /// initial prompt.
@@ -660,6 +678,7 @@ final class TranscriptionService: ObservableObject {
             if !Task.isCancelled && warmUpGeneration == modelLoadGeneration {
                 modelStatus = .ready
                 AppLog.models.notice("Warm-up completed — model is hot")
+                Self.emitSelfCheckMarker()
             }
         } catch {
             // VT-WARM-002: Restore prompt only when still current and no pending update.

@@ -261,16 +261,29 @@ restore_hidden_bundles() {
 trap restore_hidden_bundles EXIT
 
 SELFCHECK_LOG="$BUILD_TEMP_DIR/selfcheck.log"
-"$MACOS_DIR/$APP_NAME" > "$SELFCHECK_LOG" 2>&1 &
+# VOICETYPE_SELFCHECK makes the app print a marker to stderr once warm-up has
+# actually pushed a compute graph through Metal — see
+# TranscriptionService.emitSelfCheckMarker().
+VOICETYPE_SELFCHECK=1 "$MACOS_DIR/$APP_NAME" > "$SELFCHECK_LOG" 2>&1 &
 SELFCHECK_PID=$!
 # Poll for the completion marker instead of sleeping a fixed interval. With a
 # precompiled metallib this finishes in milliseconds, but the fallback path
 # (runtime shader compilation, no Metal Toolchain) took 7s on this machine and
 # can take considerably longer on a slower one — a fixed 30s wait would report
 # a false failure there. Review finding, wave B.
+# Wait for WARM-UP, not merely for the Metal library. ggml prints "loaded in"
+# as soon as the MTLLibrary exists, but compute pipelines are compiled lazily
+# afterwards — stopping at that point would kill the app before a
+# "failed to compile pipeline" could ever surface, silently gutting the very
+# check below. Warm-up runs 500ms of silence through whisper, which forces
+# those pipelines to be built. Review finding, wave B re-review.
 SELFCHECK_DEADLINE=$((SECONDS + 180))
+SELFCHECK_WARM=0
 while [ "$SECONDS" -lt "$SELFCHECK_DEADLINE" ]; do
-    grep -q "loaded in" "$SELFCHECK_LOG" 2>/dev/null && break
+    if grep -q "VOICETYPE_SELFCHECK: warm-up complete" "$SELFCHECK_LOG" 2>/dev/null; then
+        SELFCHECK_WARM=1
+        break
+    fi
     kill -0 "$SELFCHECK_PID" 2>/dev/null || break
     sleep 1
 done
@@ -353,7 +366,15 @@ if ! grep -q "loaded in" "$SELFCHECK_LOG"; then
     echo "   See $SELFCHECK_LOG" >&2
     exit 1
 fi
-echo "   • Metal backend initialised standalone"
+# Warm-up is what proves the compute pipelines actually built. Without it the
+# error greps above only ever saw library loading, never pipeline compilation.
+if [ "$SELFCHECK_WARM" != "1" ]; then
+    echo "❌ Warm-up never completed within the deadline — compute pipelines were not exercised," >&2
+    echo "   so this run cannot vouch for the bundle. See $SELFCHECK_LOG" >&2
+    tail -20 "$SELFCHECK_LOG" >&2 || true
+    exit 1
+fi
+echo "   • Metal backend initialised standalone and warmed up"
 
 echo "✅ App bundle created at: $APP_DIR"
 

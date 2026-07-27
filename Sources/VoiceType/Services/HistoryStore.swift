@@ -292,19 +292,28 @@ final class HistoryStore {
             // names are dropped, which leaks those files on disk but keeps
             // memory finite. Leaking is the lesser failure, and reaching this
             // cap already means writes have been failing for a very long time.
-            if pendingAudioDeletions.count > maxPendingAudioDeletions {
-                let overflow = pendingAudioDeletions.count - maxPendingAudioDeletions
-                pendingAudioDeletions.removeFirst(overflow)
-                ErrorLogger.shared.log(
-                    message: "HistoryStore: dropped \(overflow) queued audio deletions — history writes have been failing long enough to exceed the queue cap",
-                    category: "history"
-                )
-            }
+            pendingAudioDeletions = capped(pendingAudioDeletions)
             return
         }
         // Files that could not be removed stay queued — dropping them here would
         // leak them silently, which is the very thing the queue exists to avoid.
-        pendingAudioDeletions = deleteAudioFiles(pendingAudioDeletions)
+        // The cap applies here too: a disk that writes JSONL fine but refuses
+        // every audio deletion would otherwise grow the queue without bound
+        // even though flush keeps succeeding. Review finding, wave B re-review.
+        pendingAudioDeletions = capped(deleteAudioFiles(pendingAudioDeletions))
+    }
+
+    /// Trims the deferred-deletion queue to its cap, dropping the oldest names.
+    /// Those files leak on disk, but an unbounded queue is the worse failure —
+    /// and reaching the cap already means something has been wrong for a long time.
+    private func capped(_ queue: [String]) -> [String] {
+        guard queue.count > maxPendingAudioDeletions else { return queue }
+        let overflow = queue.count - maxPendingAudioDeletions
+        ErrorLogger.shared.log(
+            message: "HistoryStore: dropped \(overflow) queued audio deletions — the deferred-deletion queue hit its cap",
+            category: "history"
+        )
+        return Array(queue.dropFirst(overflow))
     }
 
     /// All entries, newest first.
