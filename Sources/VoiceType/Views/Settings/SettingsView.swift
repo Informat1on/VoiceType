@@ -206,7 +206,7 @@ struct SettingsView: View {
                         // и он рисует пустоту — по интерфейсу нельзя понять,
                         // что вообще выбрано.
                         if let missing = unavailableSelectedDeviceUID {
-                            Text("\(selectedDeviceDisplayName(fallback: missing)) (unavailable)")
+                            Text("\(selectedDeviceMenuTitle) (unavailable)")
                                 .tag(String?.some(missing))
                         }
                     }
@@ -215,13 +215,13 @@ struct SettingsView: View {
                     .accessibilityLabel("Input device")
                 }
                 RowDivider()
-                if let missingUID = unavailableSelectedDeviceUID {
+                if unavailableSelectedDeviceUID != nil {
                     // Инлайн, без модалок: DESIGN.md запрещает NSAlert.runModal
                     // для ошибок. Выбор при этом НЕ сбрасывается — устройство
                     // вернётся, когда гарнитуру подключат обратно.
                     PrefsRow("Selected device unavailable",
                              subtitle: "Recording falls back to System Default until "
-                                 + "\(selectedDeviceDisplayName(fallback: missingUID)) is connected again.") {
+                                 + "\(selectedDeviceDisplayName) is connected again.") {
                         EmptyView()
                     }
                     RowDivider()
@@ -263,12 +263,22 @@ struct SettingsView: View {
         )
     }
 
-    /// Имя выбранного устройства для интерфейса. `fallback` — UID, он идёт в
-    /// дело только если имени не сохранилось (настройка от сборки, которая
-    /// имён ещё не писала).
-    private func selectedDeviceDisplayName(fallback uid: String) -> String {
+    /// Имя выбранного устройства для интерфейса.
+    ///
+    /// Имени может не быть: настройка сохранена сборкой, которая имён ещё не
+    /// писала, а спросить систему нельзя — устройства сейчас нет. Тогда
+    /// подставляется человеческая формулировка, но НЕ UID: строка вида
+    /// `BuiltInHeadphoneInputDevice` ничего пользователю не говорит и в
+    /// интерфейсе появляться не должна.
+    private var selectedDeviceDisplayName: String {
         if let name = settings.preferredInputDeviceName, !name.isEmpty { return name }
-        return uid
+        return "the selected microphone"
+    }
+
+    /// То же имя, но как заголовок пункта списка — с заглавной буквы.
+    private var selectedDeviceMenuTitle: String {
+        if let name = settings.preferredInputDeviceName, !name.isEmpty { return name }
+        return "Selected microphone"
     }
 
     /// UID выбранного устройства, которого сейчас нет в системе, — иначе nil.
@@ -281,6 +291,15 @@ struct SettingsView: View {
     private func reloadInputDevices() {
         inputDevices = (try? AudioDeviceService.inputDevices()) ?? []
         didLoadInputDevices = true
+
+        // Настройка, сохранённая до появления имён, лечится сама, как только
+        // устройство снова видно: имя спрашивается у системы и запоминается,
+        // чтобы следующее отключение показало его, а не идентификатор.
+        if let selected = settings.preferredInputDeviceUID,
+           let device = inputDevices.first(where: { $0.uid == selected }),
+           settings.preferredInputDeviceName != device.name {
+            settings.preferredInputDeviceName = device.name
+        }
     }
 
     // MARK: - Tab 2: Models
