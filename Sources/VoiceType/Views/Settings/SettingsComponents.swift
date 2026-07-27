@@ -189,7 +189,11 @@ struct SegmentedControl<T: Hashable>: View {
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
-        .animation(.easeInOut(duration: 0.12), value: isSelected)  // transition:120ms per prototype
+        // Prototype: transition:120ms. Snapped to Motion.micro (100ms) — DESIGN.md's
+        // own definition of micro is "hover feedback, color transitions", which is
+        // exactly this. 20ms is imperceptible; not worth a second near-duplicate
+        // token. DESIGN.md Decisions Log 2026-07-27.
+        .animation(.easeInOut(duration: Motion.micro), value: isSelected)
     }
 }
 // swiftlint:enable large_tuple
@@ -419,8 +423,12 @@ struct SidebarItem: View {
                     }
                 }
             )
-            .animation(.easeInOut(duration: 0.12), value: isActive)   // transition:120ms
-            .animation(.easeInOut(duration: 0.12), value: isHovered)
+            // Prototype: transition:120ms. Snapped to Motion.micro (100ms) —
+            // same rationale as the segmented control above: this IS
+            // "hover feedback, color transitions" per DESIGN.md's own
+            // definition of the token. DESIGN.md Decisions Log 2026-07-27.
+            .animation(.easeInOut(duration: Motion.micro), value: isActive)
+            .animation(.easeInOut(duration: Motion.micro), value: isHovered)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())

@@ -86,7 +86,7 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 8)   // prototype: padding:12px 8px
         .padding(.vertical, 12)
-        .frame(width: 160)          // prototype: width:160px
+        .frame(width: SettingsLayout.sidebarWidth)   // prototype: width:160px
         .background(Palette.bgWindow)
     }
 

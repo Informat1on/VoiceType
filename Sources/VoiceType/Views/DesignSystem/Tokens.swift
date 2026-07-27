@@ -161,6 +161,16 @@ enum MenuBar {
     static let dividerGap: CGFloat = 2
 }
 
+// MARK: - SettingsLayout
+// DESIGN.md § Layout — Settings layout — native rows, content-first, line 177.
+
+enum SettingsLayout {
+    /// Sidebar width. DESIGN.md line 177: "Sidebar left (160px), content right."
+    /// Value was correct but inline at the SettingsView call site — centralized
+    /// here so it can't drift independently from the prototype spec.
+    static let sidebarWidth: CGFloat = 160
+}
+
 // MARK: - Motion
 // DESIGN.md § Motion. Values in seconds for SwiftUI Animation durations.
 
@@ -183,6 +193,15 @@ enum Motion {
     /// 0.03 → 0.008 so even faint whispers (~0.01) register as visible motion;
     /// true silence (0.0) stays flat.
     static let waveformActivationThreshold: Double = 0.008
+
+    /// Waveform bar height animation — 50ms, deliberately off the locked
+    /// micro/short/medium/long scale. Tied to `CapsuleIndicatorView.levelTimer`
+    /// (fires every 0.05s): the bar animation must finish before the next
+    /// sample lands, or bars visibly stack/lag behind live audio. This is a
+    /// technical sync constant, not a decorative motion choice — snapping it
+    /// to `Motion.micro` (100ms) would make bars perpetually chase the level
+    /// timer. DESIGN.md Decisions Log 2026-07-27.
+    static let waveformBarDuration: Double = 0.05
 }
 
 // MARK: - Typography
@@ -419,6 +438,45 @@ enum Palette {
         light: NSColor(srgbRed: 0.054902, green: 0.090196, blue: 0.125490, alpha: 0.03),
         dark: NSColor(white: 1, alpha: 0.04)
     )
+
+    // MARK: Artwork — VoiceTypeArtwork icon, identical in both modes.
+    // DESIGN.md § Iconography: "App icon: dark navy gradient + cyan glow stay."
+    // Values unchanged from the pre-DESIGN.md (2026-04-12) literals — this is a
+    // centralization pass only, not a repaint. Kept a plain (non-adaptive)
+    // Color, not Color.dynamic, because the artwork is a fixed brand mark like
+    // Palette.Capsule, not a themed surface.
+
+    enum Artwork {
+        /// Icon background gradient — top-leading stop.
+        static let gradientTop = Color(red: 0.14, green: 0.16, blue: 0.28)
+        /// Icon background gradient — bottom-trailing stop.
+        static let gradientBottom = Color(red: 0.07, green: 0.08, blue: 0.14)
+        /// Ambient glow radial gradient — center stop.
+        static let glowInner = Color(red: 0.58, green: 0.93, blue: 0.95)
+        /// Ambient glow radial gradient — edge stop.
+        static let glowOuter = Color(red: 0.18, green: 0.60, blue: 0.92)
+        /// Waveform-bar gradient — bottom stop (top stop is Color.white.opacity).
+        static let barGradientBottom = Color(red: 0.52, green: 0.82, blue: 0.97)
+    }
+
+    // MARK: Toast — ErrorToastWindow, identical in both modes.
+    // DESIGN.md § Interaction States: "toast ... dark-red bg #2A1A1A" — the
+    // toast is opaque and theme-independent like Palette.Capsule, so these are
+    // plain Color values, not Color.dynamic.
+
+    enum Toast {
+        /// Toast surface. #2A1A1A.
+        static let bg = Color(nsColor: NSColor(hex: "#2A1A1A"))
+        /// Toast accent — icon glyph + "View log" link. #FF7A6B, the same value
+        /// as Palette.error's dark-mode stop, but kept as its own fixed literal
+        /// (not an alias of the adaptive `error` token) because the toast never
+        /// switches to the light-mode error color.
+        static let accent = Color(nsColor: NSColor(hex: "#FF7A6B"))
+        /// Toast title/body text — warm off-white over the dark-red bg. #FFDCD5.
+        /// Body text applies `.opacity(0.75)` at the call site; title uses it
+        /// at full strength.
+        static let text = Color(nsColor: NSColor(hex: "#FFDCD5"))
+    }
 }
 
 // swiftlint:enable inline_color_rgb inline_color_hex inline_nscolor_rgb

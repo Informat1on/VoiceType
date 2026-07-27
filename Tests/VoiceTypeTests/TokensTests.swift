@@ -163,6 +163,71 @@ final class TokensTests: XCTestCase {
             "com.voicetype.capsuleErrorInlineExpired"
         )
     }
+
+    // MARK: 15 — Button contrast regression (2026-07-27)
+    //
+    // EvalEditorView carried a local button style with WHITE text on
+    // Palette.accent (~1.9:1, WCAG AA fail) — a copy-pasted repeat of a bug
+    // already found and fixed in ButtonStyles.swift's ChecklistPrimaryButtonStyle
+    // (black text, AAA). Neither TokensTests nor ButtonStyles.swift had a test
+    // that would have caught the copy. This guards the underlying token
+    // contrast so any future primary-button style built on `Palette.accent` +
+    // black text is forced to clear WCAG AA (4.5:1, normal text) — and proves
+    // the check actually discriminates by asserting the white-text regression
+    // would have failed it.
+    //
+    // Literals below mirror Palette.accent's dark (#59C7FF) / light (#099DDF)
+    // hex values (Tokens.swift) rather than resolving the dynamic Color at
+    // test time — same pattern as `testHexColorParser` above. Keep in sync if
+    // Palette.accent's hex values ever change.
+
+    /// WCAG 2.x relative luminance. https://www.w3.org/TR/WCAG21/#dfn-relative-luminance
+    private func relativeLuminance(_ color: NSColor) -> Double {
+        guard let srgb = color.usingColorSpace(.sRGB) else { return 0 }
+        func linearize(_ channel: CGFloat) -> Double {
+            let c = Double(channel)
+            return c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linearize(srgb.redComponent)
+            + 0.7152 * linearize(srgb.greenComponent)
+            + 0.0722 * linearize(srgb.blueComponent)
+    }
+
+    /// WCAG contrast ratio between two colors, order-independent, range [1, 21].
+    private func contrastRatio(_ a: NSColor, _ b: NSColor) -> Double {
+        let lighter = max(relativeLuminance(a), relativeLuminance(b))
+        let darker = min(relativeLuminance(a), relativeLuminance(b))
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    func testPrimaryButtonTextContrastMeetsWCAG_AA() {
+        let black = NSColor.black
+        let white = NSColor.white
+        let accentDark = NSColor(hex: "#59C7FF")   // Palette.accent, dark mode
+        let accentLight = NSColor(hex: "#099DDF")  // Palette.accent, light mode
+
+        let blackOnAccentDark = contrastRatio(black, accentDark)
+        let blackOnAccentLight = contrastRatio(black, accentLight)
+        XCTAssertGreaterThanOrEqual(
+            blackOnAccentDark,
+            4.5,
+            "ChecklistPrimaryButtonStyle text (black) on Palette.accent (dark #59C7FF) must meet WCAG AA 4.5:1; got \(blackOnAccentDark)"
+        )
+        XCTAssertGreaterThanOrEqual(
+            blackOnAccentLight,
+            4.5,
+            "ChecklistPrimaryButtonStyle text (black) on Palette.accent (light #099DDF) must meet WCAG AA 4.5:1; got \(blackOnAccentLight)"
+        )
+
+        // Sanity check: the regression this test exists to catch (white text on
+        // accent) must FAIL AA — otherwise the assertions above aren't discriminating.
+        let whiteOnAccentDark = contrastRatio(white, accentDark)
+        XCTAssertLessThan(
+            whiteOnAccentDark,
+            4.5,
+            "Sanity check failed: white-on-accent should fail WCAG AA (this was the actual regression) — got \(whiteOnAccentDark)"
+        )
+    }
 }
 
 // swiftlint:enable inline_color_hex

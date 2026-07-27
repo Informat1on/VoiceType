@@ -10,7 +10,7 @@ struct VoiceTypeArtwork: View {
             RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
                 .fill(
                     LinearGradient(
-                        colors: [Color(red: 0.14, green: 0.16, blue: 0.28), Color(red: 0.07, green: 0.08, blue: 0.14)],
+                        colors: [Palette.Artwork.gradientTop, Palette.Artwork.gradientBottom],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -22,7 +22,7 @@ struct VoiceTypeArtwork: View {
             Circle()
                 .fill(
                     RadialGradient(
-                        colors: [Color(red: 0.58, green: 0.93, blue: 0.95), Color(red: 0.18, green: 0.60, blue: 0.92)],
+                        colors: [Palette.Artwork.glowInner, Palette.Artwork.glowOuter],
                         center: .center,
                         startRadius: 4,
                         endRadius: size * 0.34
@@ -37,7 +37,7 @@ struct VoiceTypeArtwork: View {
                     Capsule(style: .continuous)
                         .fill(
                             LinearGradient(
-                                colors: [Color.white.opacity(0.92), Color(red: 0.52, green: 0.82, blue: 0.97)],
+                                colors: [Color.white.opacity(0.92), Palette.Artwork.barGradientBottom],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )

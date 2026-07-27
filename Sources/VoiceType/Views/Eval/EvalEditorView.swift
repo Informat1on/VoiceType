@@ -373,7 +373,7 @@ struct EvalEditorView: View {
             Button("Save eval pair") {
                 onSave(correctionText)
             }
-            .buttonStyle(VoiceTypePrimaryButtonStyle())
+            .buttonStyle(ChecklistPrimaryButtonStyle())
             .disabled(!isCorrectionChanged)
             .keyboardShortcut(.return, modifiers: .command)
             .accessibilityLabel(
@@ -441,24 +441,13 @@ struct EvalEditorView: View {
 
 // MARK: - Button Styles
 // swiftlint:disable no_grouping_extension
-
-private struct VoiceTypePrimaryButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Typography.buttonLabel)
-            .foregroundStyle(isEnabled ? Color.white : Palette.textMuted)
-            .padding(.horizontal, ButtonPadding.horizontal)
-            .padding(.vertical, ButtonPadding.vertical)
-            .background(
-                RoundedRectangle(cornerRadius: Radius.control)
-                    .fill(isEnabled ? Palette.accent : Palette.strokeSubtle)
-            )
-            .opacity(configuration.isPressed ? 0.8 : 1)
-            .animation(.easeInOut(duration: Motion.micro), value: configuration.isPressed)
-    }
-}
+//
+// Primary (filled-accent) style lives in Views/DesignSystem/ButtonStyles.swift
+// as `ChecklistPrimaryButtonStyle` — this file used to keep its own copy
+// (`VoiceTypePrimaryButtonStyle`) that regressed the WCAG AA fix already
+// applied there (white-on-accent text, ~1.9:1 contrast). Removed 2026-07-27;
+// see DESIGN.md Decisions Log. `VoiceTypeSecondaryButtonStyle` below has no
+// shared equivalent (bordered outline, not filled) and stays local.
 
 private struct VoiceTypeSecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {

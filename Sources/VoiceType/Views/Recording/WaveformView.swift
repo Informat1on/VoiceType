@@ -210,25 +210,17 @@ struct CapsuleIndicatorView: View {
             )
             .transition(labelTransition)
 
-        case let .errorToast(title, _):
-            // TODO: Step 7 — render as separate toast NSWindow.
-            // For now: mirror errorInline treatment (tally + chip + red text).
-            threeZoneLayout(
-                leading: { errorTallyWithChip },
-                center: {
-                    Text(title)
-                        .font(Typography.metaLabel)
-                        .foregroundStyle(Palette.error)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                },
-                trailing: {
-                    Text("")
-                        .font(Typography.mono)
-                        .frame(minWidth: 30, alignment: .trailing)
-                }
-            )
-            .transition(labelTransition)
+        case .errorToast:
+            // Deliberately not drawn on the capsule. AppDelegate.showErrorToast()
+            // and the persistent-toast path (setupServices()) both fire the
+            // VoiceOver announcement by calling `stateModel.announcer(...)`
+            // directly — they never assign `stateModel.state = .errorToast(...)`.
+            // ErrorToastWindow.swift is the only visible surface for unsolvable
+            // errors (see its header comment). This case stays in the switch
+            // only because `CapsuleState` must remain exhaustive here; the
+            // Step 7 toast-rendering follow-up that used to live in this branch
+            // was resolved by ErrorToastWindow, not by drawing it in the capsule.
+            EmptyView()
 
         case .emptyResult:
             threeZoneLayout(
@@ -427,7 +419,7 @@ struct CapsuleWaveformView: View {
                         ? Palette.Capsule.text
                         : Palette.Capsule.timer.opacity(0.55))
                     .frame(width: barWidth, height: barHeight)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.05), value: barHeight)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: Motion.waveformBarDuration), value: barHeight)
             }
         }
         .frame(height: maxHeight)

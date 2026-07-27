@@ -286,11 +286,13 @@ private struct StatusLine: View {
                     // Model status dot — shown only in idle/recording where the model
                     // name is visible. Not shown for notReady/transcribing where the
                     // sub-line carries a different semantic signal.
-                    // Size 9pt: visible at a glance without dominating the sub-line.
+                    // Reuses MenuBar.tallyDotSize (was a hardcoded 9pt) so the two
+                    // dots visible in the same dropdown share one size — DESIGN.md
+                    // Decisions Log 2026-07-27.
                     if showModelStatusDot {
                         Circle()
                             .fill(modelStatusDotColor)
-                            .frame(width: 9, height: 9)
+                            .frame(width: MenuBar.tallyDotSize, height: MenuBar.tallyDotSize)
                             .accessibilityLabel(modelStatusAccessibilityLabel)
 
                         // Accessibility-friendly text label for non-ready states.

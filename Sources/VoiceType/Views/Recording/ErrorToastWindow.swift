@@ -21,8 +21,6 @@
 import AppKit
 import SwiftUI
 
-// swiftlint:disable inline_color_hex inline_color_rgb inline_nscolor_rgb
-
 // MARK: - ErrorToastContent (SwiftUI view)
 
 private struct ErrorToastContent: View {
@@ -34,30 +32,30 @@ private struct ErrorToastContent: View {
         HStack(alignment: .top, spacing: 10) {
             // Error icon
             Text("!")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(Color(nsColor: NSColor(hex: "#FF7A6B")))
+                .font(Typography.body.weight(.bold))
+                .foregroundColor(Palette.Toast.accent)
                 .frame(width: 16, height: 16)
                 .padding(.top, 1)
 
             VStack(alignment: .leading, spacing: 2) {
                 if !title.isEmpty {
                     Text(title)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(Color(nsColor: NSColor(hex: "#FFDCD5")))
+                        .font(Typography.buttonLabel)
+                        .foregroundColor(Palette.Toast.text)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !message.isEmpty {
                     Text(message)
-                        .font(.system(size: 11, weight: .regular))
-                        .foregroundColor(Color(nsColor: NSColor(hex: "#FFDCD5")).opacity(0.75))
+                        .font(Typography.caption)
+                        .foregroundColor(Palette.Toast.text.opacity(0.75))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Button("View log") {
                     onViewLog()
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Color(nsColor: NSColor(hex: "#FF7A6B")))
+                .font(Typography.caption.weight(.medium))
+                .foregroundColor(Palette.Toast.accent)
                 .padding(.top, 2)
             }
         }
@@ -66,14 +64,11 @@ private struct ErrorToastContent: View {
         .frame(width: 320, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(nsColor: NSColor(hex: "#2A1A1A")))
+                .fill(Palette.Toast.bg)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(
-                    Color(nsColor: NSColor(srgbRed: 1.0, green: 0.478431, blue: 0.419608, alpha: 0.35)),
-                    lineWidth: 1
-                )
+                .strokeBorder(Palette.Toast.accent.opacity(0.35), lineWidth: 1)
         )
     }
 }
@@ -280,5 +275,3 @@ final class ErrorToastWindow: NSPanel {
         }
     }
 }
-
-// swiftlint:enable inline_color_hex inline_color_rgb inline_nscolor_rgb
