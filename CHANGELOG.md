@@ -5,6 +5,107 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-07-27
+
+The transcription speed release, plus the first tools that improve what
+Whisper writes rather than how fast it writes it.
+
+### Added
+
+- **Input microphone selection** (Settings → General → Microphone). Pick
+  which device VoiceType records from instead of following the system
+  default. This is the lever that matters for Bluetooth headsets: in
+  headset mode (HFP, 8–16 kHz) unstressed syllables are lost before
+  recognition even starts, and no amount of post-processing can bring
+  them back. If the selected device disappears — you unplug the
+  headphones — recording falls back to System Default and Settings says
+  so inline; **your choice is not silently reset**, and the device is
+  used again as soon as it is reconnected.
+  Delivering this required replacing the recording engine: `AVAudioRecorder`
+  on macOS offers no input-device selection at all, so capture now runs on
+  `AVCaptureSession` + `AVCaptureAudioDataOutput`. Audio is delivered in
+  ~10 ms chunks instead of one opaque stream, already in the 16 kHz mono
+  format Whisper wants.
+- **Transcript post-processing** with two toggles in Settings → General →
+  Insertion:
+  - **Normalize terminology** (on by default) — a closed dictionary of
+    exact word forms that fixes product names Whisper spells in Cyrillic
+    (`кодекс` → `Codex`, `графана` → `Grafana`) and the 24 different ways
+    it managed to spell `handoff`. Deliberately no prefix rules: they
+    would turn `хендлеры` into `handoff` and `допустим` into `дOpusтим`.
+    An unknown form is skipped — skipping is cheap, a wrong replacement
+    is not.
+  - **Remove filler words** (off by default) — deletes «вот», «ну»,
+    «короче» when they are genuinely fillers, keeping surrounding
+    punctuation correct. Off until a manual audit of real deletions
+    confirms its precision, because this layer removes words a user
+    actually said.
+- **Subtitle-hallucination filter.** On short or silent recordings
+  Whisper would sometimes emit «Продолжение следует…» — a phrase from
+  YouTube subtitles in its training data — and VoiceType would type it
+  into your editor. Such templates are now stripped from the edges of the
+  output; a matching phrase in the middle of real speech is never
+  removed. When it was the entire output, you get the normal
+  "nothing recognized" state instead of invented text.
+- **Explicit accelerator choice** (Auto / Neural Engine / GPU) with
+  honest diagnostics in Settings. Auto picks the Neural Engine wherever
+  the CoreML encoder is installed.
+- **Diagnostics** in Settings → Advanced: "Reveal in Finder" and "Clear"
+  for `~/Library/Logs/VoiceType/errors.log`.
+- **History keeps Whisper's raw output** alongside the processed text,
+  plus a stamp of which post-processing pipeline produced it — so a
+  change in behavior is attributable instead of mysterious.
+- **Custom Vocabulary now explains itself** and shows an exact token
+  budget. The field feeds Whisper's `initial_prompt`, which is capped at
+  223 tokens and silently truncated from the *beginning* — previously
+  with no feedback whatsoever. It now states plainly that it is a hint to
+  the recognizer rather than a find-and-replace list, shows a worked
+  example in the language you dictate in, counts tokens exactly, and
+  warns before anything is lost.
+  It also stopped recommending a harmful format: a measurement across 41
+  recordings found that a comma-separated list collapses punctuation
+  across the entire transcript (periods 168 → 21), because the prompt
+  sets the decoder's *style*, not just its vocabulary. Full sentences
+  keep punctuation intact.
+
+### Changed
+
+- **Transcription got about 6.7× faster.** The Metal backend was silently
+  failing to initialize, so everything ran on CPU. With Metal restored and
+  whisper.cpp updated from v1.7.5 to v1.9.1, 90 seconds of audio takes
+  **1.97 s instead of 13.2 s** on an M5 Pro.
+- **First launch after install is no longer slow.** The Metal shader
+  library is precompiled at build time instead of at first run:
+  **7.0 s → 0.001 s** on a cold cache.
+- Release builds now verify that the `.app` bundle is self-contained —
+  a divergent installed copy had previously produced a broken app.
+
+### Fixed
+
+- **Transcriptions are no longer lost when insertion fails.** The text is
+  written to history first; if pasting into the target app fails, the
+  text still exists.
+- **Recorded audio is deleted only after history is written**, and the
+  deletion queue survives a failed write.
+- **A capture failure no longer looks like success.** If the session dies
+  mid-recording, whatever was captured is still transcribed, the failure
+  reason is reported synchronously rather than racing the stop, and you
+  see a toast instead of a silently truncated transcript.
+- Removed a deadlock risk when starting a recording.
+- Device identifiers such as `BuiltInHeadphoneInputDevice` no longer leak
+  into the interface where a human-readable name belongs.
+
+### Notes
+
+- Post-processing is deterministic by design. Local LLM post-processing
+  was evaluated and rejected on measurement: none of the models tested
+  performed the normalization the feature existed for, and the fastest
+  usable one still took 3.2 s on a long transcript against an 800 ms
+  ceremony budget. Apple's on-device model was unavailable for Russian
+  entirely.
+- macOS 13 remains the deployment target and still type-checks, but this
+  release was verified live only on macOS 26.
+
 ## [1.3.1] - 2026-05-04
 
 ### Changed
