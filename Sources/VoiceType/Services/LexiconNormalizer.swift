@@ -86,7 +86,7 @@ enum LexiconNormalizer {
 
             if let replaced = homoglyphReplacement(tokens: tokens, at: i, mask: mask) {
                 edits.append(TextEdit(
-                    matchedRange: token.range,
+                    matchedRanges: [token.range],
                     original: token.text,
                     replacement: replaced,
                     rule: .homoglyph
@@ -98,7 +98,7 @@ enum LexiconNormalizer {
             if let (replacement, consumed) = dictionaryMatch(tokens: tokens, at: i, mask: mask) {
                 let range = tokens[i].range.lowerBound..<tokens[i + consumed - 1].range.upperBound
                 edits.append(TextEdit(
-                    matchedRange: range,
+                    matchedRanges: [range],
                     original: String(chars[range]),
                     replacement: replacement,
                     rule: .lexicon(form: String(chars[range]))

@@ -72,7 +72,7 @@ final class CorpusDumpTests: XCTestCase {
             // `raw` would be wrong the moment a stage changes length: lexicon
             // offsets follow the filler pass, not the raw text. Code review
             // caught that.
-            let editReport = try stageReport(for: result, raw: raw)
+            let editReport = try stageReport(for: result, segments: [raw])
             let encoded = try JSONSerialization.data(withJSONObject: editReport)
             try encoded.write(to: outDir.appendingPathComponent("\(n).edits.json"))
         }
@@ -89,10 +89,16 @@ final class CorpusDumpTests: XCTestCase {
     /// they refer to. Consumers (scripts/filler-audit.py) must not search for
     /// the text: with eight «вот» in a record, a search finds the first one and
     /// reports an occurrence the pipeline never touched.
-    private func stageReport(for result: PostProcessResult, raw: String) throws -> [[String: Any]] {
+    ///
+    /// Takes the SEGMENTS, not the joined text: with `VOICETYPE_JSONL_SPLIT=1`
+    /// the chain receives one segment per line, and rejoining the kept ones
+    /// drops those newlines. Re-deriving the stage input from a single joined
+    /// string would then shift every offset past the first newline — code
+    /// review caught that.
+    private func stageReport(for result: PostProcessResult, segments: [String]) throws -> [[String: Any]] {
         // The filler stage sees the text AFTER the hallucination filter, which
-        // is not `raw` whenever boilerplate was dropped.
-        var stageInput = Array(HallucinationFilter.split(segments: [raw]).kept.joined())
+        // is not the raw join whenever boilerplate was dropped.
+        var stageInput = Array(HallucinationFilter.split(segments: segments).kept.joined())
         var report: [[String: Any]] = []
 
         for batch in result.stages {
@@ -108,7 +114,7 @@ final class CorpusDumpTests: XCTestCase {
                     "matchEnd": matched.upperBound,
                     "editStart": full.lowerBound,
                     "editEnd": full.upperBound,
-                    "matched": String(stageInput[edit.matchedRange]),
+                    "matched": edit.matchedRanges.map { String(stageInput[$0]) }.joined(separator: " "),
                     "original": edit.original,
                     "replacement": edit.replacement,
                     "rule": String(describing: edit.rule),
@@ -167,7 +173,7 @@ final class CorpusDumpTests: XCTestCase {
                 "input": text,
                 "output": result.text,
                 "removed": result.removedTemplates,
-                "edits": try stageReport(for: result, raw: text)
+                "edits": try stageReport(for: result, segments: segments)
             ]
             let encoded = try JSONSerialization.data(withJSONObject: report)
             guard let encodedLine = String(data: encoded, encoding: .utf8) else { continue }

@@ -74,10 +74,12 @@ def load_edits(path):
         for edit in record.get("edits", []):
             if edit.get("stage") != "fillers":
                 continue
-            if "matchStart" not in edit or "stageInput" not in edit:
+            missing = [f for f in ("matchStart", "matchEnd", "editStart", "editEnd",
+                                   "stageInput", "matched") if f not in edit]
+            if missing:
                 sys.exit(
-                    "В отчёте нет полей matchStart/stageInput — он снят старой версией "
-                    "харнесса. Перепрогони CorpusDumpTests."
+                    f"В отчёте нет полей {', '.join(missing)} — он снят старой версией "
+                    "харнесса или повреждён. Перепрогони CorpusDumpTests."
                 )
             matched = (edit.get("matched") or "").strip(" ,")
             # Серия подряд идущих филлеров («ну вот», «вот, ну») — своя страта:
@@ -174,8 +176,11 @@ def score(path, population):
     простая доля по 216 наблюдениям — смещённая оценка для 1541 удаления:
     редкое слово в ней весит больше, чем в реальности.
 
-    Общая precision считается как Σ (N_слова / N_всего) · p_слова, интервал —
-    из дисперсии этой взвешенной суммы. Замечание код-ревью.
+    Общая precision считается как Σ (N_слова / N_всего) · p_слова. Интервал —
+    взвешенная сумма границ Уилсона по стратам, а НЕ корень из взвешенной
+    дисперсии: последняя даёт нулевую неопределённость при p=1, то есть страта
+    25/25 печатала бы «1.000–1.000» и гейт проходил бы по фикции. Взвешенные
+    границы Уилсона консервативнее и не схлопываются. Замечание код-ревью.
     """
     wrong, total = Counter(), Counter()
     blank = 0
@@ -207,7 +212,7 @@ def score(path, population):
     print(f"размечено: {n}, неверных: {sum(wrong.values())}")
     print()
 
-    weighted, variance, unweighted_note = 0.0, 0.0, []
+    weighted, bound_lo, bound_hi, unweighted_note = 0.0, 0.0, 0.0, []
     for word in sorted(total):
         w, t = wrong[word], total[word]
         good = t - w
@@ -221,16 +226,16 @@ def score(path, population):
         if share:
             weight = share / sum(population.values())
             weighted += weight * p
-            variance += (weight ** 2) * p * (1 - p) / t
+            bound_lo += weight * lo
+            bound_hi += weight * hi
 
     print()
     if unweighted_note:
         print(f"⚠️  нет размеров страт для: {', '.join(unweighted_note)} — "
               "передай --population, иначе общая оценка не считается")
         return
-    half = 1.96 * math.sqrt(variance)
     print(f"precision по корпусу (взвешенно): {weighted:.3f} "
-          f"(95% CI {max(0, weighted - half):.3f}–{min(1, weighted + half):.3f})")
+          f"(95% CI {max(0, bound_lo):.3f}–{min(1, bound_hi):.3f})")
     print()
     print("Гейт: ≥0.98 — оставляем включённым по умолчанию;")
     print("      0.95–0.98 — ужесточать по слову с худшим профилем;")

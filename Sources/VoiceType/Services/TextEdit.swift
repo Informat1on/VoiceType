@@ -45,15 +45,26 @@ struct TextEdit: Equatable {
     enum Rule: Equatable {
         /// Dictionary entry, carrying the matched source form.
         case lexicon(form: String)
-        /// Filler word removal, carrying the removed word in canonical form.
-        case filler(word: String)
+        /// Filler removal, carrying each removed word in canonical form — one
+        /// element per matched token, parallel to `matchedRanges`.
+        case filler(words: [String])
         /// Cyrillic lookalike inside a Latin identifier.
         case homoglyph
     }
 
-    /// The exact token the rule matched, in Characters of the stage input.
-    /// The metric aligns on this, not on `editRange`.
-    let matchedRange: Range<Int>
+    /// The exact tokens the rule matched, in Characters of the stage input.
+    /// The metric aligns on these, not on `editRange`.
+    ///
+    /// A list rather than one range because a run of adjacent fillers is ONE
+    /// atomic edit (their seams would otherwise overlap) while still being
+    /// several matched tokens: "ну, короче" is one deletion but two words, and
+    /// collapsing it into a single range would quietly redefine "the token the
+    /// rule fired on" to include a comma and a space. Ordinary edits carry
+    /// exactly one element.
+    let matchedRanges: [Range<Int>]
+
+    /// First matched token — the anchor the eval metric aligns on.
+    var matchedRange: Range<Int> { matchedRanges[0] }
 
     /// What is actually replaced, including any comma and whitespace the rule
     /// absorbs. Equals `matchedRange` when the rule takes nothing extra.
@@ -68,14 +79,15 @@ struct TextEdit: Equatable {
     let rule: Rule
 
     init(
-        matchedRange: Range<Int>,
+        matchedRanges: [Range<Int>],
         editRange: Range<Int>? = nil,
         original: String,
         replacement: String,
         rule: Rule
     ) {
-        self.matchedRange = matchedRange
-        self.editRange = editRange ?? matchedRange
+        precondition(!matchedRanges.isEmpty, "an edit must match at least one token")
+        self.matchedRanges = matchedRanges
+        self.editRange = editRange ?? (matchedRanges[0].lowerBound..<matchedRanges[matchedRanges.count - 1].upperBound)
         self.original = original
         self.replacement = replacement
         self.rule = rule
@@ -132,10 +144,35 @@ extension TextEdit {
                 problems.append("edit \(i): editRange \(edit.editRange) out of bounds (input \(input.count))")
                 continue
             }
-            guard edit.matchedRange.lowerBound >= edit.editRange.lowerBound,
-                  edit.matchedRange.upperBound <= edit.editRange.upperBound else {
-                problems.append("edit \(i): matchedRange \(edit.matchedRange) not inside editRange \(edit.editRange)")
+            var previousMatchEnd = -1
+            var matchProblem: String?
+            for matched in edit.matchedRanges {
+                guard matched.lowerBound >= edit.editRange.lowerBound,
+                      matched.upperBound <= edit.editRange.upperBound else {
+                    matchProblem = "edit \(i): matched \(matched) not inside editRange \(edit.editRange)"
+                    break
+                }
+                guard matched.lowerBound >= previousMatchEnd else {
+                    matchProblem = "edit \(i): matched ranges overlap or are unsorted"
+                    break
+                }
+                // A matched token must be exactly a token — no surrounding
+                // punctuation smuggled in. Checked here because `validate` is
+                // the only place the contract is enforced rather than assumed.
+                let text = String(input[matched])
+                guard !text.isEmpty, text == text.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !text.contains(","), !text.contains(".") else {
+                    matchProblem = "edit \(i): matched \(text.debugDescription) is not a bare token"
+                    break
+                }
+                previousMatchEnd = matched.upperBound
+            }
+            if let matchProblem {
+                problems.append(matchProblem)
                 continue
+            }
+            if case let .filler(words) = edit.rule, words.count != edit.matchedRanges.count {
+                problems.append("edit \(i): \(words.count) filler words for \(edit.matchedRanges.count) matched ranges")
             }
             let slice = String(input[edit.editRange])
             if slice != edit.original {

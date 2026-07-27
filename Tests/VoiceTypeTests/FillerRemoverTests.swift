@@ -233,10 +233,14 @@ final class FillerRemoverTests: XCTestCase {
             XCTAssertEqual(TextEdit.apply(edits, to: chars), output, "output must be the edits applied")
 
             for edit in edits {
-                guard case let .filler(word) = edit.rule else {
+                guard case let .filler(words) = edit.rule else {
                     return XCTFail("filler stage must only emit filler edits")
                 }
-                XCTAssertEqual(String(chars[edit.matchedRange]), word, "matchedRange must be the token itself")
+                XCTAssertEqual(
+                    edit.matchedRanges.map { String(chars[$0]) },
+                    words,
+                    "each matched range must be exactly its filler word"
+                )
                 XCTAssertEqual(edit.replacement, "", "a filler edit is a deletion")
             }
         }

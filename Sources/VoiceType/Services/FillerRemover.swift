@@ -97,14 +97,15 @@ enum FillerRemover {
                 // contract and produced "слово ." instead of "слово.".
                 // Code review caught it; the fix is to treat the run as the
                 // unit it actually is.
-                let matchedRange = range.lowerBound..<runEnd(from: range, in: chars, mask: mask)
-                let editRange = seamRange(for: matchedRange, in: chars)
+                let matchedRanges = run(from: range, in: chars, mask: mask)
+                let span = matchedRanges[0].lowerBound..<matchedRanges[matchedRanges.count - 1].upperBound
+                let editRange = seamRange(for: span, in: chars)
                 edits.append(TextEdit(
-                    matchedRange: matchedRange,
+                    matchedRanges: matchedRanges,
                     editRange: editRange,
                     original: String(chars[editRange]),
                     replacement: "",
-                    rule: .filler(word: String(chars[matchedRange]))
+                    rule: .filler(words: matchedRanges.map { String(chars[$0]) })
                 ))
                 index = editRange.upperBound
                 continue
@@ -224,28 +225,29 @@ enum FillerRemover {
         return range
     }
 
-    /// End of the run of removable fillers starting at `range`. Words are
+    /// The run of removable fillers starting at `range`, one range per word.
+    /// Words are
     /// joined across spaces and commas only — anything else ends the run, so
     /// "ну и ну" is not a run (the "и" between them is content).
     ///
     /// Each subsequent word must pass the SAME conditions, which is what keeps
     /// "вот вот так" honest: the second `вот` is followed by `так`, fails
     /// condition 3, and the run stops at the first word.
-    private static func runEnd(from range: Range<Int>, in chars: [Character], mask: [Bool]) -> Int {
-        var end = range.upperBound
+    private static func run(from range: Range<Int>, in chars: [Character], mask: [Bool]) -> [Range<Int>] {
+        var ranges = [range]
         var cursor = range.upperBound
 
         while true {
             var next = cursor
             while next < chars.count, chars[next] == " " || chars[next] == "," { next += 1 }
-            guard next < chars.count, isWordCharacter(chars[next]) else { return end }
+            guard next < chars.count, isWordCharacter(chars[next]) else { return ranges }
 
             var wordEnd = next
             while wordEnd < chars.count, isWordCharacter(chars[wordEnd]) { wordEnd += 1 }
             let word = String(chars[next..<wordEnd])
-            guard shouldRemove(word: word, at: next..<wordEnd, in: chars, mask: mask) else { return end }
+            guard shouldRemove(word: word, at: next..<wordEnd, in: chars, mask: mask) else { return ranges }
 
-            end = wordEnd
+            ranges.append(next..<wordEnd)
             cursor = wordEnd
         }
     }
