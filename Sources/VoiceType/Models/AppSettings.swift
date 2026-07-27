@@ -354,7 +354,13 @@ final class AppSettings: ObservableObject {
         // post-processing: the measured collateral damage on the owner's
         // corpus is 0.00%, so the feature earns its default.
         self.normalizeTranscript = defaults.object(forKey: "normalizeTranscript") as? Bool ?? true
-        self.removeFillerWords = defaults.object(forKey: "removeFillerWords") as? Bool ?? true
+        // Default OFF, unlike the dictionary. Not a judgement on the rule —
+        // it measures 30/33 on dev with zero wrong fixes — but on the audit
+        // that has not happened yet: precision on the owner's real speech
+        // rests on four holdout observations, and this stage deletes words in
+        // 43% of records rather than rewriting them. Off is the reversible
+        // side. Flip the default once scripts/filler-audit.py clears the gate.
+        self.removeFillerWords = defaults.object(forKey: "removeFillerWords") as? Bool ?? false
 
         // Default .auto — including for existing users who never saw this setting
         // before it existed (no stored raw value falls through to .auto).
