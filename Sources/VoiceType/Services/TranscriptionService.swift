@@ -248,7 +248,10 @@ final class TranscriptionService: ObservableObject {
             ? Self.bilingualSeed
             : ""
         let user = AppSettings.shared.customVocabulary
-        let combined = [seed, user].filter { !$0.isEmpty }.joined(separator: " | ")
+        // PromptBudget.fullPrompt is the single source of truth for this join —
+        // CustomVocabularySection's token counter builds the exact same string,
+        // and a second inline copy here would silently drift from it over time.
+        let combined = PromptBudget.fullPrompt(seed: seed, vocabulary: user)
         setInitialPrompt(combined.isEmpty ? nil : combined)
     }
 
