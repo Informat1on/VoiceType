@@ -381,4 +381,74 @@ final class LexiconNormalizerTests: XCTestCase {
         // Dot between alphanumerics with no slash — same protection.
         XCTAssertEqual(LexiconNormalizer.normalize("файл sonnet.md готов"), "файл sonnet.md готов")
     }
+
+    // MARK: - Characterization tests for the protected-zone machinery
+    //
+    // These pin behaviour that the three tests above only sample, because the
+    // masking logic is about to be extracted into a shared type for the filler
+    // remover to reuse. An extraction is only correct if these pass unchanged
+    // before and after it — that is the whole point of writing them first.
+    // Plan review asked for exactly this before the move.
+
+    /// Same-character delimiters pair sequentially (1st+2nd, 3rd+4th), so a
+    /// record with two quoted fragments protects both, and the text between
+    /// the pairs stays normalizable.
+    func testProtectedZoneMultiplePairsInOneRecord() {
+        XCTAssertEqual(
+            LexiconNormalizer.normalize("сначала `кодекс` потом кодекс и снова `кодекс` тут"),
+            "сначала `кодекс` потом Codex и снова `кодекс` тут"
+        )
+    }
+
+    /// A third, unpaired delimiter leaves everything after it unprotected —
+    /// pairing is sequential, not "anything after a backtick".
+    func testProtectedZoneThirdUnpairedDelimiterProtectsNothingAfterIt() {
+        XCTAssertEqual(
+            LexiconNormalizer.normalize("`кодекс` дальше `кодекс снова"),
+            "`кодекс` дальше `Codex снова"
+        )
+    }
+
+    /// Guillemets pair on a stack, so nesting protects the whole outer span.
+    func testProtectedZoneNestedGuillemets() {
+        let nested = "он сказал «тут «кодекс» внутри» вчера"
+        XCTAssertEqual(LexiconNormalizer.normalize(nested), nested)
+    }
+
+    /// A stray closing guillemet with no opener protects nothing.
+    func testProtectedZoneStrayClosingGuillemet() {
+        XCTAssertEqual(
+            LexiconNormalizer.normalize("кодекс» дальше"),
+            "Codex» дальше"
+        )
+    }
+
+    /// Protection is per-character and any overlap disqualifies the token, so
+    /// a quote that opens mid-token still shields the dictionary form inside.
+    func testProtectedZoneOverlapDisqualifiesToken() {
+        let overlapping = "путь Sources/кодекс.swift и \"кодекс\" рядом"
+        XCTAssertEqual(LexiconNormalizer.normalize(overlapping), overlapping)
+    }
+
+    /// The path rule keys on a dot between alphanumerics, so a sentence-final
+    /// dot does NOT protect the word before it.
+    func testProtectedZoneSentenceFinalDotIsNotAPath() {
+        XCTAssertEqual(
+            LexiconNormalizer.normalize("это кодекс. дальше"),
+            "это Codex. дальше"
+        )
+    }
+
+    /// Unicode graphemes must not shift the mask relative to the tokens: an
+    /// emoji before the protected fragment keeps the protection aligned.
+    func testProtectedZoneSurvivesUnicodeGraphemes() {
+        let withEmoji = "🎉 смотри `кодекс` внимательно"
+        XCTAssertEqual(LexiconNormalizer.normalize(withEmoji), withEmoji)
+
+        XCTAssertEqual(
+            LexiconNormalizer.normalize("🎉 смотри кодекс внимательно"),
+            "🎉 смотри Codex внимательно",
+            "the emoji itself must not protect anything"
+        )
+    }
 }

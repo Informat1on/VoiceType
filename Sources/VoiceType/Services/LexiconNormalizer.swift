@@ -63,7 +63,7 @@ enum LexiconNormalizer {
         let chars = Array(text)
         guard !chars.isEmpty else { return text }
 
-        let mask = protectedCharacterMask(chars)
+        let mask = ProtectedRegions.mask(for: chars)
         let tokens = tokenize(chars)
 
         var output = ""
@@ -138,79 +138,12 @@ enum LexiconNormalizer {
     // backticks, quotes, URLs or paths in it). Absence of fixtures there isn't
     // license to narrow the contract, same reasoning as the homoglyph rule
     // below.
-
-    private static func protectedCharacterMask(_ chars: [Character]) -> [Bool] {
-        var mask = [Bool](repeating: false, count: chars.count)
-        markPairedDelimiter(chars, delimiter: "`", mask: &mask)
-        markPairedDelimiter(chars, delimiter: "\"", mask: &mask)
-        markPairedGuillemets(chars, mask: &mask)
-        markPathLikeTokens(chars, mask: &mask)
-        return mask
-    }
-
-    /// Pairs same-character delimiters sequentially (1st+2nd, 3rd+4th, ...). A
-    /// trailing unpaired delimiter grants no protection, per convention.
-    private static func markPairedDelimiter(_ chars: [Character], delimiter: Character, mask: inout [Bool]) {
-        var positions: [Int] = []
-        for (idx, c) in chars.enumerated() where c == delimiter {
-            positions.append(idx)
-        }
-        var i = 0
-        while i + 1 < positions.count {
-            let start = positions[i]
-            let end = positions[i + 1]
-            for j in start...end { mask[j] = true }
-            i += 2
-        }
-    }
-
-    /// Guillemets have distinct open/close characters, so pairing is
-    /// stack-based rather than sequential; an unmatched "«" or a stray "»"
-    /// grants no protection.
-    private static func markPairedGuillemets(_ chars: [Character], mask: inout [Bool]) {
-        var stack: [Int] = []
-        for (idx, c) in chars.enumerated() {
-            if c == "\u{00AB}" {
-                stack.append(idx)
-            } else if c == "\u{00BB}", let start = stack.popLast() {
-                for j in start...idx { mask[j] = true }
-            }
-        }
-    }
-
-    /// A whitespace-delimited chunk containing "/" or a "." between two
-    /// alphanumeric characters is treated as a path or URL and left untouched
-    /// in full (sonnet.md, example.com, path/to/file).
-    private static func markPathLikeTokens(_ chars: [Character], mask: inout [Bool]) {
-        var i = 0
-        let n = chars.count
-        while i < n {
-            while i < n && chars[i].isWhitespace { i += 1 }
-            let start = i
-            while i < n && !chars[i].isWhitespace { i += 1 }
-            let end = i
-            if end > start, isPathLike(chars, start, end) {
-                for j in start..<end { mask[j] = true }
-            }
-        }
-    }
-
-    private static func isPathLike(_ chars: [Character], _ start: Int, _ end: Int) -> Bool {
-        for j in start..<end {
-            if chars[j] == "/" { return true }
-            if chars[j] == ".", j > start, j + 1 < end {
-                let prev = chars[j - 1]
-                let next = chars[j + 1]
-                if (prev.isLetter || prev.isNumber) && (next.isLetter || next.isNumber) {
-                    return true
-                }
-            }
-        }
-        return false
-    }
+    //
+    // The masking itself lives in ProtectedRegions, shared with FillerRemover:
+    // two stages rewriting the same text must agree on what is off limits.
 
     private static func isProtected(_ token: Token, mask: [Bool]) -> Bool {
-        mask[token.range].contains(true)
+        ProtectedRegions.isProtected(token.range, mask: mask)
     }
 
     // MARK: - Homoglyph rule
