@@ -607,7 +607,6 @@ final class TranscriptionService: ObservableObject {
         FileHandle.standardError.write(Data("VOICETYPE_SELFCHECK: warm-up complete\n".utf8))
     }
 
-
     /// Primes Metal/CoreML/ANE caches by running 500ms of silence (8000 zero-samples
     /// @ 16 kHz) through whisper.transcribe. Must not affect user-facing state or the
     /// initial prompt.
