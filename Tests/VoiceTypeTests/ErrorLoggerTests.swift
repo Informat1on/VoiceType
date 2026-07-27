@@ -290,6 +290,54 @@ final class ErrorLoggerTests: XCTestCase {
 
     // MARK: - Directory creation
 
+    // MARK: - entryCount() / clear() — task 3, Settings → Advanced → Diagnostics
+
+    func testEntryCountIsZeroBeforeAnyWrite() throws {
+        let (logger, _) = makeLogger()
+        XCTAssertEqual(logger.entryCount(), 0, "No log file yet — count must be 0, not crash")
+    }
+
+    func testEntryCountMatchesNumberOfLoggedLines() throws {
+        let (logger, _) = makeLogger()
+        logger.log(message: "one", category: "test")
+        logger.log(message: "two", category: "test")
+        logger.log(message: "three", category: "test")
+        XCTAssertEqual(logger.entryCount(), 3)
+    }
+
+    func testClearEmptiesTheActiveLogFile() throws {
+        let (logger, tempDir) = makeLogger()
+        logger.log(message: "will be cleared", category: "test")
+        XCTAssertEqual(logger.entryCount(), 1)
+
+        logger.clear()
+
+        XCTAssertEqual(logger.entryCount(), 0, "clear() must empty the active log")
+        let activeURL = tempDir.appendingPathComponent("errors.log")
+        let data = try Data(contentsOf: activeURL)
+        XCTAssertEqual(data.count, 0, "File must exist but be empty after clear()")
+    }
+
+    func testClearDoesNotTouchArchivedLogs() throws {
+        let (logger, tempDir) = makeLogger()
+        // Within the 7-day retention window — a stale (>7d) name would be
+        // legitimately deleted by rotateIfNeeded()'s own cleanup, which would
+        // make this test indistinguishable from that unrelated behavior.
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = .current
+        let threeDaysAgoString = df.string(from: Date().addingTimeInterval(-3 * 24 * 60 * 60))
+        let archiveURL = tempDir.appendingPathComponent("errors-\(threeDaysAgoString).log")
+        try Data("archived entry\n".utf8).write(to: archiveURL)
+
+        logger.log(message: "active entry", category: "test")
+        logger.clear()
+
+        let archiveContent = try String(contentsOf: archiveURL, encoding: .utf8)
+        XCTAssertEqual(archiveContent, "archived entry\n", "clear() must only affect the active file, never archives")
+    }
+
     func testCreatesLogsDirectoryIfMissing() throws {
         let tempBase = FileManager.default.temporaryDirectory
             .appendingPathComponent("ErrorLoggerTests-dir-\(UUID().uuidString)")

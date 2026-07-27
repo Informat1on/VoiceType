@@ -99,6 +99,25 @@ final class ErrorLogger {
         logsDirectory
     }
 
+    /// Number of log lines currently in the active errors.log. Drives the
+    /// "N entries" subtitle in Settings → Advanced → Diagnostics (task 3,
+    /// DESIGN.md § Error Handling & Logging § Settings access). Archived
+    /// (rotated) days are not counted — the subtitle describes today's file.
+    func entryCount() -> Int {
+        guard let data = try? Data(contentsOf: currentLogFileURL),
+              let raw = String(data: data, encoding: .utf8) else {
+            return 0
+        }
+        return raw.split(separator: "\n", omittingEmptySubsequences: true).count
+    }
+
+    /// Truncates the active errors.log to empty. Wired to the "Clear" action
+    /// in Settings → Advanced → Diagnostics (task 3). Does not touch archived
+    /// (rotated) log files — only today's active file is a user-facing "clear".
+    func clear() {
+        try? Data().write(to: currentLogFileURL, options: .atomic)
+    }
+
     // MARK: - Private helpers
 
     private func appendLine(_ line: String) {

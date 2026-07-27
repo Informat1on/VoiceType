@@ -533,14 +533,13 @@ struct SettingsView: View {
 
                 SectionGap()
 
-                // TODO Step 7: wire ErrorLogger here (DESIGN.md line 191).
                 // MARK: DIAGNOSTICS group
+                // Task 3 (architectural audit): wired to ErrorLogger — see
+                // DiagnosticsSection.swift for the "Reveal in Finder" / "Clear"
+                // actions DESIGN.md § Error Handling & Logging specifies.
                 GroupHeader(title: "Diagnostics")
                 RowDivider()
-                PrefsRow("Error log", subtitle: "~/Library/Logs/VoiceType/errors.log") {
-                    Button("Open Log") {}
-                        .disabled(true)
-                }
+                DiagnosticsSection()
                 RowDivider()
                 PrefsRow("Build") {
                     Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")

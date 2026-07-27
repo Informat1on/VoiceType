@@ -40,7 +40,7 @@ Design-debt и follow-up items, вынесенные из `/plan-design-review` 
 - **Cons:** таст-вопрос; предлагаемый default = ghost "Cancel" button рядом с progress bar.
 - **Depends on:** до реализации Models tab в Tier A шаг 3.
 
-## T5 — Error log rotation implementation
+## T5 — Error log rotation implementation ✅ DONE (2026-07-27)
 
 - **What:** написать `~/Library/Logs/VoiceType/errors.log` daily rotation; решить: custom Swift rotation / использовать `os_log` unified logging / сторонняя библиотека.
 - **Why:** DESIGN.md специфицирует daily rotation + keep 7 days. Реализация пока не существует.
@@ -48,6 +48,7 @@ Design-debt и follow-up items, вынесенные из `/plan-design-review` 
 - **Cons:** ~1-2 часа реализации; выбор из 3-4 подходов.
 - **Context:** рекомендуемый подход — Swift-native file-handle rotation, проверять `errors.log` size/mtime раз в session start. Избегать внешних deps.
 - **Depends on:** Tier A шаг 10 (Error Log module).
+- **Outcome:** реализовано Swift-native file-handle rotation в `Sources/VoiceType/Services/ErrorLogger.swift` (`rotateIfNeeded()` / `deleteStaleArchives()`, ~118-174): daily archive `errors-YYYY-MM-DD.log`, 7-дневный retention, `errors.log` никогда не удаляется. Уже используется `ErrorToastWindow` ("View log") и, начиная с этой сессии, кнопками Settings → Advanced → Diagnostics (`Sources/VoiceType/Views/Settings/DiagnosticsSection.swift`) — "Reveal in Finder" / "Clear" по DESIGN.md § Error Handling & Logging. Задача была найдена архитектурным аудитом как несинхронизированная с кодом: TODO помечал rotation нереализованной, хотя код был готов ещё с 2026-04-27.
 
 ## T6 — Focus Return edge case: previousApp quit mid-recording
 
