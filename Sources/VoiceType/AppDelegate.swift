@@ -924,17 +924,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         print("[AppDelegate] transcribeAndInject: \(samples.count) samples")
 
         var transcriptionText: String?
+        var transcriptionOutcome: TranscriptionOutcome?
 
         do {
             try await ensureModelLoaded()
             print("[AppDelegate] Model ready, starting transcription")
 
-            let text = try await transcriptionService.transcribe(
+            let outcome = try await transcriptionService.transcribe(
                 audio: samples,
                 language: AppSettings.shared.language
             )
 
-            transcriptionText = text
+            transcriptionText = outcome.text
+            transcriptionOutcome = outcome
             print("[AppDelegate] Transcription finished successfully")
             AppLog.transcription.notice("Transcription completed")
         } catch {
@@ -992,7 +994,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             language: AppSettings.shared.language.rawValue,
             audioPath: audioPath,
             model: AppSettings.shared.selectedModel.rawValue,
-            audioDurationSeconds: audioDuration
+            audioDurationSeconds: audioDuration,
+            rawText: transcriptionOutcome?.rawText,
+            pipelineStamp: transcriptionOutcome?.pipelineStamp
         ))
 
         // Keep the app busy until the text is fully inserted, so the next hotkey

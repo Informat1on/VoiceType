@@ -46,6 +46,37 @@ final class HistoryRecorder {
         let audioPath: String?
         let model: String?
         let audioDurationSeconds: Double?
+        /// Untouched whisper output — see HistoryStore.Entry.rawText's doc
+        /// comment. Pass the raw text unconditionally; Entry's own init
+        /// collapses it to nil when it matches `text`. Defaults to nil so
+        /// call sites unrelated to the transcription pipeline (e.g. tests)
+        /// are unaffected.
+        let rawText: String?
+        /// See TranscriptionService.pipelineStamp(forPrompt:). Defaults to
+        /// nil for the same reason as rawText above.
+        let pipelineStamp: String?
+
+        init(
+            text: String,
+            targetAppName: String,
+            targetAppBundleID: String?,
+            language: String,
+            audioPath: String?,
+            model: String?,
+            audioDurationSeconds: Double?,
+            rawText: String? = nil,
+            pipelineStamp: String? = nil
+        ) {
+            self.text = text
+            self.targetAppName = targetAppName
+            self.targetAppBundleID = targetAppBundleID
+            self.language = language
+            self.audioPath = audioPath
+            self.model = model
+            self.audioDurationSeconds = audioDurationSeconds
+            self.rawText = rawText
+            self.pipelineStamp = pipelineStamp
+        }
     }
 
     /// Appends a pending history entry BEFORE injection is attempted, so the
@@ -63,7 +94,9 @@ final class HistoryRecorder {
             language: pending.language,
             audioPath: pending.audioPath,
             model: pending.model,
-            audioDurationSeconds: pending.audioDurationSeconds
+            audioDurationSeconds: pending.audioDurationSeconds,
+            rawText: pending.rawText,
+            pipelineStamp: pending.pipelineStamp
         )
         store.append(entry)
         return entry.id

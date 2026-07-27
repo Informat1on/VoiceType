@@ -18,6 +18,16 @@
 // injectText actually succeeded. Populated by HistoryRecorder after the
 // entry is already persisted, so a failed insert never loses the transcript.
 //
+// rawText + pipelineStamp (added ahead of the text normalizer, 2026-07-27):
+// once a normalizer sits between whisper and `text`, the corpus otherwise
+// becomes unable to tell ASR errors apart from post-processing errors.
+// rawText preserves whisper's untouched output; pipelineStamp records which
+// pipeline (post-processing version + prompt hash) produced `text`.
+// Both are nil on legacy entries (absent keys decode to nil). On new entries
+// pipelineStamp is always written, while rawText is written only when it
+// differs from `text` — today that means "conditionallyTrim changed something",
+// so nil legitimately reads as "raw == text". Consumers: `rawText ?? text`.
+//
 // DESIGN.md § Transcription History. Step 9.
 
 import Foundation
@@ -74,6 +84,19 @@ final class HistoryStore {
         /// success, so a failed insert silently dropped the transcript.
         let insertSuccess: Bool?
 
+        // MARK: Pre-normalizer fields (added ahead of the text normalizer landing)
+
+        /// Untouched whisper output, before conditionallyTrim. nil means "identical
+        /// to `text`" — true both for legacy entries (written before this field
+        /// existed) and for new entries where trimming didn't change anything.
+        /// Consumers read `entry.rawText ?? entry.text`. Kept nil when equal so
+        /// history.jsonl doesn't double in size for the common no-op-trim case.
+        let rawText: String?
+
+        /// Snapshot of the pipeline that produced `text` — see
+        /// TranscriptionService.pipelineStamp(forPrompt:). nil for legacy entries.
+        let pipelineStamp: String?
+
         // MARK: Primary init (used by AppDelegate transcription pipeline)
 
         init(
@@ -84,7 +107,9 @@ final class HistoryStore {
             audioPath: String? = nil,
             model: String? = nil,
             audioDurationSeconds: Double? = nil,
-            insertSuccess: Bool? = nil
+            insertSuccess: Bool? = nil,
+            rawText: String? = nil,
+            pipelineStamp: String? = nil
         ) {
             self.id = UUID()
             self.timestamp = Date()
@@ -99,6 +124,10 @@ final class HistoryStore {
             self.model = model
             self.audioDurationSeconds = audioDurationSeconds
             self.insertSuccess = insertSuccess
+            // Collapse to nil whenever the raw text matches the final text —
+            // see the field's doc comment for why (avoids doubling file size).
+            self.rawText = (rawText == text) ? nil : rawText
+            self.pipelineStamp = pipelineStamp
         }
 
         // MARK: Mutation helpers (produces a new value; Entry is a struct)
@@ -118,7 +147,9 @@ final class HistoryStore {
                 isSavedEval: true,
                 model: model,
                 audioDurationSeconds: audioDurationSeconds,
-                insertSuccess: insertSuccess
+                insertSuccess: insertSuccess,
+                rawText: rawText,
+                pipelineStamp: pipelineStamp
             )
         }
 
@@ -137,7 +168,9 @@ final class HistoryStore {
                 isSavedEval: isSavedEval,
                 model: model,
                 audioDurationSeconds: audioDurationSeconds,
-                insertSuccess: insertSuccess
+                insertSuccess: insertSuccess,
+                rawText: rawText,
+                pipelineStamp: pipelineStamp
             )
         }
 
@@ -160,7 +193,9 @@ final class HistoryStore {
                 isSavedEval: isSavedEval,
                 model: model,
                 audioDurationSeconds: audioDurationSeconds,
-                insertSuccess: succeeded
+                insertSuccess: succeeded,
+                rawText: rawText,
+                pipelineStamp: pipelineStamp
             )
         }
 
@@ -178,7 +213,9 @@ final class HistoryStore {
             isSavedEval: Bool?,
             model: String?,
             audioDurationSeconds: Double?,
-            insertSuccess: Bool?
+            insertSuccess: Bool?,
+            rawText: String?,
+            pipelineStamp: String?
         ) {
             self.id = id
             self.timestamp = timestamp
@@ -193,6 +230,11 @@ final class HistoryStore {
             self.model = model
             self.audioDurationSeconds = audioDurationSeconds
             self.insertSuccess = insertSuccess
+            // Already normalized by the primary init at creation time — carry
+            // over as-is, do not re-collapse (these values were possibly set
+            // intentionally by a future caller and must round-trip exactly).
+            self.rawText = rawText
+            self.pipelineStamp = pipelineStamp
         }
     }
 

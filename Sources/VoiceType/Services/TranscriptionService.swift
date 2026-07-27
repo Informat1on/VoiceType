@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CryptoKit
 import SwiftWhisper
 
 // MARK: - ModelStatus
@@ -63,6 +64,23 @@ enum TranscriptionError: LocalizedError {
             return "Transcription timed out. The model may be too large for your device."
         }
     }
+}
+
+// MARK: - TranscriptionOutcome
+
+/// Result of `transcribe(audio:language:)`, added ahead of the text normalizer
+/// (task t-raw-text, 2026-07-27): once a normalizer sits between whisper and
+/// the text callers insert, HistoryStore needs both the untouched whisper
+/// output AND a record of which pipeline produced the final text — otherwise
+/// the accumulated corpus can never separate ASR errors from post-processing
+/// errors.
+struct TranscriptionOutcome {
+    /// Segments joined, before conditionallyTrim — the untouched whisper output.
+    let rawText: String
+    /// What actually gets inserted (currently rawText after conditionallyTrim).
+    let text: String
+    /// Snapshot of the pipeline that produced `text`, taken before whisper ran.
+    let pipelineStamp: String
 }
 
 @MainActor
@@ -700,7 +718,7 @@ final class TranscriptionService: ObservableObject {
         }
     }
 
-    func transcribe(audio: [Float], language: Language = .auto) async throws -> String {
+    func transcribe(audio: [Float], language: Language = .auto) async throws -> TranscriptionOutcome {
         // A transcription started after the drain would keep whisper_full running
         // past the point where we report the app safe to quit.  See shutdown().
         guard !isShuttingDown else {
@@ -779,6 +797,11 @@ final class TranscriptionService: ObservableObject {
         }
 
         do {
+            // Snapshot the pipeline stamp BEFORE whisper runs — see
+            // pipelineStamp(forPrompt:)'s doc comment for why capturing it
+            // after this call would describe the wrong transcription.
+            let stamp = Self.pipelineStamp(forPrompt: currentInitialPromptText)
+
             let transcribeStart = CFAbsoluteTimeGetCurrent()
 
             // H3: Race the actual transcription against a timeout task.
@@ -824,7 +847,7 @@ final class TranscriptionService: ObservableObject {
 
             print("[TranscriptionService] Result ready (characters: \(trimmed.count))")
             AppLog.transcription.notice("Transcription result is ready")
-            return trimmed
+            return TranscriptionOutcome(rawText: text, text: trimmed, pipelineStamp: stamp)
         } catch TranscriptionError.transcriptionTimeout {
             progress = 0.0
             AppLog.transcription.error("Transcription timed out after \(self.transcriptionTimeout)s")
@@ -881,5 +904,32 @@ final class TranscriptionService: ObservableObject {
             result.removeLast()
         }
         return result
+    }
+
+    // MARK: - Pipeline stamp
+
+    /// Post-processing pipeline version. `0` means "no normalizer" — the
+    /// current state. Bump on every change to normalizer rules/dictionary so
+    /// history entries stay attributable to the pipeline that produced them.
+    private static let postProcessingVersion = 0
+
+    /// Snapshot of the pipeline that produced a transcription's final text,
+    /// built from the initial prompt active for that run. Must be called
+    /// BEFORE whisper.transcribe() runs, not after: transcribe(audio:language:)
+    /// defers any pending setInitialPrompt() call to a `defer` block that fires
+    /// on return, so reading currentInitialPromptText after the call would
+    /// describe the NEXT transcription's prompt, not the one just used.
+    ///
+    /// Format: "n<postProcessingVersion>:p<first 12 hex chars of SHA-256(prompt)>".
+    /// Hashing (rather than embedding the prompt itself) keeps the stamp short
+    /// and avoids leaking custom vocabulary into every history line, while
+    /// still letting two entries be compared for "same prompt, different
+    /// pipeline version". CryptoKit.SHA256, not Swift.Hasher — Hasher is
+    /// seeded randomly per process, so it is not stable across app launches,
+    /// which a persisted stamp requires.
+    static func pipelineStamp(forPrompt prompt: String?) -> String {
+        let digest = SHA256.hash(data: Data((prompt ?? "").utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return "n\(postProcessingVersion):p\(hex.prefix(12))"
     }
 }
