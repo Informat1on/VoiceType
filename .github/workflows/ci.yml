@@ -21,7 +21,13 @@ jobs:
   build-test-lint:
     # Apple Silicon runner, matches the project's optimization target and the
     # local dev machine's architecture (avoids x86-only surprises).
-    runs-on: macos-15
+    # macos-26 (arm64) ships Xcode 26.6 — the same toolchain used locally.
+    # NOT macos-15: it carries Xcode 16.4, where the SwiftWhisper fork's
+    # Package.swift manifest fails with "the compiler is unable to type-check
+    # this expression in reasonable time". Found on the very first CI run.
+    # The real fix is to break up that manifest expression in the fork; until
+    # then the project effectively requires Xcode 26.x to build at all.
+    runs-on: macos-26
     timeout-minutes: 25
 
     steps:

@@ -127,6 +127,15 @@ Design-debt и follow-up items, вынесенные из `/plan-design-review` 
 
 ---
 
+## T15 — Package.swift форка не тайпчекается на Xcode 16.x
+
+- **What:** манифест `Package.swift` в форке `Informat1on/SwiftWhisper` падает на Xcode 16.4 с ошибкой «the compiler is unable to type-check this expression in reasonable time» на выражении `let package = Package(...)`. На Xcode 26.6 собирается нормально.
+- **Why:** найдено первым же прогоном CI 2026-07-27 (раннер `macos-15` несёт Xcode 16.4). Пока это не исправлено, проект собирается только на Xcode 26.x — раньше об этом никто не знал, потому что локально стоит свежий Xcode. CI переведён на раннер `macos-26` как обход, но ограничение осталось.
+- **How:** разбить большое выражение `Package(...)` в манифесте форка на промежуточные переменные (массивы targets/dependencies уже частично вынесены — доделать так же для остального). Затем пуш форка, новый тег, обновление pin по SHA в `Package.swift` VoiceType и `swift package resolve`.
+- **Pros:** проект перестаёт зависеть от конкретной мажорной версии Xcode; CI можно вернуть на стабильный раннер.
+- **Cons:** правка внешнего репозитория с цепочкой тег → pin → resolve.
+- **Depends on:** независимо.
+
 ## Process TODOs
 
 ## P1 — Update CLAUDE.md `## Design System` section ✅ DONE (2026-04-24)
