@@ -15,7 +15,9 @@ VoiceType records audio with a global shortcut, transcribes it locally on your M
 - **Apple Silicon native.** CoreML-accelerated `whisper.cpp` with `large-v3-turbo` quality on M-series.
 - **Three model presets.** Fast, Balanced, Max Quality — pick once, the app handles the rest. Power users get the full 7-model picker in Advanced.
 - **Bilingual RU+EN mode.** Code-switched speech (Russian sentences with inline English identifiers) handled reliably via a bilingual seed prompt.
-- **Custom vocabulary.** Bias the model toward project names, technical terms, or jargon you actually use.
+- **Custom vocabulary.** Bias the model toward project names, technical terms, or jargon you actually use, with an exact token counter so nothing is silently dropped.
+- **Pick your microphone.** Record from a specific input device instead of following the system default. If it disappears, recording falls back to System Default and your choice is kept, not reset.
+- **Transcript clean-up.** Optional terminology normalization (`кодекс` → `Codex`) and filler-word removal, plus a filter for the subtitle phrases Whisper hallucinates on near-silent recordings.
 - **History.** Last 100 transcriptions kept locally; re-insert any of them with one click. Activates the original target app first so the text lands in the right place.
 - **Signed and notarized.** Public DMG releases install with a single double-click — no Gatekeeper warnings.
 
@@ -69,7 +71,7 @@ After you stop, VoiceType transcribes locally and types the result into the acti
 
 ## Settings overview
 
-- **General** — language (Auto / RU / EN / RU+EN), recording indicator style, text insertion mode, optional auto-Enter after insert.
+- **General** — language (Auto / RU / EN / RU+EN), input microphone, recording indicator style, text insertion mode, optional auto-Enter after insert, and transcript clean-up toggles (terminology normalization, filler-word removal).
 - **Models** — three presets (Fast / Balanced / Max Quality) plus an Advanced expander for the full 7-model list. Shows download status, disk usage, and CoreML availability.
 - **Shortcuts** — global shortcut recorder, single-press vs hold mode, links to permission panes.
 - **Advanced** — Custom Vocabulary, transcription history, eval collector hotkey for capturing problem cases.
@@ -96,12 +98,26 @@ It is **not** a find-replace dictionary. It nudges the decoder; it does not guar
 
 ### Example
 
+Write **full sentences in the language you dictate in**, not a list:
+
 ```
-Sonnet, Codex, Claude, GitHub, server.js, react-query, useQuery, ffmpeg,
-Whisper, TranscriptionService, MenuBarView, AppSettings, AVAudioRecorder
+I use Codex and Claude daily. I'm setting up the API endpoint and running
+Ollama locally. The pipeline lives in server.js and uses react-query.
 ```
 
-Use any separators — Whisper consumes the whole string as context. Keep it under ~200 characters; Whisper's `initial_prompt` cap is 224 tokens and earlier terms get truncated past that.
+**The format matters more than the words.** A measurement across 41
+recordings found that a comma-separated list collapses punctuation across
+your whole transcript — periods dropped from 168 to 21 — because the prompt
+sets the decoder's *style*, not just its vocabulary. The same terms written
+as sentences keep punctuation intact and correct proper nouns more often.
+
+Settings shows an exact token counter as you type. Whisper's `initial_prompt`
+holds **223 tokens**, and anything past that is dropped **from the beginning**
+with no warning — so keep your most important terms at the end.
+
+It is not free: biasing the decoder also causes occasional regressions on
+words it already got right. Add terms you actually need, not everything you
+can think of.
 
 ### Bilingual mode
 
