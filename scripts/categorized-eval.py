@@ -44,6 +44,30 @@ def words(text):
     return [w.lower() for w in WORD_RE.findall(text)]
 
 
+def count_of(text, needle, left=True, right=True):
+    """Occurrences of `needle`, anchored on word boundaries where asked.
+
+    A plain `str.count` is wrong here: the span surface «пром» is a substring
+    of its own target «промпт», so a correct fix would look like the surface
+    never disappeared.
+
+    But anchoring unconditionally is wrong too: a span may cover only part of a
+    word (a one-letter `punct` span capitalising «смотри» → «Смотри»), and then
+    `\\bс\\b` matches only the standalone preposition and misses the letter
+    inside the word entirely. So the caller passes which sides are actually
+    word boundaries **in the raw text at that span's position**. Both sides of
+    every comparison use the same anchoring, so the numbers stay consistent.
+    """
+    if not needle:
+        return 0
+    pattern = re.escape(needle)
+    if left and needle[0].isalnum():
+        pattern = r"\b" + pattern
+    if right and needle[-1].isalnum():
+        pattern = pattern + r"\b"
+    return len(re.findall(pattern, text))
+
+
 class CorpusError(Exception):
     """Raised for malformed annotation — surfaced as a message, not a traceback."""
 
@@ -92,33 +116,46 @@ def load_record(corpus, entry):
 def score_record(raw, spans, out):
     """Classify every span against the system output.
 
-    Alignment is by substring presence, not by offset: the output is a
-    different string, so raw offsets do not carry over. Consequence, stated
-    plainly: several spans with identical surface text inside one record are
-    indistinguishable and get the same verdict. Acceptable here because the
-    counts we report are per category, not per span occurrence.
+    Alignment is by occurrence COUNT, not by offset: the output is a different
+    string, so raw offsets do not carry over.
+
+    Counting rather than mere presence is deliberate. Testing `expected in out`
+    over-credits: if the target text happens to occur elsewhere in the record,
+    a span is scored as fixed even when nothing changed. The baseline run
+    (output == input, so every span must be a miss) exposed exactly that —
+    10 of 33 filler spans came out "fixed" with no post-processing at all.
+
+    Consequence, stated plainly: several spans with identical surface text
+    inside one record are indistinguishable and get the same verdict.
+    Acceptable here because we report per-category counts, not per-occurrence.
     """
     per_cat = defaultdict(Counter)
     for s in spans:
         cat, surface, expected = s["category"], s["surface"], s["expected"]
+        # Whether this span sits on word boundaries *in the raw text* — a span
+        # covering part of a word must not be counted with \b anchors.
+        left = s["start"] == 0 or not raw[s["start"] - 1].isalnum()
+        right = s["end"] == len(raw) or not raw[s["end"]].isalnum()
+        surface_gone = count_of(out, surface, left, right) < count_of(raw, surface, left, right)
         if s["needsChange"]:
-            if not expected:
-                # Deletion span (fillers): expected is the empty string, so
-                # "fixed" means the surface is gone. Without this branch an
-                # empty expected is falsy and a correct deletion is scored as
-                # wrong_fix — caught by --self-test.
-                per_cat[cat]["exact_fix" if surface not in out else "miss"] += 1
-            elif expected in out:
-                per_cat[cat]["exact_fix"] += 1
-            elif surface in out:
+            if not surface_gone:
                 per_cat[cat]["miss"] += 1
+            elif not expected:
+                # Deletion span (filler): the surface disappearing IS the fix.
+                per_cat[cat]["exact_fix"] += 1
+            elif count_of(out, expected, left, right) >= max(
+                    1, count_of(raw, expected, left, right)):
+                # `>= max(1, ...)` rather than `>`: when the target text is
+                # nested inside the surface (span "вот показать" → "показать",
+                # i.e. a deletion inside a wider span) its count does not grow,
+                # so a strict increase would misread a correct fix as a wrong
+                # one. The max(1, ...) floor still rejects the case where the
+                # surface vanished but the target never appeared.
+                per_cat[cat]["exact_fix"] += 1
             else:
                 per_cat[cat]["wrong_fix"] += 1
         else:
-            if surface in out:
-                per_cat[cat]["kept"] += 1
-            else:
-                per_cat[cat]["regression"] += 1
+            per_cat[cat]["regression" if surface_gone else "kept"] += 1
     return per_cat
 
 
@@ -133,9 +170,18 @@ def collateral(raw, spans, out):
     for s in spans:
         for i in range(s["start"], s["end"]):
             covered[i] = True
-    # Rebuild the unprotected part of the input, keeping word boundaries.
-    outside = "".join(c if not covered[i] else " " for i, c in enumerate(raw))
-    outside_words = Counter(words(outside))
+
+    # A word is "outside" only if NO character of it is covered by a span.
+    # Blanking covered characters and re-tokenising would be wrong: a span that
+    # touches part of a word (e.g. a one-letter `punct` span capitalising
+    # "смотри" → "Смотри") splits the word and leaves a phantom fragment
+    # ("мотри") that looks like a lost word. Since capitalisation spans are
+    # common, that inflated collateral damage systematically — caught by
+    # --self-test on the real corpus.
+    outside_words = Counter()
+    for m in WORD_RE.finditer(raw):
+        if not any(covered[i] for i in range(m.start(), m.end())):
+            outside_words[m.group(0).lower()] += 1
     out_words = Counter(words(out))
 
     lost = sum(max(0, n - out_words.get(w, 0)) for w, n in outside_words.items())
