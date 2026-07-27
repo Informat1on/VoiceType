@@ -294,9 +294,28 @@ final class AppSettings: ObservableObject {
         didSet { save() }
     }
 
-    private let defaults = UserDefaults.standard
+    /// UID входного устройства из Settings → General → MICROPHONE.
+    /// `nil` = «System Default», и это дефолт намеренно: до появления пикера
+    /// приложение писало с системного устройства, и поведение по умолчанию
+    /// обязано остаться тем же.
+    ///
+    /// Хранится UID, а не AudioDeviceID: последний выдаётся системой заново и
+    /// после переподключения устройства меняется.
+    @Published var preferredInputDeviceUID: String? {
+        didSet { save() }
+    }
 
-    private init() {
+    private let defaults: UserDefaults
+
+    private convenience init() {
+        self.init(defaults: .standard)
+    }
+
+    /// Инъекция хранилища существует ради тестов: синглтон на
+    /// `UserDefaults.standard` иначе пришлось бы проверять на настройках
+    /// живого пользователя, меняя их прямо во время прогона.
+    init(defaults: UserDefaults) {
+        self.defaults = defaults
         self.activationMode = ActivationMode(rawValue: defaults.string(forKey: "activationMode") ?? "") ?? .singlePress
 
         // Model default logic:
@@ -366,6 +385,11 @@ final class AppSettings: ObservableObject {
         // before it existed (no stored raw value falls through to .auto).
         self.coreMLMode = CoreMLMode(rawValue: defaults.string(forKey: "coreMLMode") ?? "") ?? .auto
 
+        // Отсутствие ключа и есть «System Default» — пустая строка сюда попасть
+        // не должна, но если попала (правка defaults руками), читается как nil.
+        let storedDeviceUID = defaults.string(forKey: "preferredInputDeviceUID")
+        self.preferredInputDeviceUID = (storedDeviceUID?.isEmpty ?? true) ? nil : storedDeviceUID
+
         // Persist migrated Control bit back to UserDefaults so subsequent launches
         // skip the remap. Only writes when migration actually changed the value.
         if storedModifiers != 0 && storedModifiers != self.hotkeyModifiers {
@@ -387,6 +411,13 @@ final class AppSettings: ObservableObject {
         defaults.set(normalizeTranscript, forKey: "normalizeTranscript")
         defaults.set(removeFillerWords, forKey: "removeFillerWords")
         defaults.set(coreMLMode.rawValue, forKey: "coreMLMode")
+        // nil удаляет ключ, а не пишет пустую строку: «не выбрано» и «выбрано
+        // пустое» должны читаться одинаково при любом порядке обновлений.
+        if let preferredInputDeviceUID, !preferredInputDeviceUID.isEmpty {
+            defaults.set(preferredInputDeviceUID, forKey: "preferredInputDeviceUID")
+        } else {
+            defaults.removeObject(forKey: "preferredInputDeviceUID")
+        }
     }
 }
 

@@ -119,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupServices()
         setupHotkeyCallbacks()
         setupBindings()
+        setupCaptureInterruptionHandling()
 
         // One-shot sweep for scratch directories a hard crash could have left
         // behind (CoreML unzip staging, Metal-only shadow-symlink staging —
@@ -141,6 +142,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         print("[AppDelegate] === Ready. Hotkey: \(modifiersToString(AppSettings.shared.hotkeyModifiers))\(keyCodeToString(AppSettings.shared.hotkeyKey)) ===")
         AppLog.app.notice("Application ready")
     }
+
+    /// Причина прерывания текущей записи, если оно было. Читается один раз в
+    /// пути остановки и сбрасывается там же. Не private: ставится из
+    /// AppDelegate+CaptureInterruption.swift.
+    var interruptedCapture: CaptureInterruption?
 
     func applicationWillTerminate(_ notification: Notification) {
         hotkeyService.stopListening()
@@ -761,7 +767,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
 
         do {
-            try audioCaptureService.startRecording()
+            try audioCaptureService.startRecording(
+                preferredDeviceUID: AppSettings.shared.preferredInputDeviceUID
+            )
             appState = .recording
             recordingStartedAt = Date()
             voiceTypeWindow?.show(state: CapsuleState.recording)
@@ -798,7 +806,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         handleRecordingStopped()
     }
 
-    private func handleRecordingStopped() {
+    /// Не private: вызывается ещё и из AppDelegate+CaptureInterruption.swift,
+    /// потому что остановка по прерыванию обязана идти тем же путём, что и
+    /// обычная, — иначе состояния разойдутся.
+    func handleRecordingStopped() {
         print("[AppDelegate] handleRecordingStopped, currentState: \(appState.rawValue)")
         recordingStartedAt = nil
 
@@ -844,15 +855,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         var savedAudioPath: String?
         var savedAudioDuration: Double?
 
+        // Причина прерывания снимается один раз: дальше по пути остановки она
+        // уже не должна влиять на следующую запись.
+        let interruption = interruptedCapture
+        interruptedCapture = nil
+
         do {
             let result = try audioCaptureService.stopRecordingRetaining(savingAudioTo: audioDestination)
             samples = result.0
             savedAudioPath = result.1 != nil ? audioFileName : nil
             savedAudioDuration = result.1
             print("[AppDelegate] Got \(samples.count) audio samples")
+
+            // Решение принимается по ФАКТИЧЕСКОМУ числу сэмплов после барьера,
+            // а не по состоянию в момент прихода уведомления.
+            if interruption != nil,
+               CaptureInterruptionDecision.decide(isRecording: true, sampleCount: samples.count)
+                   == .transcribePartial {
+                AppLog.app.notice("Transcribing partial recording after interruption")
+            }
+
             guard !samples.isEmpty else {
                 print("[AppDelegate] No audio samples")
                 AppLog.app.notice("Recording stopped with no audio")
+                if interruption != nil {
+                    // Прерывание с пустой записью — это отдельная причина, и
+                    // называть её «no audio captured» значит соврать: микрофон
+                    // не молчал, он исчез.
+                    ErrorLogger.shared.log(
+                        message: "Recording interrupted before any audio was captured: \(interruption!)",
+                        category: "app"
+                    )
+                    voiceTypeWindow?.show(state: .errorInline(message: "Mic disconnected · Try again"))
+                    voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss()
+                    appState = .idle
+                    return
+                }
                 // permissionManager.checkAllPermissions() was already called above (pre-hide).
                 if !permissionManager.hasMicrophonePermission {
                     // suppressNextRestore() was already called above, before hide().

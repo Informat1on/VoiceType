@@ -36,5 +36,14 @@ hotwords-log.md
 
 # Private architecture / decision notes. Public ADRs go in docs/decisions/ directly.
 docs/decisions/private/
+
+# Session handoffs — internal working notes, not part of the public project history.
+docs/dev-diary/
 .gstack/
 Tests/Fixtures/bench/.bench-device
+
+# Transcription history and reports built from it — the owner's actual speech.
+# scripts/history-report.py reads history.jsonl; neither the source nor a report
+# derived from it may reach a public repository.
+history*.jsonl
+*history-report*.md

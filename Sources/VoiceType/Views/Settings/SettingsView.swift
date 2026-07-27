@@ -50,6 +50,12 @@ struct SettingsView: View {
     /// below, so the view never blocks on this or shows a stale answer.
     @State private var acceleratorCapability: AcceleratorCapability?
 
+    /// Список входных устройств для группы MICROPHONE. Пересобирается по
+    /// уведомлению CoreAudio, пока настройки открыты: гарнитуру подключают
+    /// именно тогда, когда её ищут в пикере.
+    @State private var inputDevices: [AudioInputDevice] = []
+    @State private var deviceObservation: AudioDeviceObservation?
+
     var body: some View {
         // Flat HStack layout per prototype .settings-window { display:flex }
         // Replaces NavigationSplitView + List (codex audit P1).
@@ -180,6 +186,36 @@ struct SettingsView: View {
 
                 SectionGap()
 
+                // MARK: MICROPHONE group — DESIGN.md:185
+                GroupHeader(title: "Microphone")
+                RowDivider()
+                PrefsRow("Input device",
+                         subtitle: "Bluetooth headsets record through a narrowband codec — "
+                             + "pick a wired or built-in mic for dictation.") {
+                    Picker("Input device", selection: $settings.preferredInputDeviceUID) {
+                        Text("System Default").tag(String?.none)
+                        ForEach(inputDevices) { device in
+                            Text(device.name).tag(String?.some(device.uid))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 220)
+                    .accessibilityLabel("Input device")
+                }
+                RowDivider()
+                if let missingUID = unavailableSelectedDeviceUID {
+                    // Инлайн, без модалок: DESIGN.md запрещает NSAlert.runModal
+                    // для ошибок. Выбор при этом НЕ сбрасывается — устройство
+                    // вернётся, когда гарнитуру подключат обратно.
+                    PrefsRow("Selected device unavailable",
+                             subtitle: "Recording falls back to System Default until \(missingUID) is connected again.") {
+                        EmptyView()
+                    }
+                    RowDivider()
+                }
+
+                SectionGap()
+
                 // MARK: PERMISSIONS group — compact dual-permission block
                 GroupHeader(title: "Permissions")
                 RowDivider()
@@ -190,6 +226,25 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .scrollIndicators(.hidden)
+        .onAppear {
+            reloadInputDevices()
+            deviceObservation = AudioDeviceService.observeChanges { reloadInputDevices() }
+        }
+        .onDisappear {
+            deviceObservation?.cancel()
+            deviceObservation = nil
+        }
+    }
+
+    /// UID выбранного устройства, которого сейчас нет в системе, — иначе nil.
+    private var unavailableSelectedDeviceUID: String? {
+        guard let selected = settings.preferredInputDeviceUID, !selected.isEmpty else { return nil }
+        guard !inputDevices.isEmpty else { return nil }   // список ещё не загружен
+        return inputDevices.contains(where: { $0.uid == selected }) ? nil : selected
+    }
+
+    private func reloadInputDevices() {
+        inputDevices = (try? AudioDeviceService.inputDevices()) ?? []
     }
 
     // MARK: - Tab 2: Models
