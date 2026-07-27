@@ -627,22 +627,13 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 0) {
 
                 // MARK: CUSTOM VOCABULARY group — moved from General per DESIGN.md D3
+                // Explanation/example/token-budget block extracted to
+                // CustomVocabularySection.swift (2026-07-27) — see DESIGN.md
+                // Decisions Log for the measured rationale behind the format
+                // guidance and the token counter.
                 GroupHeader(title: "Custom Vocabulary")
                 RowDivider()
-                PrefsRow("Custom vocabulary",
-                         subtitle: "Comma- or newline-separated: tool names, APIs, jargon, names. Applied on the next recording.") {
-                    EmptyView()
-                }
-                // Full-width TextEditor below the row — vocab needs vertical space
-                TextEditor(text: $settings.customVocabulary)
-                    .font(Typography.mono)
-                    .frame(minHeight: 80, maxHeight: 160)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
-                            .strokeBorder(Palette.strokeSubtle, lineWidth: 1)
-                    )
-                    .padding(.horizontal, Spacing.prefsRowHorizontal)
-                    .padding(.bottom, Spacing.prefsRowVertical)
+                CustomVocabularySection()
                 RowDivider()
 
                 SectionGap()
