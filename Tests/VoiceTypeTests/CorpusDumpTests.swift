@@ -47,7 +47,7 @@ final class CorpusDumpTests: XCTestCase {
             // hallucination filter (no corpus record is boilerplate — verified
             // separately on the 1000-file relabeled set, which does have
             // segment boundaries).
-            let result = TranscriptionService.postProcess(segments: [raw], trim: false)
+            let result = TranscriptionService.postProcess(segments: [raw], trim: false, normalize: true)
 
             let n = file.replacingOccurrences(of: ".raw.txt", with: "")
             try result.text.write(
@@ -90,7 +90,7 @@ final class CorpusDumpTests: XCTestCase {
             let segments = env["VOICETYPE_JSONL_SPLIT"] == "1"
                 ? text.components(separatedBy: "\n")
                 : [text]
-            let result = TranscriptionService.postProcess(segments: segments, trim: false)
+            let result = TranscriptionService.postProcess(segments: segments, trim: false, normalize: true)
 
             let report: [String: Any] = [
                 "input": text,

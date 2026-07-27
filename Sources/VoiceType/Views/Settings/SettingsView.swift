@@ -156,6 +156,12 @@ struct SettingsView: View {
                         .labelsHidden()
                 }
                 RowDivider()
+                PrefsRow("Normalize terminology",
+                         subtitle: "Fix tool names and common misspellings (Codex, Sonnet, handoff, скилл)") {
+                    Toggle("", isOn: $settings.normalizeTranscript)
+                        .labelsHidden()
+                }
+                RowDivider()
                 PrefsRow("Paste method") {
                     Picker("Paste method", selection: $settings.textInjectionMode) {
                         ForEach(TextInjectionMode.allCases, id: \.self) { mode in

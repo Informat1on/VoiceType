@@ -816,10 +816,16 @@ final class TranscriptionService: ObservableObject {
         }
 
         do {
+            // Read the normalizer toggle once, here, and use the same value
+            // for both the stamp and the chain. Reading it twice would let a
+            // toggle flipped mid-transcription produce a history entry whose
+            // stamp contradicts its own text.
+            let normalize = AppSettings.shared.normalizeTranscript
+
             // Snapshot the pipeline stamp BEFORE whisper runs — see
             // pipelineStamp(forPrompt:)'s doc comment for why capturing it
             // after this call would describe the wrong transcription.
-            let stamp = Self.pipelineStamp(forPrompt: currentInitialPromptText)
+            let stamp = Self.pipelineStamp(forPrompt: currentInitialPromptText, normalizing: normalize)
 
             let transcribeStart = CFAbsoluteTimeGetCurrent()
 
@@ -861,7 +867,8 @@ final class TranscriptionService: ObservableObject {
 
             let processed = TranscriptionService.postProcess(
                 segments: segmentTexts,
-                trim: AppSettings.shared.trimWhitespaceAfterInsert
+                trim: AppSettings.shared.trimWhitespaceAfterInsert,
+                normalize: normalize
             )
 
             // A dropped subtitle-boilerplate segment is the whole signal T16
@@ -949,14 +956,20 @@ final class TranscriptionService: ObservableObject {
     ///   4. `conditionallyTrim` runs last, so it also trims whitespace that
     ///      earlier steps may have exposed.
     ///
-    /// `trim` is passed in rather than read from `AppSettings` so the chain
-    /// stays pure and testable in both toggle positions.
-    static func postProcess(segments: [String], trim: Bool) -> PostProcessResult {
+    /// `trim` and `normalize` are passed in rather than read from
+    /// `AppSettings` so the chain stays pure and testable in every toggle
+    /// combination.
+    ///
+    /// `normalize == false` skips step 3 only. The hallucination filter has no
+    /// toggle by design (see `AppSettings.normalizeTranscript`): it removes
+    /// text the user never spoke, which nobody wants inserted.
+    static func postProcess(segments: [String], trim: Bool, normalize: Bool) -> PostProcessResult {
         let raw = segments.joined()
 
         let (kept, removed) = HallucinationFilter.split(segments: segments)
 
-        let normalized = LexiconNormalizer.normalize(kept.joined())
+        let joined = kept.joined()
+        let normalized = normalize ? LexiconNormalizer.normalize(joined) : joined
         let text = trim ? trimTrailingWhitespace(normalized) : normalized
 
         return PostProcessResult(raw: raw, text: text, removedTemplates: removed)
@@ -1008,16 +1021,24 @@ final class TranscriptionService: ObservableObject {
     /// on return, so reading currentInitialPromptText after the call would
     /// describe the NEXT transcription's prompt, not the one just used.
     ///
-    /// Format: "n<postProcessingVersion>:p<first 12 hex chars of SHA-256(prompt)>".
-    /// Hashing (rather than embedding the prompt itself) keeps the stamp short
-    /// and avoids leaking custom vocabulary into every history line, while
-    /// still letting two entries be compared for "same prompt, different
-    /// pipeline version". CryptoKit.SHA256, not Swift.Hasher — Hasher is
-    /// seeded randomly per process, so it is not stable across app launches,
-    /// which a persisted stamp requires.
-    static func pipelineStamp(forPrompt prompt: String?) -> String {
+    /// Format: "n<postProcessingVersion>[-nolex]:p<first 12 hex chars of
+    /// SHA-256(prompt)>". Hashing (rather than embedding the prompt itself)
+    /// keeps the stamp short and avoids leaking custom vocabulary into every
+    /// history line, while still letting two entries be compared for "same
+    /// prompt, different pipeline version". CryptoKit.SHA256, not
+    /// Swift.Hasher — Hasher is seeded randomly per process, so it is not
+    /// stable across app launches, which a persisted stamp requires.
+    ///
+    /// The `-nolex` suffix marks an entry produced with the normalizer toggle
+    /// off. Without it the stamp would claim a dictionary pass that never ran,
+    /// and the whole point of the stamp is attributing an entry's text to the
+    /// pipeline that actually produced it. It is a suffix on the version, not
+    /// a separate version number: the rules did not change, only whether one
+    /// stage ran.
+    static func pipelineStamp(forPrompt prompt: String?, normalizing: Bool) -> String {
         let digest = SHA256.hash(data: Data((prompt ?? "").utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined()
-        return "n\(postProcessingVersion):p\(hex.prefix(12))"
+        let version = normalizing ? "n\(postProcessingVersion)" : "n\(postProcessingVersion)-nolex"
+        return "\(version):p\(hex.prefix(12))"
     }
 }

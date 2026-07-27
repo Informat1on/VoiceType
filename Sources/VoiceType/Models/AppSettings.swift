@@ -267,6 +267,19 @@ final class AppSettings: ObservableObject {
         didSet { save() }
     }
 
+    /// Gates the lexicon normalizer only — NOT the hallucination filter.
+    ///
+    /// The filter drops subtitle boilerplate whisper invents on silence, i.e.
+    /// text the user never said; there is no reading under which a user wants
+    /// that inserted, so it has no toggle. The normalizer rewrites words the
+    /// user did say, and three of its dictionary lemmas (`кодекс`, `опус`,
+    /// `сонет`) are ordinary Russian words — «Уголовный кодекс» becomes
+    /// «Уголовный Codex». That risk was accepted by domain (see the session-5
+    /// convention), and this toggle is the escape hatch for when it bites.
+    @Published var normalizeTranscript: Bool {
+        didSet { save() }
+    }
+
     @Published var coreMLMode: CoreMLMode {
         didSet { save() }
     }
@@ -327,6 +340,11 @@ final class AppSettings: ObservableObject {
         self.textInjectionMode = TextInjectionMode(rawValue: defaults.string(forKey: "textInjectionMode") ?? "") ?? .paste
         self.trimWhitespaceAfterInsert = defaults.object(forKey: "trimWhitespaceAfterInsert") as? Bool ?? true
 
+        // Default on, including for users updating from a build that had no
+        // post-processing: the measured collateral damage on the owner's
+        // corpus is 0.00%, so the feature earns its default.
+        self.normalizeTranscript = defaults.object(forKey: "normalizeTranscript") as? Bool ?? true
+
         // Default .auto — including for existing users who never saw this setting
         // before it existed (no stored raw value falls through to .auto).
         self.coreMLMode = CoreMLMode(rawValue: defaults.string(forKey: "coreMLMode") ?? "") ?? .auto
@@ -349,6 +367,7 @@ final class AppSettings: ObservableObject {
         defaults.set(indicatorStyle.rawValue, forKey: "indicatorStyle")
         defaults.set(textInjectionMode.rawValue, forKey: "textInjectionMode")
         defaults.set(trimWhitespaceAfterInsert, forKey: "trimWhitespaceAfterInsert")
+        defaults.set(normalizeTranscript, forKey: "normalizeTranscript")
         defaults.set(coreMLMode.rawValue, forKey: "coreMLMode")
     }
 }

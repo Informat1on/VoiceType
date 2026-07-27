@@ -144,18 +144,18 @@ final class HistoryRawTextTests: XCTestCase {
         // entered the pipeline. The hash halves are unchanged, which is the
         // point — only the pipeline changed, not the prompt hashing.
         XCTAssertEqual(
-            TranscriptionService.pipelineStamp(forPrompt: "same prompt"), "n1:p66fddd00ccb8")
-        XCTAssertEqual(TranscriptionService.pipelineStamp(forPrompt: nil), "n1:pe3b0c44298fc")
+            TranscriptionService.pipelineStamp(forPrompt: "same prompt", normalizing: true), "n1:p66fddd00ccb8")
+        XCTAssertEqual(TranscriptionService.pipelineStamp(forPrompt: nil, normalizing: true), "n1:pe3b0c44298fc")
 
-        let stampA1 = TranscriptionService.pipelineStamp(forPrompt: "same prompt")
-        let stampA2 = TranscriptionService.pipelineStamp(forPrompt: "same prompt")
+        let stampA1 = TranscriptionService.pipelineStamp(forPrompt: "same prompt", normalizing: true)
+        let stampA2 = TranscriptionService.pipelineStamp(forPrompt: "same prompt", normalizing: true)
         XCTAssertEqual(stampA1, stampA2, "Same prompt must always produce the same stamp")
 
-        let stampB = TranscriptionService.pipelineStamp(forPrompt: "different prompt")
+        let stampB = TranscriptionService.pipelineStamp(forPrompt: "different prompt", normalizing: true)
         XCTAssertNotEqual(stampA1, stampB, "Different prompts must produce different stamps")
 
-        let stampNil1 = TranscriptionService.pipelineStamp(forPrompt: nil)
-        let stampNil2 = TranscriptionService.pipelineStamp(forPrompt: nil)
+        let stampNil1 = TranscriptionService.pipelineStamp(forPrompt: nil, normalizing: true)
+        let stampNil2 = TranscriptionService.pipelineStamp(forPrompt: nil, normalizing: true)
         XCTAssertEqual(stampNil1, stampNil2, "nil prompt (hashed as empty string) must be deterministic too")
     }
 
