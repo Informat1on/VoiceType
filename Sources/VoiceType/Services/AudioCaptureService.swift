@@ -359,13 +359,31 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         recordingURL = nil
         DispatchQueue.main.async { self.audioLevel = 0 }
 
-        if let failure {
-            if let url { try? FileManager.default.removeItem(at: url) }
-            throw AudioCaptureError.recordingReadFailed(failure)
-        }
         guard let url else { throw AudioCaptureError.recordingFileMissing }
 
-        let samples = try loadSamples(from: url)
+        // Даже при сбое записи файл сначала читается. Уже записанное принадлежит
+        // человеку, который это произнёс: выбросить его вместе с ошибкой значит
+        // нарушить то самое правило «есть звук — транскрибируем частичное»,
+        // ради которого заведён CaptureInterruptionDecision. Ошибка при этом не
+        // теряется — о прерывании AppDelegate уже уведомлён.
+        var samples: [Float] = []
+        var loadFailure: Error?
+        do {
+            samples = try loadSamples(from: url)
+        } catch {
+            loadFailure = error
+        }
+
+        if samples.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+            if let failure { throw AudioCaptureError.recordingReadFailed(failure) }
+            if let loadFailure { throw loadFailure }
+            return ([], nil)
+        }
+
+        if let failure {
+            print("[AudioCapture] Keeping \(samples.count) samples despite capture failure: \(failure)")
+        }
 
         var savedDuration: Double?
         if let destination = saveURL {
@@ -401,6 +419,14 @@ public final class AudioCaptureService: NSObject, ObservableObject {
             self?.reportInterruption(.runtimeError(error?.localizedDescription ?? "unknown"))
         }
         observe(AVCaptureSession.wasInterruptedNotification) { [weak self] _ in
+            self?.reportInterruption(.sessionInterrupted)
+        }
+        // Сессия может просто перестать работать, не прислав ни runtime error,
+        // ни interruption. Без этой подписки приложение осталось бы в
+        // .recording с молчащим микрофоном до отпускания хоткея. Наша
+        // собственная остановка сюда не попадает: наблюдатели снимаются до
+        // stopRunning(), и состояние к тому моменту уже .stopping.
+        observe(AVCaptureSession.didStopRunningNotification) { [weak self] _ in
             self?.reportInterruption(.sessionInterrupted)
         }
         observe(AVCaptureDevice.wasDisconnectedNotification) { [weak self] note in

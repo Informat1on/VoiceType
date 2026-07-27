@@ -13,8 +13,10 @@
 // через AVCaptureSession: DiscoverySession показывает агрегатные устройства
 // (замерено 2026-07-27: `CADefaultDeviceAggregate-69606-0` рядом со встроенным
 // микрофоном), которых пользователь у себя в списке не выбирал и в пикере видеть
-// не должен. CoreAudio отдаёт только настоящие устройства. При этом UID у обоих
-// API один и тот же — проверено на `BuiltInMicrophoneDevice`, — поэтому список
+// не должен. Само по себе перечисление CoreAudio этого не гарантирует —
+// у агрегата есть входные каналы, — поэтому отсев делает явный фильтр по
+// `kAudioDevicePropertyIsHidden` (см. `isHidden`). При этом UID у обоих API
+// один и тот же — проверено на `BuiltInMicrophoneDevice`, — поэтому список
 // строится здесь, а устройство для захвата берётся тем же uid через
 // `AVCaptureDevice(uniqueID:)`.
 //
@@ -44,7 +46,7 @@ enum AudioDeviceService {
     /// что входов в системе нет; сбой опроса — это throw, а не пустой массив.
     static func inputDevices() throws -> [AudioInputDevice] {
         try deviceIDs().compactMap { deviceID in
-            guard hasInputChannels(deviceID) else { return nil }
+            guard hasInputChannels(deviceID), !isHidden(deviceID) else { return nil }
             guard let uid = stringProperty(deviceID, kAudioDevicePropertyDeviceUID),
                   !uid.isEmpty else { return nil }
             let name = stringProperty(deviceID, kAudioObjectPropertyName) ?? uid
@@ -131,6 +133,25 @@ enum AudioDeviceService {
         }
         let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
         return list.contains { $0.mNumberChannels > 0 }
+    }
+
+    /// Скрытые устройства в пикер не идут. Именно так отсеиваются приватные
+    /// агрегаты вроде `CADefaultDeviceAggregate-…`, которые система заводит для
+    /// своих нужд: у них есть входные каналы, поэтому фильтр по каналам их не
+    /// ловит — а пользователь такого устройства не выбирал и в списке видеть не
+    /// должен. Агрегаты, собранные пользователем в Audio MIDI Setup, не скрыты
+    /// и остаются в списке: их как раз выбирали осознанно.
+    private static func isHidden(_ deviceID: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyIsHidden,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var isHidden: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &isHidden)
+        // Свойства может не быть — тогда устройство не скрыто.
+        return status == noErr && isHidden != 0
     }
 
     private static func stringProperty(
