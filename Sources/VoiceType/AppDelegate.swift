@@ -862,28 +862,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         do {
             let result = try audioCaptureService.stopRecordingRetaining(savingAudioTo: audioDestination)
-            samples = result.0
-            savedAudioPath = result.1 != nil ? audioFileName : nil
-            savedAudioDuration = result.1
+            samples = result.samples
+            savedAudioPath = result.savedDuration != nil ? audioFileName : nil
+            savedAudioDuration = result.savedDuration
             print("[AppDelegate] Got \(samples.count) audio samples")
+
+            // Сбой захвата берётся из возвращённого результата, а не только из
+            // асинхронного уведомления: если он случился ровно в момент
+            // остановки, уведомление опоздает, и неполная запись выглядела бы
+            // как обычная успешная.
+            let captureFailure = interruption ?? result.failure
 
             // Решение принимается по ФАКТИЧЕСКОМУ числу сэмплов после барьера,
             // а не по состоянию в момент прихода уведомления.
-            if interruption != nil,
+            if captureFailure != nil,
                CaptureInterruptionDecision.decide(isRecording: true, sampleCount: samples.count)
                    == .transcribePartial {
                 AppLog.app.notice("Transcribing partial recording after interruption")
+                // Молча вставить обрезанный текст нельзя: пользователь решает,
+                // годится ли он, и для этого должен знать, что запись оборвалась.
+                showErrorToast(
+                    title: "Recording interrupted",
+                    body: "The microphone stopped before you finished — the text below may be incomplete."
+                )
             }
 
             guard !samples.isEmpty else {
                 print("[AppDelegate] No audio samples")
                 AppLog.app.notice("Recording stopped with no audio")
-                if interruption != nil {
+                if captureFailure != nil {
                     // Прерывание с пустой записью — это отдельная причина, и
                     // называть её «no audio captured» значит соврать: микрофон
                     // не молчал, он исчез.
                     ErrorLogger.shared.log(
-                        message: "Recording interrupted before any audio was captured: \(interruption!)",
+                        message: "Recording interrupted before any audio was captured: "
+                            + String(describing: captureFailure),
                         category: "app"
                     )
                     voiceTypeWindow?.show(state: .errorInline(message: "Mic disconnected · Try again"))

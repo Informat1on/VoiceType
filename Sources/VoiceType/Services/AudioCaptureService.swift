@@ -43,6 +43,14 @@ enum CaptureInterruption: Sendable, Equatable {
     case writeFailed(String)
 }
 
+/// Итог остановки записи. `failure` ненулевой, когда звук получен, но получен
+/// не полностью, — вызывающий обязан сказать об этом пользователю.
+struct CaptureResult {
+    let samples: [Float]
+    let savedDuration: Double?
+    let failure: CaptureInterruption?
+}
+
 /// Почему пишем не с того устройства, которое выбрано в настройках.
 enum DeviceFallbackReason: Equatable {
     /// Выбранного устройства сейчас нет в системе (гарнитуру отключили).
@@ -253,8 +261,15 @@ public final class AudioCaptureService: NSObject, ObservableObject {
                 meterPeak = 0
             }
 
+            // Наблюдатели — ДО startRunning(): между стартом и подпиской есть
+            // окно, в котором сессия может остановиться, и её уведомление
+            // некому было бы поймать — приложение осталось бы в .recording с
+            // мёртвым микрофоном.
+            installInterruptionObservers()
+
             session.startRunning()
             guard session.isRunning else {
+                removeInterruptionObservers()
                 rollbackPartialStart(session: session, output: output, url: url)
                 throw AudioCaptureError.sessionDidNotStart
             }
@@ -262,8 +277,6 @@ public final class AudioCaptureService: NSObject, ObservableObject {
             self.session = session
             self.recordingURL = url
         }
-
-        installInterruptionObservers()
     }
 
     /// Единый откат для сбоя на полпути к записи. Без него частично собранная
@@ -296,19 +309,22 @@ public final class AudioCaptureService: NSObject, ObservableObject {
     // MARK: - Остановка
 
     public func stopRecording() throws -> [Float] {
-        let (samples, _) = try stopRecordingCore(savingAudioTo: nil)
-        return samples
+        try stopRecordingCore(savingAudioTo: nil).samples
     }
 
     /// Останавливает запись, возвращает сэмплы и, если попросили, копирует
-    /// сырой файл в `saveURL` до удаления. Второй элемент — длительность звука,
-    /// nil, если копирование не запрашивали или оно не удалось.
-    public func stopRecordingRetaining(savingAudioTo saveURL: URL) throws -> ([Float], Double?) {
+    /// сырой файл в `saveURL` до удаления.
+    ///
+    /// `failure` возвращается ВМЕСТЕ с сэмплами, а не только через
+    /// `onInterruption`: асинхронный канал проигрывает гонку, когда сбой записи
+    /// приходит ровно в тот момент, когда пользователь уже остановил запись
+    /// сам, — тогда вызывающий получил бы неполный звук как обычный успех.
+    func stopRecordingRetaining(savingAudioTo saveURL: URL) throws -> CaptureResult {
         try stopRecordingCore(savingAudioTo: saveURL)
     }
 
     @discardableResult
-    private func stopRecordingCore(savingAudioTo saveURL: URL?) throws -> ([Float], Double?) {
+    private func stopRecordingCore(savingAudioTo saveURL: URL?) throws -> CaptureResult {
         // Обычная остановка и остановка по прерыванию идут через эту же функцию,
         // поэтому оба состояния допустимы: .stopping означает, что прерывание
         // уже перевело сюда, и второй остановки быть не должно.
@@ -378,7 +394,7 @@ public final class AudioCaptureService: NSObject, ObservableObject {
             try? FileManager.default.removeItem(at: url)
             if let failure { throw AudioCaptureError.recordingReadFailed(failure) }
             if let loadFailure { throw loadFailure }
-            return ([], nil)
+            return CaptureResult(samples: [], savedDuration: nil, failure: nil)
         }
 
         if let failure {
@@ -400,7 +416,11 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         }
 
         try? FileManager.default.removeItem(at: url)
-        return (samples, savedDuration)
+        return CaptureResult(
+            samples: samples,
+            savedDuration: savedDuration,
+            failure: failure.map { CaptureInterruption.writeFailed($0.localizedDescription) }
+        )
     }
 
     // MARK: - Прерывания

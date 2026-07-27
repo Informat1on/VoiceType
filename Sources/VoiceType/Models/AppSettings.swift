@@ -305,6 +305,14 @@ final class AppSettings: ObservableObject {
         didSet { save() }
     }
 
+    /// Человеческое имя выбранного устройства, каким его показала система в
+    /// момент выбора. Нужно ровно для одного случая: устройство отключили, и
+    /// спросить у системы его имя больше не у кого — а показывать пользователю
+    /// UID вида `BuiltInHeadphoneInputDevice` в интерфейсе нельзя.
+    @Published var preferredInputDeviceName: String? {
+        didSet { save() }
+    }
+
     private let defaults: UserDefaults
 
     private convenience init() {
@@ -389,6 +397,8 @@ final class AppSettings: ObservableObject {
         // не должна, но если попала (правка defaults руками), читается как nil.
         let storedDeviceUID = defaults.string(forKey: "preferredInputDeviceUID")
         self.preferredInputDeviceUID = (storedDeviceUID?.isEmpty ?? true) ? nil : storedDeviceUID
+        let storedDeviceName = defaults.string(forKey: "preferredInputDeviceName")
+        self.preferredInputDeviceName = (storedDeviceName?.isEmpty ?? true) ? nil : storedDeviceName
 
         // Persist migrated Control bit back to UserDefaults so subsequent launches
         // skip the remap. Only writes when migration actually changed the value.
@@ -417,6 +427,11 @@ final class AppSettings: ObservableObject {
             defaults.set(preferredInputDeviceUID, forKey: "preferredInputDeviceUID")
         } else {
             defaults.removeObject(forKey: "preferredInputDeviceUID")
+        }
+        if let preferredInputDeviceName, !preferredInputDeviceName.isEmpty {
+            defaults.set(preferredInputDeviceName, forKey: "preferredInputDeviceName")
+        } else {
+            defaults.removeObject(forKey: "preferredInputDeviceName")
         }
     }
 }

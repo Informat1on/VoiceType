@@ -192,10 +192,18 @@ struct SettingsView: View {
                 PrefsRow("Input device",
                          subtitle: "Bluetooth headsets record through a narrowband codec — "
                              + "pick a wired or built-in mic for dictation.") {
-                    Picker("Input device", selection: $settings.preferredInputDeviceUID) {
+                    Picker("Input device", selection: inputDeviceSelection) {
                         Text("System Default").tag(String?.none)
                         ForEach(inputDevices) { device in
                             Text(device.name).tag(String?.some(device.uid))
+                        }
+                        // Отключённое устройство остаётся в списке отдельным
+                        // пунктом: без него у Picker нет совпадающего элемента,
+                        // и он рисует пустоту — по интерфейсу нельзя понять,
+                        // что вообще выбрано.
+                        if let missing = unavailableSelectedDeviceUID {
+                            Text("\(selectedDeviceDisplayName(fallback: missing)) (unavailable)")
+                                .tag(String?.some(missing))
                         }
                     }
                     .labelsHidden()
@@ -208,7 +216,8 @@ struct SettingsView: View {
                     // для ошибок. Выбор при этом НЕ сбрасывается — устройство
                     // вернётся, когда гарнитуру подключат обратно.
                     PrefsRow("Selected device unavailable",
-                             subtitle: "Recording falls back to System Default until \(missingUID) is connected again.") {
+                             subtitle: "Recording falls back to System Default until "
+                                 + "\(selectedDeviceDisplayName(fallback: missingUID)) is connected again.") {
                         EmptyView()
                     }
                     RowDivider()
@@ -234,6 +243,28 @@ struct SettingsView: View {
             deviceObservation?.cancel()
             deviceObservation = nil
         }
+    }
+
+    /// Выбор устройства пишет заодно и его имя: когда устройство отключат,
+    /// спросить имя будет уже не у кого, а показывать UID пользователю нельзя.
+    private var inputDeviceSelection: Binding<String?> {
+        Binding(
+            get: { settings.preferredInputDeviceUID },
+            set: { uid in
+                settings.preferredInputDeviceUID = uid
+                settings.preferredInputDeviceName = uid.flatMap { selected in
+                    inputDevices.first(where: { $0.uid == selected })?.name
+                }
+            }
+        )
+    }
+
+    /// Имя выбранного устройства для интерфейса. `fallback` — UID, он идёт в
+    /// дело только если имени не сохранилось (настройка от сборки, которая
+    /// имён ещё не писала).
+    private func selectedDeviceDisplayName(fallback uid: String) -> String {
+        if let name = settings.preferredInputDeviceName, !name.isEmpty { return name }
+        return uid
     }
 
     /// UID выбранного устройства, которого сейчас нет в системе, — иначе nil.
