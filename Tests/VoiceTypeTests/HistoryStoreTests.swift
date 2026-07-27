@@ -283,4 +283,137 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(store2.entries().first?.text, "e149")
         XCTAssertEqual(store2.entries().last?.text, "e50")
     }
+
+    // MARK: - testAppendEvictsOldestRegularEntriesButPreservesSavedEvalPairsAndDeletesTheirAudio
+
+    /// Task 2 fix: the rolling cap must apply only to regular (non-eval) entries — a
+    /// saved eval pair appended before 100+ regular entries must still survive.
+    /// Also verifies the audio-orphan fix (review finding): an entry evicted by the
+    /// cap must have its audio file deleted, not just dropped from the JSONL.
+    func testAppendEvictsOldestRegularEntriesButPreservesSavedEvalPairsAndDeletesTheirAudio() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let audioDir = dir.appendingPathComponent("audio")
+        try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("history.jsonl")
+        let store = HistoryStore.test(storeURL: url, audioDirectory: audioDir)
+
+        // Append a saved eval pair FIRST (oldest entry in the store) with real audio.
+        let evalAudioPath = "eval-oldest.caf"
+        try Data().write(to: audioDir.appendingPathComponent(evalAudioPath))
+        let evalEntry = HistoryStore.Entry(
+            text: "eval", targetAppName: "T", targetAppBundleID: "t", language: "en", audioPath: evalAudioPath
+        )
+        store.append(evalEntry)
+        store.update(evalEntry.withEvalSaved(correction: "eval fixed"))
+
+        // Append 101 regular entries (each with its own audio file), pushing the
+        // regular-entry count one past the cap.
+        for i in 0..<101 {
+            let path = "regular\(i).caf"
+            try Data().write(to: audioDir.appendingPathComponent(path))
+            store.append(HistoryStore.Entry(
+                text: "r\(i)", targetAppName: "T", targetAppBundleID: "t", language: "en", audioPath: path
+            ))
+        }
+
+        let entries = store.entries()
+        XCTAssertEqual(entries.filter { $0.isSavedEval != true }.count, 100, "Regular entries capped at 100")
+        XCTAssertEqual(entries.filter { $0.isSavedEval == true }.count, 1, "Saved eval pair must survive")
+        XCTAssertTrue(
+            entries.contains { $0.id == evalEntry.id },
+            "Saved eval pair present despite being the oldest append"
+        )
+
+        // The oldest regular entry (r0) must have been evicted, and its audio deleted.
+        XCTAssertFalse(entries.contains { $0.text == "r0" }, "Oldest regular entry must be evicted")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: audioDir.appendingPathComponent("regular0.caf").path),
+            "Evicted regular entry's audio file must be deleted, not orphaned"
+        )
+        // A surviving regular entry's audio must remain.
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: audioDir.appendingPathComponent("regular100.caf").path),
+            "Surviving regular entry's audio file must remain"
+        )
+        // Saved eval pair's audio must remain untouched.
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: audioDir.appendingPathComponent(evalAudioPath).path),
+            "Saved eval pair's audio file must never be deleted by the regular-entry cap"
+        )
+    }
+
+    // MARK: - testReloadEnforcesRegularCapAndDeletesOrphanedAudioEvenWithoutAnAppend
+
+    /// Task 2 fix: the "100 regular + all saved" rule must be re-applied on load,
+    /// not just on append — otherwise a file that violates the invariant (e.g.
+    /// written by a pre-fix build, or hand-edited) would stay in violation until
+    /// the next append(), and evicted entries' audio would never be cleaned up if
+    /// the app quits before appending again.
+    func testReloadEnforcesRegularCapAndDeletesOrphanedAudioEvenWithoutAnAppend() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let audioDir = dir.appendingPathComponent("audio")
+        try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("history.jsonl")
+
+        // Hand-construct a file that VIOLATES the invariant: 102 regular entries +
+        // 2 saved eval pairs = 104 lines, written oldest-first as flush() would —
+        // bypassing append() entirely so the cap has never been enforced on this data.
+        var allEntries: [HistoryStore.Entry] = []
+        for i in 0..<102 {
+            let path = "regular\(i).caf"
+            try Data().write(to: audioDir.appendingPathComponent(path))
+            allEntries.append(HistoryStore.Entry(
+                text: "r\(i)", targetAppName: "T", targetAppBundleID: "t", language: "en", audioPath: path
+            ))
+        }
+        var savedIDs: [UUID] = []
+        for i in 0..<2 {
+            let path = "saved\(i).caf"
+            try Data().write(to: audioDir.appendingPathComponent(path))
+            let entry = HistoryStore.Entry(
+                text: "saved\(i)", targetAppName: "T", targetAppBundleID: "t", language: "en", audioPath: path
+            ).withEvalSaved(correction: "fixed \(i)")
+            savedIDs.append(entry.id)
+            allEntries.append(entry)
+        }
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var raw = ""
+        for entry in allEntries {
+            let data = try encoder.encode(entry)
+            raw += try XCTUnwrap(String(data: data, encoding: .utf8)) + "\n"
+        }
+        try raw.write(to: url, atomically: true, encoding: .utf8)
+
+        // Load — must apply the cap immediately, evicting the 2 oldest regular
+        // entries (r0, r1) and deleting their audio, with NO append() call at all.
+        let store = HistoryStore.test(storeURL: url, audioDirectory: audioDir)
+        let loaded = store.entries()
+
+        XCTAssertEqual(loaded.filter { $0.isSavedEval != true }.count, 100, "Regular entries must be capped on load")
+        XCTAssertEqual(loaded.filter { $0.isSavedEval == true }.count, 2, "Both saved eval pairs must survive load")
+        XCTAssertFalse(loaded.contains { $0.text == "r0" }, "Oldest regular entry must be evicted on load")
+        XCTAssertFalse(loaded.contains { $0.text == "r1" }, "Second-oldest regular entry must be evicted on load")
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: audioDir.appendingPathComponent("regular0.caf").path),
+            "Evicted entry's audio file must be deleted at load time, not left orphaned"
+        )
+        for savedID in savedIDs {
+            XCTAssertTrue(loaded.contains { $0.id == savedID }, "Saved eval pair must survive the load-time cap")
+        }
+
+        // The eviction must have been persisted (flush), not just applied in-memory —
+        // otherwise a second restart before any append() would re-load the same
+        // 104-line file and the eviction would not be idempotently stable.
+        let store2 = HistoryStore.test(storeURL: url, audioDirectory: audioDir)
+        XCTAssertEqual(
+            store2.entries().count,
+            102,
+            "Reload after the corrective flush must be stable at 100 regular + 2 saved"
+        )
+    }
 }

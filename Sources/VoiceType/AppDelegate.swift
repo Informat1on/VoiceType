@@ -31,6 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let textInjectionService = TextInjectionService()
     let permissionManager = PermissionManager()
     let modelManager = ModelManager.shared
+    /// Extracted seam for history bookkeeping (task 1, P1 fix) — see
+    /// HistoryRecorder.swift for why AppDelegate delegates this instead of
+    /// calling HistoryStore directly.
+    let historyRecorder = HistoryRecorder(store: .shared)
 
     // MARK: - State
 
@@ -1024,26 +1028,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         let targetBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let charCount = text.count
 
+        // Record to history BEFORE injectText runs — task 1 (P1) fix. Previously
+        // the entry was only appended after a successful injection, so a failed
+        // insert (e.g. revoked Accessibility permission) silently dropped the
+        // transcript and its audio file became an orphan on disk. Recording here
+        // means the transcript survives regardless of outcome; recordOutcome
+        // below fills in the actual insertSuccess once it's known.
+        // Best-effort: flush failures are logged to ErrorLogger but never
+        // surface to the user. DESIGN.md § Transcription History. Step 9.
+        let historyEntryID = historyRecorder.recordPending(.init(
+            text: text,
+            targetAppName: targetAppName,
+            targetAppBundleID: targetBundleID,
+            language: AppSettings.shared.language.rawValue,
+            audioPath: audioPath,
+            model: AppSettings.shared.selectedModel.rawValue,
+            audioDurationSeconds: audioDuration
+        ))
+
         // Keep the app busy until the text is fully inserted, so the next hotkey
         // press cannot race with the paste/typing sequence.
         let injectionSucceeded = injectText(text, mode: AppSettings.shared.textInjectionMode)
+        historyRecorder.recordOutcome(id: historyEntryID, insertSuccess: injectionSucceeded)
 
         if injectionSucceeded {
-            // Record to history BEFORE the inserted flash so the entry lands
-            // even if the user dismisses the capsule quickly. Best-effort:
-            // flush failures are logged to ErrorLogger but never surface to the user.
-            // DESIGN.md § Transcription History. Step 9.
-            let historyEntry = HistoryStore.Entry(
-                text: text,
-                targetAppName: targetAppName,
-                targetAppBundleID: targetBundleID,
-                language: AppSettings.shared.language.rawValue,
-                audioPath: audioPath,
-                model: AppSettings.shared.selectedModel.rawValue,
-                audioDurationSeconds: audioDuration
-            )
-            HistoryStore.shared.append(historyEntry)
-
             // Flash `.inserted` for 400ms (per v5-inserted-state.html), then hide.
             // DESIGN.md § Reduced motion: shorten to 200ms when Reduce Motion is on.
             // appState stays non-idle during the flash so a hotkey press mid-flash

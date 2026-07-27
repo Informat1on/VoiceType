@@ -112,7 +112,8 @@ final class EvalCollectorTests: XCTestCase {
     // MARK: - testAudioRotationKeeps100UnsavedAndAllSaved
 
     /// When more than 100 unsaved-audio entries exist, oldest unsaved audios are
-    /// evicted. Saved eval pairs must not be counted against the limit.
+    /// evicted. Saved eval pairs must not be counted against the limit — neither
+    /// the entry cap (task 2 fix) nor the separate unsaved-audio rotation cap.
     func testAudioRotationKeeps100UnsavedAndAllSaved() throws {
         let (store, _) = try makeStore()
 
@@ -122,9 +123,9 @@ final class EvalCollectorTests: XCTestCase {
             store.append(sampleEntry(text: "unsaved \(i)", audioPath: "unsaved\(i).caf"))
         }
 
-        // The history cap is 100, so at this point the oldest 5 are gone from history.
+        // The regular-entry cap is 100, so at this point the oldest 5 are gone.
         // Now add more unsaved entries to trigger audio rotation, then save a few.
-        // We need the final 100 entries to contain both unsaved (with rotation) and saved.
+        // We need the final store to contain both unsaved (with rotation) and saved.
         // Strategy: start fresh with exactly 100 unsaved + save some via update().
 
         // Clear and restart with a clean scenario for clarity.
@@ -142,15 +143,30 @@ final class EvalCollectorTests: XCTestCase {
             store.update(saved)
         }
 
-        // Now add 5 more unsaved entries — audio rotation fires because
-        // there are now 100 unsaved audio entries (5 were saved, so 95 unsaved
-        // + 5 new = 100 total, staying under the cap).
+        // Now add 6 more unsaved entries. Regular-entry count goes 95 → 101,
+        // so the entry cap evicts exactly one oldest regular entry (task 2 fix:
+        // the cap counts only regular entries, not saved eval pairs).
         for i in 100..<106 {
             store.append(sampleEntry(text: "new unsaved \(i)", audioPath: "n\(i).caf"))
         }
 
         let entries = store.entries()
-        XCTAssertEqual(entries.count, 100, "History cap must hold at 100 total")
+        // 100 regular entries (capped) + 5 saved eval pairs (exempt from the cap) = 105.
+        XCTAssertEqual(
+            entries.count,
+            105,
+            "Cap must hold regular entries at 100 while keeping all 5 saved eval pairs"
+        )
+        XCTAssertEqual(
+            entries.filter { $0.isSavedEval != true }.count,
+            100,
+            "Regular (non-eval) entry count must be capped at 100"
+        )
+        XCTAssertEqual(
+            entries.filter { $0.isSavedEval == true }.count,
+            5,
+            "All 5 saved eval pairs must survive the regular-entry cap"
+        )
 
         // Saved eval pairs still have their audioPath.
         let savedWithAudio = entries.filter { $0.isSavedEval == true && $0.audioPath != nil }
@@ -168,7 +184,14 @@ final class EvalCollectorTests: XCTestCase {
     // MARK: - testSavedEvalNeverRotated
 
     /// Explicitly verify that a saved eval pair's audioPath is never cleared by rotation,
-    /// even when far more than 100 unsaved entries are present.
+    /// AND that the entry itself is never evicted by the regular-entry cap, even when
+    /// far more than 100 unsaved entries are present (task 2 fix).
+    ///
+    /// Before the fix, the entry cap counted all entries regardless of isSavedEval,
+    /// so this saved pair (appended first, i.e. oldest) would have been evicted by
+    /// the time 200 more regular entries were appended — silently discarding a
+    /// "kept forever" eval pair, exactly the bug the file header comment promised
+    /// wouldn't happen.
     func testSavedEvalNeverRotated() throws {
         let (store, _) = try makeStore()
 
@@ -177,26 +200,31 @@ final class EvalCollectorTests: XCTestCase {
         let saved = evalEntry.withEvalSaved(correction: "eval corrected")
         store.append(saved)
 
-        // 200 unsaved entries — enough to trigger multiple rotation passes.
+        // 200 unsaved entries — enough to trigger multiple rotation passes and,
+        // pre-fix, multiple entry-cap eviction passes.
         for i in 0..<200 {
             store.append(sampleEntry(text: "bulk \(i)", audioPath: "bulk\(i).caf"))
         }
 
         let entries = store.entries()
 
-        // The saved eval entry may have been evicted from the 100-entry cap since
-        // the history store keeps only the newest 100 total entries. We care only
-        // that IF it's present, its audioPath is intact.
-        if let evalInStore = entries.first(where: { $0.id == saved.id }) {
-            XCTAssertEqual(
-                evalInStore.audioPath,
-                "eval.caf",
-                "Saved eval pair audioPath must not be cleared by audio rotation"
-            )
-            XCTAssertEqual(evalInStore.isSavedEval, true)
-        }
-        // If it was evicted from history (rolled off beyond 100), that's fine —
-        // the overall history cap is 100 entries, which takes precedence.
+        let evalInStore = try XCTUnwrap(
+            entries.first(where: { $0.id == saved.id }),
+            "Saved eval pair must survive the regular-entry cap regardless of how many regular entries follow it"
+        )
+        XCTAssertEqual(
+            evalInStore.audioPath,
+            "eval.caf",
+            "Saved eval pair audioPath must not be cleared by audio rotation"
+        )
+        XCTAssertEqual(evalInStore.isSavedEval, true)
+
+        // The regular-entry cap must still hold at exactly 100.
+        XCTAssertEqual(
+            entries.filter { $0.isSavedEval != true }.count,
+            100,
+            "Regular entries must still be capped at 100 alongside the exempt saved pair"
+        )
     }
 
     // MARK: - testCorrectionDefaultsToWhisperOutput

@@ -2,15 +2,21 @@
 //
 // Append-only JSONL store for transcription history.
 // File: ~/Library/Application Support/VoiceType/history.jsonl
-// Rolling cap: 100 entries (oldest evicted on insert).
+// Rolling cap: 100 REGULAR entries (oldest evicted on insert). Saved eval
+// pairs (isSavedEval == true) are exempt — see evictExcessRegularEntries().
 // In-memory cache + atomic flush-on-write. Re-writes whole file each time
-// (acceptable: ≤100 entries, measured at ~40µs).
+// (acceptable at regular-entry scale; grows unbounded with saved eval pairs
+// — accepted cost, see evictExcessRegularEntries() doc comment, task 2 fix).
 //
 // Eval Collector extension (2026-04-27):
 //   - Entry gains optional audioPath, userCorrection, isSavedEval, model,
 //     audioDurationSeconds fields. All optional for backward compat.
 //   - Audio files live in ~/Library/Application Support/VoiceType/audio/<uuid>.caf
 //   - Rolling buffer: up to 100 unsaved audio files; saved eval pairs kept forever.
+//
+// insertSuccess field (task 1 fix, architectural audit): records whether
+// injectText actually succeeded. Populated by HistoryRecorder after the
+// entry is already persisted, so a failed insert never loses the transcript.
 //
 // DESIGN.md § Transcription History. Step 9.
 
@@ -20,7 +26,8 @@ import Foundation
 
 /// Append-only JSONL store for transcription history.
 /// File: ~/Library/Application Support/VoiceType/history.jsonl
-/// Rolling cap: 100 entries (oldest evicted on insert).
+/// Rolling cap: 100 regular entries (oldest evicted on insert); saved eval
+/// pairs are exempt and kept forever.
 @MainActor
 final class HistoryStore {
 
@@ -58,6 +65,15 @@ final class HistoryStore {
         /// Duration of the audio recording in seconds. nil if not captured.
         let audioDurationSeconds: Double?
 
+        /// Whether text injection actually succeeded. nil for legacy entries
+        /// written before this field existed, and briefly nil for the
+        /// "pending" record HistoryRecorder writes before injectText runs —
+        /// see HistoryRecorder.recordOutcome(id:insertSuccess:).
+        /// DESIGN.md § Transcription History specifies this field; audit
+        /// finding (task 1, P1): the entry used to be written only on
+        /// success, so a failed insert silently dropped the transcript.
+        let insertSuccess: Bool?
+
         // MARK: Primary init (used by AppDelegate transcription pipeline)
 
         init(
@@ -67,7 +83,8 @@ final class HistoryStore {
             language: String,
             audioPath: String? = nil,
             model: String? = nil,
-            audioDurationSeconds: Double? = nil
+            audioDurationSeconds: Double? = nil,
+            insertSuccess: Bool? = nil
         ) {
             self.id = UUID()
             self.timestamp = Date()
@@ -81,6 +98,7 @@ final class HistoryStore {
             self.isSavedEval = nil
             self.model = model
             self.audioDurationSeconds = audioDurationSeconds
+            self.insertSuccess = insertSuccess
         }
 
         // MARK: Mutation helpers (produces a new value; Entry is a struct)
@@ -99,7 +117,8 @@ final class HistoryStore {
                 userCorrection: correction,
                 isSavedEval: true,
                 model: model,
-                audioDurationSeconds: audioDurationSeconds
+                audioDurationSeconds: audioDurationSeconds,
+                insertSuccess: insertSuccess
             )
         }
 
@@ -117,7 +136,31 @@ final class HistoryStore {
                 userCorrection: userCorrection,
                 isSavedEval: isSavedEval,
                 model: model,
-                audioDurationSeconds: audioDurationSeconds
+                audioDurationSeconds: audioDurationSeconds,
+                insertSuccess: insertSuccess
+            )
+        }
+
+        /// Returns a copy with insertSuccess set to the actual injection outcome.
+        /// HistoryRecorder calls this after injectText returns — see task 1 (P1):
+        /// the entry itself is written BEFORE injection is attempted (via the
+        /// primary init above, insertSuccess left nil), so the transcript is
+        /// never lost even if injection fails; this call just records the result.
+        func withInsertOutcome(_ succeeded: Bool) -> Entry {
+            Entry(
+                id: id,
+                timestamp: timestamp,
+                text: text,
+                charCount: charCount,
+                targetAppName: targetAppName,
+                targetAppBundleID: targetAppBundleID,
+                language: language,
+                audioPath: audioPath,
+                userCorrection: userCorrection,
+                isSavedEval: isSavedEval,
+                model: model,
+                audioDurationSeconds: audioDurationSeconds,
+                insertSuccess: succeeded
             )
         }
 
@@ -134,7 +177,8 @@ final class HistoryStore {
             userCorrection: String?,
             isSavedEval: Bool?,
             model: String?,
-            audioDurationSeconds: Double?
+            audioDurationSeconds: Double?,
+            insertSuccess: Bool?
         ) {
             self.id = id
             self.timestamp = timestamp
@@ -148,6 +192,7 @@ final class HistoryStore {
             self.isSavedEval = isSavedEval
             self.model = model
             self.audioDurationSeconds = audioDurationSeconds
+            self.insertSuccess = insertSuccess
         }
     }
 
@@ -157,6 +202,7 @@ final class HistoryStore {
     /// Directory where audio recordings are stored. Defaults to
     /// ~/Library/Application Support/VoiceType/audio/
     let audioDirectory: URL
+    /// Cap on REGULAR (non-eval) entries only — see evictExcessRegularEntries().
     private let maxEntries: Int = 100
     /// Maximum number of unsaved audio files to keep in rolling buffer.
     private let maxUnsavedAudio: Int = 100
@@ -205,14 +251,13 @@ final class HistoryStore {
 
     // MARK: - Public API
 
-    /// Append a new entry. Evicts oldest when cap is exceeded. Flushes to disk.
+    /// Append a new entry. Evicts oldest REGULAR entries when the cap is exceeded
+    /// (saved eval pairs are exempt — see evictExcessRegularEntries()). Flushes to disk.
     /// After appending, rotates audio files if the unsaved-audio buffer exceeds 100.
     func append(_ entry: Entry) {
         loadIfNeeded()
         cachedEntries.insert(entry, at: 0)
-        if cachedEntries.count > maxEntries {
-            cachedEntries.removeLast(cachedEntries.count - maxEntries)
-        }
+        evictExcessRegularEntries()
         rotateAudioIfNeeded()
         flush()
     }
@@ -260,6 +305,45 @@ final class HistoryStore {
     func entry(byID id: UUID) -> Entry? {
         loadIfNeeded()
         return cachedEntries.first { $0.id == id }
+    }
+
+    // MARK: - Rolling cap (entries)
+
+    /// Evicts the oldest REGULAR (non-eval) entries once their count exceeds
+    /// maxEntries, deleting each evicted entry's audio file directly (it is
+    /// gone from the cache entirely, so rotateAudioIfNeeded() will never see
+    /// it again — leaving the file behind would orphan it on disk).
+    ///
+    /// Saved eval pairs (isSavedEval == true) are exempt from this cap — the
+    /// file header promises "saved eval pairs kept forever". Cost accepted
+    /// (review finding, task 2): history.jsonl, the saved audio files, and the
+    /// full-file rewrite in flush() now grow without an upper bound as saved
+    /// eval pairs accumulate, since nothing currently caps that count. Track
+    /// via HistoryStore.savedEvalCount() if this needs revisiting.
+    ///
+    /// Called from both append() and loadIfNeeded() — the same rule must hold
+    /// after a restart, otherwise entries saved before this fix (when the cap
+    /// applied to the total regardless of isSavedEval) would be silently
+    /// re-pruned on the next load.
+    private func evictExcessRegularEntries() {
+        let regularCount = cachedEntries.filter { $0.isSavedEval != true }.count
+        guard regularCount > maxEntries else { return }
+        let excess = regularCount - maxEntries
+
+        // Oldest-first among regular entries (cachedEntries itself is newest-first).
+        let idsToEvict = cachedEntries
+            .filter { $0.isSavedEval != true }
+            .reversed()
+            .prefix(excess)
+            .map(\.id)
+
+        for id in idsToEvict {
+            if let entry = cachedEntries.first(where: { $0.id == id }), let path = entry.audioPath {
+                try? fileManager.removeItem(at: audioDirectory.appendingPathComponent(path))
+            }
+        }
+        let idSet = Set(idsToEvict)
+        cachedEntries.removeAll { idSet.contains($0.id) }
     }
 
     // MARK: - Audio rotation
@@ -320,9 +404,15 @@ final class HistoryStore {
         // File is stored oldest-first (chronological append order).
         // Reverse to get newest-first for in-memory usage.
         cachedEntries = entries.reversed()
-        if cachedEntries.count > maxEntries {
-            // Keep only the newest maxEntries.
-            cachedEntries = Array(cachedEntries.prefix(maxEntries))
+        // Same rule as append(): cap applies only to regular entries, saved eval
+        // pairs are exempt (task 2 fix). Re-flush if this actually trimmed
+        // anything so the on-disk file matches — otherwise a restart-only
+        // eviction would delete orphaned audio here but leave stale JSONL
+        // lines on disk until the next append().
+        let countBeforeEviction = cachedEntries.count
+        evictExcessRegularEntries()
+        if cachedEntries.count != countBeforeEviction {
+            flush()
         }
     }
 
