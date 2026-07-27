@@ -120,10 +120,12 @@ def sample(edits, size, per_word_min):
 
 def render(picked, total, population):
     stats = ",".join(f"{w}={n}" for w, n in sorted(population.items()))
+    expected = ",".join(f"{w}={n}" for w, n in sorted(Counter(e["word"] for e in picked).items()))
     lines = [
         "# Аудит удалений филлеров",
         "",
         f"<!-- population: {stats} -->",
+        f"<!-- sampled: {expected} -->",
         "",
         f"Выборка {len(picked)} из {total} удалений, seed {SEED}.",
         "",
@@ -167,7 +169,7 @@ def wilson(good, total):
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
-def score(path, population):
+def score(path, population, expected_counts):
     """Взвешенная оценка precision.
 
     Выборка стратифицирована и НЕ пропорциональна: «короче» намеренно
@@ -176,11 +178,17 @@ def score(path, population):
     простая доля по 216 наблюдениям — смещённая оценка для 1541 удаления:
     редкое слово в ней весит больше, чем в реальности.
 
-    Общая precision считается как Σ (N_слова / N_всего) · p_слова. Интервал —
-    взвешенная сумма границ Уилсона по стратам, а НЕ корень из взвешенной
-    дисперсии: последняя даёт нулевую неопределённость при p=1, то есть страта
-    25/25 печатала бы «1.000–1.000» и гейт проходил бы по фикции. Взвешенные
-    границы Уилсона консервативнее и не схлопываются. Замечание код-ревью.
+    Общая precision считается как Σ (N_слова / N_всего) · p_слова.
+
+    Граница — взвешенная сумма 95% границ Уилсона по стратам. Это НЕ строгий
+    совместный 95% интервал: у суммы отдельных границ нет гарантии покрытия без
+    поправки Бонферрони или Шидака. Названо честно, потому что решение о выкате
+    принимается по пессимистичной границе, и выдавать её за точный интервал
+    значило бы обещать точность, которой нет. Вариант с корнем из взвешенной
+    дисперсии отвергнут: он даёт нулевую неопределённость при p = 1, то есть
+    страта 25/25 печатала бы «1.000–1.000» и гейт проходил бы по фикции.
+    Поправка на конечность популяции сознательно не применяется — она сузила бы
+    границу, а здесь предпочтительнее переоценить неопределённость.
     """
     wrong, total = Counter(), Counter()
     blank = 0
@@ -201,6 +209,15 @@ def score(path, population):
             wrong[word] += 1
 
     n = sum(total.values())
+    if expected_counts:
+        for word, want in sorted(expected_counts.items()):
+            got = total[word] + (0)
+            if got != want:
+                sys.exit(
+                    f"Страта «{word}»: размечено {got}, а в выборке было {want}. "
+                    "Строки нельзя удалять или переписывать — иначе неудобный случай "
+                    "просто исчезает и precision растёт сам собой."
+                )
     if blank:
         sys.exit(
             f"Не размечено {blank} случаев из {n + blank}. "
@@ -234,8 +251,12 @@ def score(path, population):
         print(f"⚠️  нет размеров страт для: {', '.join(unweighted_note)} — "
               "передай --population, иначе общая оценка не считается")
         return
-    print(f"precision по корпусу (взвешенно): {weighted:.3f} "
-          f"(95% CI {max(0, bound_lo):.3f}–{min(1, bound_hi):.3f})")
+    print(f"precision по корпусу (взвешенно): {weighted:.3f}")
+    print(f"консервативная граница: {max(0, bound_lo):.3f}–{min(1, bound_hi):.3f}")
+    print("  (взвешенная сумма 95% границ Уилсона по стратам — это НЕ строгий")
+    print("   совместный 95% интервал: без поправки Бонферрони/Шидака гарантии")
+    print("   покрытия у суммы нет. Для решения о выкате намеренно берётся")
+    print("   пессимистичная граница, а не точная.)")
     print()
     print("Гейт: ≥0.98 — оставляем включённым по умолчанию;")
     print("      0.95–0.98 — ужесточать по слову с худшим профилем;")
@@ -270,7 +291,15 @@ def main():
             for part in args.population.split(","):
                 word, _, count = part.partition("=")
                 population[word.strip()] = int(count)
-        return score(args.score, population)
+        expected_counts = {}
+        for line in open(args.score, encoding="utf-8"):
+            m = re.match(r"<!--\s*sampled:\s*(.+?)\s*-->", line.strip())
+            if m:
+                for part in m.group(1).split(","):
+                    word, _, count = part.partition("=")
+                    expected_counts[word.strip()] = int(count)
+                break
+        return score(args.score, population, expected_counts)
 
     edits = load_edits(args.sample)
     if not edits:

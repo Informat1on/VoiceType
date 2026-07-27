@@ -97,8 +97,16 @@ enum LexiconNormalizer {
 
             if let (replacement, consumed) = dictionaryMatch(tokens: tokens, at: i, mask: mask) {
                 let range = tokens[i].range.lowerBound..<tokens[i + consumed - 1].range.upperBound
+                // One range per WORD token, not one per phrase: a multi-word
+                // entry ("сонет агенты") spans a separator, and a matched range
+                // that contains a space is not a token. The separators live
+                // inside `editRange`, which is what actually gets replaced.
+                let wordRanges = tokens[i..<(i + consumed)]
+                    .filter { $0.kind == .word }
+                    .map(\.range)
                 edits.append(TextEdit(
-                    matchedRanges: [range],
+                    matchedRanges: wordRanges,
+                    editRange: range,
                     original: String(chars[range]),
                     replacement: replacement,
                     rule: .lexicon(form: String(chars[range]))

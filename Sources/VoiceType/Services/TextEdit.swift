@@ -156,12 +156,13 @@ extension TextEdit {
                     matchProblem = "edit \(i): matched ranges overlap or are unsorted"
                     break
                 }
-                // A matched token must be exactly a token — no surrounding
-                // punctuation smuggled in. Checked here because `validate` is
-                // the only place the contract is enforced rather than assumed.
+                // A matched range must be exactly one token: letters and digits
+                // only. "Trimmed and comma-free" was too weak — it accepted
+                // "ну короче" (two words and a space) and "ну!" as tokens.
+                // `validate` is the only place the contract is enforced rather
+                // than assumed, so it has to be literal.
                 let text = String(input[matched])
-                guard !text.isEmpty, text == text.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !text.contains(","), !text.contains(".") else {
+                guard !text.isEmpty, text.allSatisfy({ $0.isLetter || $0.isNumber }) else {
                     matchProblem = "edit \(i): matched \(text.debugDescription) is not a bare token"
                     break
                 }
@@ -171,8 +172,11 @@ extension TextEdit {
                 problems.append(matchProblem)
                 continue
             }
-            if case let .filler(words) = edit.rule, words.count != edit.matchedRanges.count {
-                problems.append("edit \(i): \(words.count) filler words for \(edit.matchedRanges.count) matched ranges")
+            if case let .filler(words) = edit.rule {
+                let matchedTexts = edit.matchedRanges.map { String(input[$0]) }
+                if words != matchedTexts {
+                    problems.append("edit \(i): filler words \(words) do not equal matched slices \(matchedTexts)")
+                }
             }
             let slice = String(input[edit.editRange])
             if slice != edit.original {
