@@ -257,9 +257,15 @@ final class HistoryStore {
     func append(_ entry: Entry) {
         loadIfNeeded()
         cachedEntries.insert(entry, at: 0)
-        evictExcessRegularEntries()
-        rotateAudioIfNeeded()
-        flush()
+        // Audio deletion is deferred until the new state is safely on disk:
+        // if flush() fails (full disk, permissions), the old JSONL survives and
+        // would otherwise point at files we had already removed. Leaking an
+        // audio file on a crashed write is recoverable; a dangling reference
+        // in a record the user can still see is not. Review finding, wave A.
+        let orphanedAudio = evictExcessRegularEntries() + rotateAudioIfNeeded()
+        if flush() {
+            deleteAudioFiles(orphanedAudio)
+        }
     }
 
     /// All entries, newest first.
@@ -325,25 +331,23 @@ final class HistoryStore {
     /// after a restart, otherwise entries saved before this fix (when the cap
     /// applied to the total regardless of isSavedEval) would be silently
     /// re-pruned on the next load.
-    private func evictExcessRegularEntries() {
+    /// Returns the audio filenames belonging to evicted entries. The caller
+    /// deletes them only after flush() succeeds — see append().
+    private func evictExcessRegularEntries() -> [String] {
         let regularCount = cachedEntries.filter { $0.isSavedEval != true }.count
-        guard regularCount > maxEntries else { return }
+        guard regularCount > maxEntries else { return [] }
         let excess = regularCount - maxEntries
 
         // Oldest-first among regular entries (cachedEntries itself is newest-first).
-        let idsToEvict = cachedEntries
+        let evicted = cachedEntries
             .filter { $0.isSavedEval != true }
             .reversed()
             .prefix(excess)
-            .map(\.id)
 
-        for id in idsToEvict {
-            if let entry = cachedEntries.first(where: { $0.id == id }), let path = entry.audioPath {
-                try? fileManager.removeItem(at: audioDirectory.appendingPathComponent(path))
-            }
-        }
-        let idSet = Set(idsToEvict)
+        let orphanedAudio = evicted.compactMap(\.audioPath)
+        let idSet = Set(evicted.map(\.id))
         cachedEntries.removeAll { idSet.contains($0.id) }
+        return orphanedAudio
     }
 
     // MARK: - Audio rotation
@@ -351,27 +355,44 @@ final class HistoryStore {
     /// Rotate unsaved audio files: keeps up to maxUnsavedAudio.
     /// Saved eval pairs (isSavedEval == true) are never rotated.
     /// Called automatically after every append().
-    private func rotateAudioIfNeeded() {
+    ///
+    /// Note that with maxUnsavedAudio == maxEntries this is currently
+    /// unreachable for regular entries: evictExcessRegularEntries() caps them
+    /// at maxEntries first, and entries carrying audio are a subset of those.
+    /// It is kept as the guard that keeps holding if the two caps ever diverge
+    /// (a smaller audio budget than entry budget is the plausible change).
+    ///
+    /// Returns the audio filenames it detached, for deletion after a successful
+    /// flush() — same ordering rule as evictExcessRegularEntries().
+    private func rotateAudioIfNeeded() -> [String] {
         // Collect unsaved entries that have audio, oldest-first (cachedEntries is newest-first).
         let unsavedWithAudio = cachedEntries
             .filter { $0.isSavedEval != true && $0.audioPath != nil }
             .reversed() // oldest first
 
-        guard unsavedWithAudio.count > maxUnsavedAudio else { return }
+        guard unsavedWithAudio.count > maxUnsavedAudio else { return [] }
 
         let excess = unsavedWithAudio.count - maxUnsavedAudio
         let toEvict = unsavedWithAudio.prefix(excess)
 
+        var detachedAudio: [String] = []
         for entry in toEvict {
-            // Delete audio file.
             if let path = entry.audioPath {
-                let fileURL = audioDirectory.appendingPathComponent(path)
-                try? fileManager.removeItem(at: fileURL)
+                detachedAudio.append(path)
             }
             // Update entry in cache: clear audioPath.
             if let idx = cachedEntries.firstIndex(where: { $0.id == entry.id }) {
                 cachedEntries[idx] = cachedEntries[idx].withAudioPathCleared()
             }
+        }
+        return detachedAudio
+    }
+
+    /// Removes audio files whose owning entries no longer reference them.
+    /// Always called after a successful flush(), never before.
+    private func deleteAudioFiles(_ filenames: [String]) {
+        for filename in filenames {
+            try? fileManager.removeItem(at: audioDirectory.appendingPathComponent(filename))
         }
     }
 
@@ -409,16 +430,22 @@ final class HistoryStore {
         // anything so the on-disk file matches — otherwise a restart-only
         // eviction would delete orphaned audio here but leave stale JSONL
         // lines on disk until the next append().
-        let countBeforeEviction = cachedEntries.count
-        evictExcessRegularEntries()
-        if cachedEntries.count != countBeforeEviction {
-            flush()
+        let orphanedAudio = evictExcessRegularEntries()
+        if !orphanedAudio.isEmpty || cachedEntries.count != entries.count {
+            // Audio is deleted only once the trimmed file is safely written —
+            // same ordering rule as append(), for the same reason.
+            if flush() {
+                deleteAudioFiles(orphanedAudio)
+            }
         }
     }
 
     /// Atomically rewrite the whole file in chronological (oldest-first) order.
-    private func flush() {
-        guard !loadFailed else { return }
+    /// Returns false when the write failed or was refused, so callers can hold
+    /// back destructive follow-up work (audio deletion).
+    @discardableResult
+    private func flush() -> Bool {
+        guard !loadFailed else { return false }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         // Persist chronologically so future appends are natural.
@@ -433,7 +460,9 @@ final class HistoryStore {
         let result = Result { try bytes.write(to: storeURL, options: .atomic) }
         if case .failure(let error) = result {
             ErrorLogger.shared.log(error, category: "history", context: ["path": storeURL.path])
+            return false
         }
+        return true
     }
 }
 

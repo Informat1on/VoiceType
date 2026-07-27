@@ -109,12 +109,18 @@ final class EvalCollectorTests: XCTestCase {
         XCTAssertEqual(loaded.first?.isSavedEval, true)
     }
 
-    // MARK: - testAudioRotationKeeps100UnsavedAndAllSaved
+    // MARK: - testEntryCapKeeps100RegularAndAllSavedEval
 
-    /// When more than 100 unsaved-audio entries exist, oldest unsaved audios are
-    /// evicted. Saved eval pairs must not be counted against the limit — neither
-    /// the entry cap (task 2 fix) nor the separate unsaved-audio rotation cap.
-    func testAudioRotationKeeps100UnsavedAndAllSaved() throws {
+    /// Regular entries are capped at 100 while saved eval pairs are exempt, and
+    /// the surviving unsaved-audio set stays within its own budget.
+    ///
+    /// Renamed from testAudioRotationKeeps100UnsavedAndAllSaved: with the entry
+    /// cap in place this exercises the ENTRY cap, not the audio rotation branch.
+    /// Entries carrying unsaved audio are a subset of regular entries, which are
+    /// already held at maxEntries, so rotateAudioIfNeeded()'s `> maxUnsavedAudio`
+    /// condition cannot be reached while the two limits are equal. The old name
+    /// claimed coverage the test does not provide. Review finding, wave A.
+    func testEntryCapKeeps100RegularAndAllSavedEval() throws {
         let (store, _) = try makeStore()
 
         // Add 105 unsaved entries with audioPath first (oldest).

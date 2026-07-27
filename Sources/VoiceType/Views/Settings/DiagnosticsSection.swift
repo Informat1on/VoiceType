@@ -23,11 +23,14 @@ struct DiagnosticsSection: View {
     var body: some View {
         PrefsRow("Error log", subtitle: summarySubtitle) {
             HStack(spacing: Spacing.sm) {
+                // Never disabled: the log directory is worth opening even when
+                // today's file is empty, because rotated archives from the last
+                // 7 days can still be there — and after Clear that is exactly
+                // the state the user is left in. Review finding, wave A.
                 Button("Reveal in Finder") {
                     revealInFinder()
                 }
                 .buttonStyle(BorderedButtonStyle())
-                .disabled(entryCount == 0)
 
                 Button("Clear") {
                     ErrorLogger.shared.clear()
