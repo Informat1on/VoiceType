@@ -1,0 +1,93 @@
+name: CI
+
+# Safety net for a project developed mostly by autonomous agents committing
+# straight to main: without this, "did it even build" depends on someone
+# remembering to run the health stack locally. This workflow reproduces the
+# health stack from CLAUDE.md verbatim: build -> test -> lint -> shellcheck.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel a superseded run on the same ref (e.g. fast-follow pushes to a PR
+# branch) instead of burning runner minutes on stale commits.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-lint:
+    # Apple Silicon runner, matches the project's optimization target and the
+    # local dev machine's architecture (avoids x86-only surprises).
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # SwiftWhisper (our whisper.cpp fork dependency, pinned by revision in
+      # Package.swift) drags in whisper.cpp's C/C++/Objective-C sources.
+      # Compiling that from scratch is the expensive part of this workflow by
+      # a wide margin — the Swift half of VoiceType itself builds in seconds.
+      # Report toolchain identity first so it can key the cache: if GitHub
+      # bumps the default Xcode on the runner image, a cache keyed only on
+      # Package.resolved would restore .build artifacts built by a different
+      # compiler/SDK and produce confusing failures instead of a clean cache
+      # miss.
+      - name: Report toolchain
+        id: toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          echo "xcode=$(xcodebuild -version | head -1 | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ steps.toolchain.outputs.xcode }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ steps.toolchain.outputs.xcode }}-
+
+      - name: swift build (debug)
+        timeout-minutes: 15
+        run: swift build -c debug
+
+      - name: swift test
+        timeout-minutes: 10
+        run: swift test
+
+      - name: Install SwiftLint
+        timeout-minutes: 5
+        run: |
+          if ! command -v swiftlint >/dev/null 2>&1; then
+            brew install swiftlint
+          fi
+          swiftlint version
+
+      # Plain `lint`, NOT `--strict`: the custom DESIGN.md token rules are
+      # deliberately WARNING severity until Tokens.swift finishes migrating
+      # (see CLAUDE.md / .swiftlint.yml). --strict promotes warnings to
+      # errors and would fail CI on the current, expected 55-warning
+      # baseline. Gate on errors only — that's what --strict would add on
+      # top of plain `lint`, and today's baseline has zero of those.
+      - name: SwiftLint
+        timeout-minutes: 5
+        run: swiftlint lint --config .swiftlint.yml --reporter github-actions-logging
+
+      - name: Install ShellCheck
+        timeout-minutes: 5
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            brew install shellcheck
+          fi
+          shellcheck --version
+
+      - name: ShellCheck
+        timeout-minutes: 3
+        run: shellcheck ./*.sh
