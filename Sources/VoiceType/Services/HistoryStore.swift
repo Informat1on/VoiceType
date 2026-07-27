@@ -210,6 +210,13 @@ final class HistoryStore {
     /// Newest-first ordering in memory.
     private var cachedEntries: [Entry] = []
     private var loaded: Bool = false
+    /// Audio files whose owning entries are already gone from the cache but whose
+    /// removal is still unsafe, because the JSONL that stops referencing them has
+    /// not been written yet. Accumulates across failed flushes: a per-call list
+    /// would be lost on the failing call, and the next successful flush would
+    /// delete only its own files, orphaning the earlier ones forever.
+    /// Review finding, wave A re-review.
+    private var pendingAudioDeletions: [String] = []
     /// True when the history file existed but could not be read on first load.
     /// Blocks flush() from overwriting a file we couldn't parse.
     private var loadFailed: Bool = false
@@ -262,10 +269,17 @@ final class HistoryStore {
         // would otherwise point at files we had already removed. Leaking an
         // audio file on a crashed write is recoverable; a dangling reference
         // in a record the user can still see is not. Review finding, wave A.
-        let orphanedAudio = evictExcessRegularEntries() + rotateAudioIfNeeded()
-        if flush() {
-            deleteAudioFiles(orphanedAudio)
-        }
+        pendingAudioDeletions += evictExcessRegularEntries() + rotateAudioIfNeeded()
+        flushAndReapAudio()
+    }
+
+    /// Writes the cache and, only on success, deletes every audio file queued so
+    /// far. Failed flushes leave the queue intact so a later successful write
+    /// still reaps them.
+    private func flushAndReapAudio() {
+        guard flush() else { return }
+        deleteAudioFiles(pendingAudioDeletions)
+        pendingAudioDeletions.removeAll()
     }
 
     /// All entries, newest first.
@@ -316,9 +330,10 @@ final class HistoryStore {
     // MARK: - Rolling cap (entries)
 
     /// Evicts the oldest REGULAR (non-eval) entries once their count exceeds
-    /// maxEntries, deleting each evicted entry's audio file directly (it is
-    /// gone from the cache entirely, so rotateAudioIfNeeded() will never see
-    /// it again — leaving the file behind would orphan it on disk).
+    /// maxEntries and hands their audio filenames to the caller for deletion
+    /// after a successful flush (an evicted entry is gone from the cache
+    /// entirely, so rotateAudioIfNeeded() will never see its audio again —
+    /// leaving the file unclaimed would orphan it on disk).
     ///
     /// Saved eval pairs (isSavedEval == true) are exempt from this cap — the
     /// file header promises "saved eval pairs kept forever". Cost accepted
@@ -434,9 +449,8 @@ final class HistoryStore {
         if !orphanedAudio.isEmpty || cachedEntries.count != entries.count {
             // Audio is deleted only once the trimmed file is safely written —
             // same ordering rule as append(), for the same reason.
-            if flush() {
-                deleteAudioFiles(orphanedAudio)
-            }
+            pendingAudioDeletions += orphanedAudio
+            flushAndReapAudio()
         }
     }
 

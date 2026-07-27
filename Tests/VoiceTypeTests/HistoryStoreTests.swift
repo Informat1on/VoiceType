@@ -416,4 +416,90 @@ final class HistoryStoreTests: XCTestCase {
             "Reload after the corrective flush must be stable at 100 regular + 2 saved"
         )
     }
+
+    // MARK: - Deferred audio deletion survives a failed flush
+
+    /// A flush failure must not lose track of audio that is already unreferenced.
+    ///
+    /// The eviction that happened during the failed write is not retried — the
+    /// entry is gone from the cache either way — so if its filename were only
+    /// held in a local variable, the next successful flush would reap its own
+    /// files and leave that one orphaned on disk forever. The queue therefore
+    /// has to accumulate across failures. Review finding, wave A re-review.
+    func testAudioQueuedDuringFailedFlushIsDeletedAfterRecovery() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let audioDir = root.appendingPathComponent("audio")
+        // storeURL lives in a directory that does not exist yet, so every flush
+        // fails until we create it — that is how the failure is simulated.
+        let storeDir = root.appendingPathComponent("store")
+        try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let store = HistoryStore.test(
+            storeURL: storeDir.appendingPathComponent("history.jsonl"),
+            audioDirectory: audioDir
+        )
+
+        func makeAudioFile(_ name: String) throws {
+            try Data("fake audio".utf8).write(to: audioDir.appendingPathComponent(name))
+        }
+        func audioExists(_ name: String) -> Bool {
+            FileManager.default.fileExists(atPath: audioDir.appendingPathComponent(name).path)
+        }
+
+        // Fill to the cap. No eviction yet, so nothing is queued for deletion.
+        for i in 0..<100 {
+            try makeAudioFile("a\(i).caf")
+            store.append(HistoryStore.Entry(
+                text: "entry \(i)",
+                targetAppName: "TestApp",
+                targetAppBundleID: "com.test",
+                language: "en",
+                audioPath: "a\(i).caf"
+            ))
+        }
+
+        // One more entry evicts the oldest — but the flush cannot succeed, so its
+        // audio must stay on disk rather than be deleted ahead of the write.
+        try makeAudioFile("evicted-during-failure.caf")
+        store.append(HistoryStore.Entry(
+            text: "overflow while disk is broken",
+            targetAppName: "TestApp",
+            targetAppBundleID: "com.test",
+            language: "en",
+            audioPath: "evicted-during-failure.caf"
+        ))
+        XCTAssertTrue(
+            audioExists("a0.caf"),
+            "Audio of the entry evicted during a failed flush must survive: the on-disk history still references it"
+        )
+
+        // Disk recovers.
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+
+        // The next append evicts another entry and flushes successfully. It must
+        // reap BOTH the newly evicted audio and the one queued during the failure.
+        try makeAudioFile("evicted-after-recovery.caf")
+        store.append(HistoryStore.Entry(
+            text: "overflow after recovery",
+            targetAppName: "TestApp",
+            targetAppBundleID: "com.test",
+            language: "en",
+            audioPath: "evicted-after-recovery.caf"
+        ))
+
+        XCTAssertFalse(
+            audioExists("a0.caf"),
+            "Audio queued during the failed flush must be deleted once a later flush succeeds"
+        )
+        XCTAssertFalse(
+            audioExists("a1.caf"),
+            "Audio evicted by the successful flush must be deleted too"
+        )
+        XCTAssertTrue(
+            audioExists("a2.caf"),
+            "Audio of entries still in the history must not be touched"
+        )
+    }
 }
