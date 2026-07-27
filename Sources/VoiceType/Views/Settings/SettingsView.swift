@@ -55,6 +55,10 @@ struct SettingsView: View {
     /// именно тогда, когда её ищут в пикере.
     @State private var inputDevices: [AudioInputDevice] = []
     @State private var deviceObservation: AudioDeviceObservation?
+    /// Список опрошен хотя бы раз. Пустота списка сама по себе не значит
+    /// «ещё не загружали»: на машине без встроенного микрофона отключение
+    /// единственного внешнего даёт честно пустой список.
+    @State private var didLoadInputDevices = false
 
     var body: some View {
         // Flat HStack layout per prototype .settings-window { display:flex }
@@ -270,12 +274,13 @@ struct SettingsView: View {
     /// UID выбранного устройства, которого сейчас нет в системе, — иначе nil.
     private var unavailableSelectedDeviceUID: String? {
         guard let selected = settings.preferredInputDeviceUID, !selected.isEmpty else { return nil }
-        guard !inputDevices.isEmpty else { return nil }   // список ещё не загружен
+        guard didLoadInputDevices else { return nil }
         return inputDevices.contains(where: { $0.uid == selected }) ? nil : selected
     }
 
     private func reloadInputDevices() {
         inputDevices = (try? AudioDeviceService.inputDevices()) ?? []
+        didLoadInputDevices = true
     }
 
     // MARK: - Tab 2: Models

@@ -78,6 +78,10 @@ public final class AudioCaptureService: NSObject, ObservableObject {
     private var generation = 0
     /// Одно событие прерывания на запись — см. `reportInterruption`.
     private var didReportInterruption = false
+    /// Причина прерывания, сохранённая под тем же замком. Возвращается в
+    /// `CaptureResult` синхронно: уведомление на main может опоздать за
+    /// обычной остановкой, и тогда неполная запись выглядела бы успешной.
+    private var pendingInterruption: CaptureInterruption?
 
     // Живут только под sampleQueue.
     private var writer: AVAudioFile?
@@ -125,6 +129,7 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         }
         stateLock.lock()
         didReportInterruption = false
+        pendingInterruption = nil
         stateLock.unlock()
 
         do {
@@ -336,6 +341,10 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         stopMeterTimer()
         removeInterruptionObservers()
 
+        stateLock.lock()
+        let sessionInterruption = pendingInterruption
+        stateLock.unlock()
+
         sessionQueue.sync {
             session?.stopRunning()
             // Снять делегата, чтобы после барьера точно ничего не пришло.
@@ -416,10 +425,13 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         }
 
         try? FileManager.default.removeItem(at: url)
+        // Прерывание сессии важнее сбоя записи: оно называет первопричину,
+        // а сбой записи часто лишь её следствие.
         return CaptureResult(
             samples: samples,
             savedDuration: savedDuration,
-            failure: failure.map { CaptureInterruption.writeFailed($0.localizedDescription) }
+            failure: sessionInterruption
+                ?? failure.map { CaptureInterruption.writeFailed($0.localizedDescription) }
         )
     }
 
@@ -428,8 +440,13 @@ public final class AudioCaptureService: NSObject, ObservableObject {
     private func installInterruptionObservers() {
         let center = NotificationCenter.default
 
+        // queue: nil — намеренно. С `queue: .main` блок планируется на main, а
+        // подписка ставится из-под sessionQueue.sync, где main уже занят
+        // ожиданием: синхронно опубликованное уведомление упёрлось бы в
+        // заблокированный поток. Обработчику main и не нужен — reportInterruption
+        // сам уходит на него, когда вызван не оттуда.
         func observe(_ name: Notification.Name, _ handler: @escaping (Notification) -> Void) {
-            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { note in
+            observers.append(center.addObserver(forName: name, object: nil, queue: nil) { note in
                 handler(note)
             })
         }
@@ -479,7 +496,10 @@ public final class AudioCaptureService: NSObject, ObservableObject {
     private func reportInterruption(_ interruption: CaptureInterruption) {
         stateLock.lock()
         let accepted = (state == .recording) && !didReportInterruption
-        if accepted { didReportInterruption = true }
+        if accepted {
+            didReportInterruption = true
+            pendingInterruption = interruption
+        }
         stateLock.unlock()
         guard accepted else { return }
 
