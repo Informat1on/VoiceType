@@ -300,20 +300,24 @@ final class HotkeyService: ObservableObject {
         print("HotkeyService: Recording started (callback executed)")
     }
     
-    private func stopRecordingInternal() {
+    // Не private — тестовый шов (docs/plans/audio-start-hang.md, задача 5,
+    // требование 9): позволяет прогнать реальную ветку toggle/stop из теста
+    // без Carbon hotkey API, с подставным `canStartRecording`.
+    func stopRecordingInternal() {
         dispatchPrecondition(condition: .onQueue(.main))
-        
+
         guard isRecording else {
             print("HotkeyService: Not recording, ignoring stop")
             return
         }
-        
+
         isRecording = false
         onRecordingStopped?()
         print("HotkeyService: Recording stopped (callback executed)")
     }
-    
-    private func toggleRecordingInternal() {
+
+    // Не private — тестовый шов, см. комментарий у `stopRecordingInternal`.
+    func toggleRecordingInternal() {
         dispatchPrecondition(condition: .onQueue(.main))
         
         if isRecording {

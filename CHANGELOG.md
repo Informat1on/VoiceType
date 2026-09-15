@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] - 2026-09-15
+
+A bug-fix release for two ways recording could fail on Elgato hardware:
+one froze the whole app, the other silently refused to record at all.
+
+### Fixed
+
+- **Recording no longer freezes the app when the selected input stops
+  responding.** Starting a recording called
+  `AVCaptureSession.startRunning()` on the main thread, so an input device
+  that never brings up its IO thread froze the entire UI — CoreAudio waits
+  roughly 14 seconds per attempt and then retries forever. Reproduced with
+  the **Elgato Wave Link MicFX** virtual input: `coreaudiod` returned
+  Error 0x3C (ETIMEDOUT), `spindump` logged "hang likely" and one
+  395-second unresponsive stretch, and the app had to be force-quit — it
+  never crashed, so nothing showed up in crash reports.
+  Recording start is now asynchronous and guarded by a 4-second watchdog:
+  if the device does not confirm the session in time, the capsule shows
+  "Mic not responding · Check input" and the app stays responsive. Pressing
+  the hotkey again is safe, and releasing it while the session is still
+  opening cancels the attempt instead of leaving it half-started.
+  `errors.log` now records the device UID, its resolved name and the actual
+  wait, so the next occurrence can be diagnosed from the log alone.
+- **Recording no longer aborts on the very first buffer from the Elgato
+  Wave XLR MK.2.** The format check required `kAudioFormatFlagIsPacked`,
+  which that driver does not set (`mFormatFlags = 4`) even though its data
+  is packed — 16 bits in 2 bytes per frame. Packing is now derived from
+  frame geometry instead of being taken on trust, which is *stricter* than
+  the old check: 16 bits inside a 4-byte container is rejected by the
+  numbers, whereas the flag alone let that case through. Rejections now
+  name what actually mismatched, instead of producing one identical line
+  in `errors.log` for three different failures.
+
 ## [1.4.0] - 2026-07-27
 
 The transcription speed release, plus the first tools that improve what

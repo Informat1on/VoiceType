@@ -5,6 +5,7 @@ import Carbon
 
 enum AppState: String {
     case idle
+    case starting // accepted but not yet confirmed by AudioCaptureService (docs/plans/audio-start-hang.md)
     case recording
     case transcribing
     case injecting
@@ -58,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     // MARK: - Windows
 
-    private var voiceTypeWindow: VoiceTypeWindow?
+    var voiceTypeWindow: VoiceTypeWindow? // not private: used from AppDelegate+AsyncStart.swift
     private var errorToastWindow: ErrorToastWindow?
     private var modelLoadTask: Task<Void, Never>?
     /// Guards applicationShouldTerminate against re-entry while the teardown runs.
@@ -90,6 +91,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// immediately after `injectText` already presented the inline error.
     /// P2 review finding #1 (flag approach — less intrusive than enum return type).
     private var pendingErrorInlineShown = false
+
+    var currentStartAttemptID: StartAttemptID? // in-flight attempt's identity — see AppDelegate+AsyncStart.swift
 
     // MARK: - NSApplicationDelegate
 
@@ -151,6 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func applicationWillTerminate(_ notification: Notification) {
         hotkeyService.stopListening()
         unregisterEvalHotkey()
+        cancelStartAttemptIfPending()
         if appState == .recording {
             _ = try? audioCaptureService.stopRecording()
         }
@@ -766,34 +770,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return
         }
 
-        do {
-            try audioCaptureService.startRecording(
-                preferredDeviceUID: AppSettings.shared.preferredInputDeviceUID
-            )
-            appState = .recording
-            recordingStartedAt = Date()
-            voiceTypeWindow?.show(state: CapsuleState.recording)
-            print("[AppDelegate] Recording started")
-            AppLog.app.notice("Recording started")
-        } catch {
-            print("[AppDelegate] Failed to start recording: \(error)")
-            AppLog.app.error("Recording failed to start")
-            ErrorLogger.shared.log(error, category: "app")
-            voiceTypeWindow?.show(state: .errorInline(message: "Failed to start recording"))
-            voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss()
-            hotkeyService.syncIsRecording(false)
-            appState = .idle
+        appState = .starting // async start (docs/plans/audio-start-hang.md); completion is never inline
+        var attemptID: StartAttemptID! // swiftlint:disable:this implicitly_unwrapped_optional
+        attemptID = audioCaptureService.startRecording(
+            preferredDeviceUID: AppSettings.shared.preferredInputDeviceUID
+        ) { [weak self] result in
+            self?.handleStartRecordingResult(result, attemptID: attemptID)
         }
+        currentStartAttemptID = attemptID
     }
 
-    /// Entry point for the menubar "Start recording" button.
-    /// Delegates to the same hotkey-triggered path so state transitions are identical.
-    /// After a successful start we sync `HotkeyService.isRecording` so a subsequent
-    /// hotkey press (toggle/stop) correctly terminates a menu-initiated recording.
+    /// Menubar "Start recording": syncs the hotkey flag on ACCEPT, not on success — see HotkeyServiceSyncTests.
     func startRecordingFromMenu() {
         print("[AppDelegate] startRecordingFromMenu() called")
         handleRecordingStarted()
-        if appState == .recording {
+        if appState == .starting {
             hotkeyService.syncIsRecording(true)
         }
     }
@@ -811,6 +802,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// обычная, — иначе состояния разойдутся.
     func handleRecordingStopped() {
         print("[AppDelegate] handleRecordingStopped, currentState: \(appState.rawValue)")
+        // Push-to-talk: hotkey released mid-`.starting` — cancel, don't stop.
+        if cancelStartAttemptIfPending() {
+            recordingStartedAt = nil
+            voiceTypeWindow?.hide()
+            hotkeyService.syncIsRecording(false)
+            appState = .idle
+            return
+        }
+
         recordingStartedAt = nil
 
         // Pre-hide permission check: if mic permission has been revoked and we
@@ -957,6 +957,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func forceResetToIdle() {
         print("[AppDelegate] forceResetToIdle called, was: \(appState.rawValue)")
         voiceTypeWindow?.hide()
+        cancelStartAttemptIfPending()
         if appState == .recording {
             _ = try? audioCaptureService.stopRecording()
         }

@@ -19,6 +19,11 @@ import Combine
 enum MenuBarState: Equatable {
     case notReady(missingMic: Bool, missingA11y: Bool, missingModel: Bool)
     case idle
+    /// Старт принят, но `AudioCaptureService` ещё не подтвердил успех
+    /// (docs/plans/audio-start-hang.md). Отдельный case, а не алиас на
+    /// `.recording(elapsed: 0)`: капсула/tally в это время НЕ должны говорить
+    /// «идёт запись» — аудио ещё не пишется.
+    case starting
     case recording(elapsed: TimeInterval)
     case transcribing
 }
@@ -54,6 +59,8 @@ enum MenuBarStateMachine {
         switch appState {
         case .idle, .injecting:
             return .idle
+        case .starting:
+            return .starting
         case .recording:
             return .recording(elapsed: elapsed)
         case .transcribing:
@@ -160,7 +167,10 @@ struct MenuBarView: View {
             notReadyContent(missingMic: missingMic, missingA11y: missingA11y, missingModel: missingModel)
         case .idle:
             idleContent
-        case .recording:
+        case .starting, .recording:
+            // .starting reuses the recording body: the same "Stop" action also
+            // cancels an in-flight start (DESIGN.md § MenuBar dropdown layout;
+            // docs/plans/audio-start-hang.md task 4).
             recordingContent
         case .transcribing:
             // Transcribing is short-lived (1-8s); status line sub-line carries the signal.
@@ -325,7 +335,7 @@ private struct StatusLine: View {
 
     private var tallyColor: Color {
         switch state {
-        case .idle, .transcribing:
+        case .idle, .starting, .transcribing:
             return Palette.textMuted
         case .recording:
             // Recording tally stays capsule-world red (camera tally reference).
@@ -339,6 +349,7 @@ private struct StatusLine: View {
     private var tallyAccessibilityLabel: String {
         switch state {
         case .idle:         return "Idle"
+        case .starting:     return "Starting recording"
         case .recording:    return "Recording"
         case .transcribing: return "Transcribing"
         case .notReady:     return "Setup required"
@@ -353,6 +364,10 @@ private struct StatusLine: View {
             // "Ready to dictate" — action-oriented phrasing per DESIGN.md compass
             // "a tool for people who just build things". Step 5 brief: designer's call.
             return "Ready to dictate"
+        case .starting:
+            // Audio isn't flowing yet — do not say "Recording" (DESIGN.md §
+            // Interaction States; docs/plans/audio-start-hang.md task 4).
+            return "Starting recording"
         case .recording(let elapsed):
             return "Recording \u{00B7} \(MenuBarStateMachine.formatElapsed(elapsed))"
         case .transcribing:
@@ -366,7 +381,7 @@ private struct StatusLine: View {
 
     private var subLineText: String {
         switch state {
-        case .idle, .recording:
+        case .idle, .starting, .recording:
             return "\(settings.selectedModel.rawValue) \u{00B7} \(settings.language.displayName)"
         case .transcribing:
             return "Transcribing\u{2026}"
@@ -385,7 +400,7 @@ private struct StatusLine: View {
     /// Show the 5pt status dot only when the sub-line displays model + language.
     private var showModelStatusDot: Bool {
         switch state {
-        case .idle, .recording:
+        case .idle, .starting, .recording:
             return true
         default:
             return false
