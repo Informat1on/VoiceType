@@ -15,7 +15,11 @@ public enum AudioCaptureError: LocalizedError, Equatable {
     case sessionInputRejected
     case sessionOutputRejected
     case sessionDidNotStart
-    case unexpectedCaptureFormat
+    /// `detail` называет, ЧТО именно не совпало. Без него три разных отказа в
+    /// делегате — формат, нечитаемый блок-буфер, несовпавшая длина — давали в
+    /// errors.log один и тот же текст, и причину приходилось добывать
+    /// отдельным пробником (13.09.2026, Elgato Wave XLR MK.2).
+    case unexpectedCaptureFormat(detail: String)
     case framesDropped(received: Int, written: Int)
     case invalidInputFormat(sampleRate: Double, channelCount: AVAudioChannelCount)
     case recordingFileMissing
@@ -63,8 +67,8 @@ public enum AudioCaptureError: LocalizedError, Equatable {
             return "VoiceType could not attach its audio output to the capture session."
         case .sessionDidNotStart:
             return "VoiceType started the microphone session but macOS did not run it. Check the active input device and try again."
-        case .unexpectedCaptureFormat:
-            return "The microphone delivered audio in an unexpected format, so the recording was stopped instead of saved incorrectly."
+        case let .unexpectedCaptureFormat(detail):
+            return "The microphone delivered audio in an unexpected format, so the recording was stopped instead of saved incorrectly: \(detail)"
         case let .framesDropped(received, written):
             return "VoiceType received \(received) audio frames but could only store \(written), so the recording was incomplete."
         case let .invalidInputFormat(sampleRate, channelCount):

@@ -723,17 +723,19 @@ extension AudioCaptureService: AVCaptureAudioDataOutputSampleBufferDelegate {
         // Формат обязан быть ровно тем, что запрошен в audioSettings. «Терпимой»
         // записи чужого формата здесь нет: writer сконфигурирован под int16,
         // и подсунуть ему что-то другое значит записать мусор под видом речи.
+        // Сами критерии — в CaptureFormatValidator: там же объяснено, почему
+        // упаковка проверяется по геометрии кадра, а не по флагу IsPacked.
         guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description),
-              asbd.pointee.mFormatID == kAudioFormatLinearPCM,
-              asbd.pointee.mSampleRate == targetSampleRate,
-              asbd.pointee.mChannelsPerFrame == targetChannels,
-              asbd.pointee.mBitsPerChannel == 16,
-              asbd.pointee.mFormatFlags & kAudioFormatFlagIsSignedInteger != 0,
-              asbd.pointee.mFormatFlags & kAudioFormatFlagIsFloat == 0,
-              asbd.pointee.mFormatFlags & kAudioFormatFlagIsBigEndian == 0,
-              asbd.pointee.mFormatFlags & kAudioFormatFlagIsPacked != 0 else {
-            failCapture(.unexpectedCaptureFormat)
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description) else {
+            failCapture(.unexpectedCaptureFormat(detail: "buffer carries no audio format description"))
+            return
+        }
+        if let reason = CaptureFormatValidator.rejectionReason(
+            for: asbd.pointee,
+            targetSampleRate: targetSampleRate,
+            targetChannels: targetChannels
+        ) {
+            failCapture(.unexpectedCaptureFormat(detail: reason))
             return
         }
 
@@ -755,7 +757,7 @@ extension AudioCaptureService: AVCaptureAudioDataOutputSampleBufferDelegate {
             totalLengthOut: &length,
             dataPointerOut: &pointer
         ) == noErr, let pointer, let destination = buffer.int16ChannelData else {
-            failCapture(.unexpectedCaptureFormat)
+            failCapture(.unexpectedCaptureFormat(detail: "buffer data could not be read"))
             return
         }
 
@@ -763,7 +765,9 @@ extension AudioCaptureService: AVCaptureAudioDataOutputSampleBufferDelegate {
         // частично невалидным содержимым — тишиной или мусором внутри речи.
         let expectedBytes = frameCount * MemoryLayout<Int16>.size
         guard length == expectedBytes else {
-            failCapture(.unexpectedCaptureFormat)
+            failCapture(.unexpectedCaptureFormat(
+                detail: "buffer holds \(length) bytes, expected \(expectedBytes) for \(frameCount) frames"
+            ))
             return
         }
         memcpy(destination[0], pointer, expectedBytes)
