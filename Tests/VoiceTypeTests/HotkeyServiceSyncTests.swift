@@ -51,4 +51,52 @@ final class HotkeyServiceSyncTests: XCTestCase {
         // state bridge; callbacks fire only on hotkey-initiated transitions.
         XCTAssertEqual(stoppedCallCount, 0)
     }
+
+    /// docs/plans/audio-start-hang.md, задача 5, пункт 9: regression guard for
+    /// the async-start bug where a menu-started recording (isRecording synced
+    /// true while AppDelegate is still `.starting`, not yet `.recording`)
+    /// became impossible to stop/cancel via hotkey toggle.
+    ///
+    /// Граница честно: этот тест доказывает, что при предварительно
+    /// выставленном `syncIsRecording(true)` реальная ветка toggle
+    /// (`toggleRecordingInternal`, открыта для тестов) уходит в stop и НЕ
+    /// обращается к `canStartRecording`. Что `startRecordingFromMenu()`
+    /// действительно выставляет флаг сразу при `.starting` — на code review:
+    /// полного пути «меню → сервис → хоткей» из этого теста не достать без
+    /// DI в AppDelegate, от которой план осознанно отказался.
+    @MainActor
+    func testToggleStopsMenuStartedRecordingWithoutConsultingCanStartRecording() {
+        let service = HotkeyService()
+        var stoppedCallCount = 0
+        service.onRecordingStopped = { stoppedCallCount += 1 }
+        service.canStartRecording = {
+            XCTFail("toggle on an already-recording (menu-started) service must not consult canStartRecording")
+            return false
+        }
+
+        // Simulates AppDelegate.startRecordingFromMenu() syncing the flag as
+        // soon as the start is accepted (.starting), before any success.
+        service.syncIsRecording(true)
+
+        service.toggleRecordingInternal()
+
+        XCTAssertFalse(service.isRecording, "toggle must stop a menu-started recording")
+        XCTAssertEqual(stoppedCallCount, 1)
+    }
+
+    /// A hotkey press arriving WHILE a menu-start is still pending (isRecording
+    /// already synced true) must resolve to a single stop, not a duplicate or
+    /// missed transition — same seam as above.
+    @MainActor
+    func testStopInternalStopsMenuStartedRecording() {
+        let service = HotkeyService()
+        var stoppedCallCount = 0
+        service.onRecordingStopped = { stoppedCallCount += 1 }
+        service.syncIsRecording(true)
+
+        service.stopRecordingInternal()
+
+        XCTAssertFalse(service.isRecording)
+        XCTAssertEqual(stoppedCallCount, 1)
+    }
 }

@@ -90,6 +90,34 @@ final class MenuBarStateTests: XCTestCase {
         XCTAssertEqual(state, .idle, "AppState.injecting must map to .idle in MenuBarState")
     }
 
+    // MARK: - 2b. State derivation: Starting (docs/plans/audio-start-hang.md)
+
+    func testMenuBarStateDerivationStarting() {
+        let state = MenuBarStateMachine.derive(
+            appState: .starting,
+            hasMic: true,
+            hasA11y: true,
+            hasModel: true,
+            elapsed: 0
+        )
+        XCTAssertEqual(state, .starting, "AppState.starting must yield MenuBarState.starting, not .idle or .recording")
+    }
+
+    func testNotReadyWinsOverStarting() {
+        let state = MenuBarStateMachine.derive(
+            appState: .starting,
+            hasMic: false,
+            hasA11y: true,
+            hasModel: true,
+            elapsed: 0
+        )
+        XCTAssertEqual(
+            state,
+            .notReady(missingMic: true, missingA11y: false, missingModel: false),
+            "Not Ready must override .starting when a blocker is missing"
+        )
+    }
+
     // MARK: - 3. State derivation: Recording
 
     func testMenuBarStateDerivationRecording() {

@@ -2,34 +2,33 @@
 //
 // Захват микрофона: AVCaptureSession + AVCaptureAudioDataOutput.
 //
-// Почему не AVAudioRecorder, на котором это жило раньше: у него на macOS нет
-// выбора входного устройства (AVAudioSession — iOS-only, а системное устройство
-// по умолчанию менять из приложения нельзя, это глобальное состояние). Выбор
-// микрофона — единственный рычаг продукта, который чинит ВХОД: Bluetooth-гарнитура
-// в режиме HFP (8–16 кГц) съедает безударные слоги, и постобработка такое не
-// лечит принципиально.
+// Почему не AVAudioRecorder: на macOS нет выбора входного устройства — а это
+// единственный рычаг продукта, чинящий ВХОД (Bluetooth HFP 8–16 кГц съедает
+// безударные слоги, постобработка это не лечит).
 //
-// Почему не AVAudioEngine, на котором это жило до апреля 2026 (f6879ca):
-// installTap(bufferSize:) на macOS игнорируется, HAL отдаёт куски по 4800 кадров
-// (100 мс). Волна по DESIGN обновляется каждые 50 мс — половина тиков была бы
-// устаревшей. Плюс нативные 48 кГц и обязательная конверсия. Замеры 2026-07-27:
-// docs/dev-diary/session7-artifacts/plan-v3-delta.md §0.
+// Почему не AVAudioEngine (жило тут до апреля 2026, f6879ca):
+// installTap(bufferSize:) на macOS игнорируется, HAL отдаёт куски по 4800
+// кадров (100 мс) при волне DESIGN раз в 50 мс. Замеры: docs/dev-diary/
+// session7-artifacts/plan-v3-delta.md §0.
 //
-// Что даёт выбранный путь (замерено):
-//   - куски по 165 кадров ≈ 10.3 мс, 94 вызова делегата в секунду;
-//   - audioSettings отдают СРАЗУ 16 кГц моно int16 — конверсии в пути захвата нет;
-//   - stopRunning() синхронный, поэтому публичный контракт остановки не меняется;
-//   - выбор устройства штатный, тем же UID, что отдаёт CoreAudio;
-//   - разрешения — та же AVCaptureDevice-модель, что уже в PermissionManager.
+// Путь даёт (замерено): куски по 165 кадров ≈10.3 мс; audioSettings отдают
+// СРАЗУ 16 кГц моно int16; stopRunning() синхронный; устройство — тот же UID,
+// что у CoreAudio; разрешения — та же модель, что в PermissionManager.
 //
 // Владение очередями (нарушение приводит к взаимной блокировке или к потере хвоста):
-//   - sessionQueue — все блокирующие операции сессии;
+//   - sessionQueue — все блокирующие операции сессии, включая блокирующий
+//     `startRunning()`, поэтому старт уходит туда через `.async`, не `.sync`
+//     с main (docs/plans/audio-start-hang.md, требование 1);
 //   - sampleQueue — ЕДИНОЛИЧНО владеет writer, счётчиком кадров и ошибкой записи;
 //     делегат вызывается на ней и пишет файл непосредственно, без второго async;
-//   - барьер на остановке идёт ДО закрытия generation, иначе уже поставленные в
-//     очередь финальные буферы будут отброшены — это и есть потеря хвоста,
-//     которую чинил b98eac9 в прежней engine-реализации;
+//   - барьер на остановке идёт ДО закрытия generation, иначе поставленные в
+//     очередь финальные буферы будут отброшены (потеря хвоста, чинил b98eac9);
 //   - stopRecording() запрещено вызывать с sampleQueue.
+//
+// Старт записи: устройство, не поднимающее IO-поток (Elgato Wave Link MicFX —
+// CoreAudio ретраит `startRunning()` ~14 с), раньше вешало весь UI. Теперь
+// `startRecording` возвращается немедленно, исход — асинхронно через
+// `completion`, с watchdog 4 с по умолчанию.
 
 import AVFoundation
 import Combine
@@ -68,9 +67,14 @@ public final class AudioCaptureService: NSObject, ObservableObject {
     private let sampleQueue = DispatchQueue(label: "com.voicetype.audiocapture.sample", qos: .userInitiated)
 
     /// idle → starting → recording → stopping → idle.
-    /// Прерывание принимается только в `.recording`; остальные схлопываются.
+    /// starting → abandoning → idle — отменённая или просроченная попытка,
+    /// чьи фоновые ресурсы на `sessionQueue` ещё не освобождены: busy держится
+    /// до конца cleanup, а не до момента резолва (docs/plans/audio-start-hang.md,
+    /// задача 1, требование 6).
+    /// Прерывание принимается в `.starting` (буферизуется на попытке) и в
+    /// `.recording` (доставляется сразу); остальные состояния его игнорируют.
     private enum State {
-        case idle, starting, recording, stopping
+        case idle, starting, recording, stopping, abandoning
     }
 
     private let stateLock = NSLock()
@@ -87,10 +91,9 @@ public final class AudioCaptureService: NSObject, ObservableObject {
     private var writer: AVAudioFile?
     private var writerFormat: AVAudioFormat?
     private var openGeneration: Int?
-    /// Идентичность конкретного output, а не только номер поколения: сравнение
-    /// `openGeneration == generation` само по себе ничего не защищает — callback
-    /// от старого output, пришедший после нового старта, увидел бы уже равные
-    /// значения и записался в новый файл.
+    /// Identity конкретного output, не только generation: иначе callback от
+    /// старого output после нового старта увидел бы равные номера и
+    /// записался бы в новый файл.
     private weak var activeOutput: AVCaptureAudioDataOutput?
     private var receivedFrames = 0
     private var writtenFrames = 0
@@ -103,6 +106,78 @@ public final class AudioCaptureService: NSObject, ObservableObject {
     private var recordingURL: URL?
     private var meterTimer: DispatchSourceTimer?
     private var observers: [NSObjectProtocol] = []
+
+    // MARK: - Старт: попытки
+
+    private final class StartAttempt {
+        let id: StartAttemptID
+        let preferredDeviceUID: String?
+        let timeout: TimeInterval
+        let acceptedAt = Date()
+        var completion: ((Result<Void, AudioCaptureError>) -> Void)?
+        var watchdogToken: AnyObject?
+        var isResolved = false
+        /// UID, разрешённый фоном (может отличаться от `preferredDeviceUID`
+        /// — откат на системный default); для честного текста watchdog-ошибки.
+        var resolvedDeviceUID: String?
+        /// Имя устройства, разрешённое фоном вместе с UID — watchdog на main
+        /// не спрашивает AVFoundation заново (P2-1).
+        var resolvedDeviceName: String?
+
+        init(
+            id: StartAttemptID,
+            preferredDeviceUID: String?,
+            timeout: TimeInterval,
+            completion: @escaping (Result<Void, AudioCaptureError>) -> Void
+        ) {
+            self.id = id
+            self.preferredDeviceUID = preferredDeviceUID
+            self.timeout = timeout
+            self.completion = completion
+        }
+    }
+
+    private var nextAttemptValue = 0
+    private var currentAttempt: StartAttempt?
+
+    private var nextCandidateValue = 0
+    /// Идентичность ЖИВОЙ сессии-кандидата — в отличие от `currentAttempt`,
+    /// НЕ обнуляется в `finalizeSuccess`: подтверждённая запись сверяется по
+    /// identity весь свой срок жизни, до `stopRecordingCore` (P1-1).
+    private var liveCandidateID: SessionCandidateID?
+
+    /// Тестовый шов: дождаться фонового teardown, не блокируя main (P1-2).
+    var sessionQueueForTesting: DispatchQueue { sessionQueue }
+
+    /// Тестовый шов (требование 15): подменяет запись в errors.log — иначе
+    /// тест писал бы в реальный лог пользователя. nil по умолчанию.
+    var errorLogWriterForTesting: ((String) -> Void)?
+
+    /// ErrorLogger — @MainActor; вызывающий уже на main (dispatchPrecondition),
+    /// assumeIsolated доносит это до компилятора без async/await здесь.
+    private func logToErrorFile(_ message: String) {
+        if let errorLogWriterForTesting {
+            errorLogWriterForTesting(message)
+            return
+        }
+        MainActor.assumeIsolated {
+            ErrorLogger.shared.log(message: message, category: "app")
+        }
+    }
+
+    /// Тестовый шов (docs/plans/audio-start-hang.md, задача 5): подставной
+    /// runner стартовой операции вместо реального AVFoundation-кода. `lazy`,
+    /// а не IUO + присвоение после `super.init()`: замыканию нужен `self`,
+    /// который недоступен до его готовности.
+    lazy var startOperationRunner: StartOperationRunner = { [weak self] attemptID, preferredDeviceUID, completion in
+        self?.performStartOperation(
+            attemptID: attemptID,
+            preferredDeviceUID: preferredDeviceUID,
+            completion: completion
+        )
+    }
+    /// Тестовый шов: подставной планировщик watchdog вместо реальных часов.
+    var watchdogScheduler: WatchdogScheduling = RealWatchdogScheduler()
 
     @Published public var audioLevel: Float = 0.0
 
@@ -121,30 +196,329 @@ public final class AudioCaptureService: NSObject, ObservableObject {
 
     // MARK: - Старт
 
-    /// `preferredDeviceUID` = nil означает системное устройство по умолчанию —
-    /// это и есть поведение до появления пикера, поэтому оно и дефолт.
-    public func startRecording(preferredDeviceUID: String? = nil) throws {
-        guard transition(to: .starting, from: [.idle]) else {
-            throw AudioCaptureError.alreadyRecording
-        }
+    /// Запускает запись. Возвращается немедленно; вызывать только с main.
+    /// `completion` вызывается РОВНО один раз и всегда на main — включая отмену.
+    ///
+    /// ⚠️ `completion` НИКОГДА не вызывается inline, даже для немедленных
+    /// отказов: он всегда ставится на main асинхронно, гарантированно ПОСЛЕ
+    /// возврата метода — иначе вызывающий не успел бы сохранить
+    /// `StartAttemptID`, и сверка identity в колбэке отбросила бы законный отказ.
+    ///
+    /// `timeout` — срок ВСЕЙ попытки, не только последнего шага. 4 с — CoreAudio
+    /// сам таймаутится за 14 с, ждать его означает тот самый фриз, что мы устраняем.
+    @discardableResult
+    public func startRecording(
+        preferredDeviceUID: String?,
+        timeout: TimeInterval = 4.0,
+        completion: @escaping (Result<Void, AudioCaptureError>) -> Void
+    ) -> StartAttemptID {
+        dispatchPrecondition(condition: .onQueue(.main))
+
         stateLock.lock()
+        nextAttemptValue += 1
+        let id = StartAttemptID(nextAttemptValue)
+
+        guard state == .idle else {
+            // .starting/.recording/.stopping — обычное «уже пишем».
+            // .abandoning — резолвнута, но sessionQueue-работа не закончена:
+            // до конца cleanup ресурс занят (требование 6).
+            let failure: AudioCaptureError = (state == .abandoning) ? .captureDeviceBusy : .alreadyRecording
+            stateLock.unlock()
+            DispatchQueue.main.async { completion(.failure(failure)) }
+            return id
+        }
+
+        let attempt = StartAttempt(
+            id: id,
+            preferredDeviceUID: preferredDeviceUID,
+            timeout: timeout,
+            completion: completion
+        )
+        currentAttempt = attempt
+        state = .starting
         didReportInterruption = false
         pendingInterruption = nil
         stateLock.unlock()
 
-        do {
-            try beginSession(preferredDeviceUID: preferredDeviceUID)
-        } catch {
-            setState(.idle)
-            throw error
+        let watchdogToken = watchdogScheduler.scheduleWatchdog(after: timeout) { [weak self] in
+            self?.handleWatchdogFired(attemptID: id)
+        }
+        stateLock.lock()
+        attempt.watchdogToken = watchdogToken
+        stateLock.unlock()
+
+        startOperationRunner(id, preferredDeviceUID) { [weak self] outcome in
+            self?.handleStartOutcome(outcome, attemptID: id)
         }
 
-        setState(.recording)
-        startMeterTimer()
+        return id
     }
 
-    private func beginSession(preferredDeviceUID: String?) throws {
-        let systemDefaultUID = (try? AudioDeviceService.systemDefaultInputUID()) ?? nil
+    /// Отменяет незавершённый старт. Идемпотентна, безопасна в любом состоянии.
+    /// Если старт ещё не разрешился, его `completion` получает
+    /// `.failure(.startCancelled)` — ровно один раз, как и любой другой исход.
+    func cancelPendingStart() {
+        dispatchPrecondition(condition: .onQueue(.main))
+
+        stateLock.lock()
+        guard state == .starting, let attempt = currentAttempt else {
+            stateLock.unlock()
+            return
+        }
+        stateLock.unlock()
+
+        guard markResolved(attempt) else { return }
+
+        stateLock.lock()
+        state = .abandoning
+        stateLock.unlock()
+
+        if let token = attempt.watchdogToken {
+            watchdogScheduler.cancelWatchdog(token)
+        }
+        let comp = attempt.completion
+        attempt.completion = nil
+        DispatchQueue.main.async { comp?(.failure(.startCancelled)) }
+    }
+
+    /// Атомарно помечает попытку разрешённой. Возвращает `true` ровно для
+    /// ОДНОГО вызова на попытку — watchdog, `cancelPendingStart()` и исход
+    /// фоновой операции соревнуются под одним замком (требование 3 задачи 1).
+    @discardableResult
+    private func markResolved(_ attempt: StartAttempt) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !attempt.isResolved else { return false }
+        attempt.isResolved = true
+        return true
+    }
+
+    private func handleWatchdogFired(attemptID: StartAttemptID) {
+        dispatchPrecondition(condition: .onQueue(.main))
+
+        stateLock.lock()
+        guard state == .starting, let attempt = currentAttempt, attempt.id == attemptID else {
+            stateLock.unlock()
+            return
+        }
+        stateLock.unlock()
+
+        guard markResolved(attempt) else { return }
+
+        stateLock.lock()
+        state = .abandoning
+        let uid = attempt.resolvedDeviceUID ?? attempt.preferredDeviceUID
+        let deviceLabel = attempt.resolvedDeviceName ?? uid ?? "system default" // P2-1: не спрашиваем AVFoundation тут
+        stateLock.unlock()
+
+        let elapsed = Date().timeIntervalSince(attempt.acceptedAt) // фактическая, не заданный порог (требование 13/15)
+
+        AppLog.app.error(
+            "Recording start watchdog fired after \(elapsed, format: .fixed(precision: 3), privacy: .public)s (device: \(deviceLabel, privacy: .public))"
+        )
+        // errors.log — то, что открывает Settings → Advanced (требование 15).
+        // ОДИН раз: AppDelegate для .sessionStartTimedOut повторно не логирует.
+        logToErrorFile(
+            "Recording start timed out after \(String(format: "%.3f", elapsed))s (device: \(deviceLabel), uid: \(uid ?? "nil"))"
+        )
+
+        let comp = attempt.completion
+        attempt.completion = nil
+        comp?(.failure(.sessionStartTimedOut(uid: uid, seconds: elapsed)))
+    }
+
+    /// Читает и обновляет состояние попытки под замком — используется и
+    /// фоном (`sessionQueue`), и main (watchdog/cancel).
+    private func isAttemptStillActionable(_ id: StartAttemptID) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard let attempt = currentAttempt, attempt.id == id else { return false }
+        return !attempt.isResolved
+    }
+
+    private func recordResolvedDeviceUID(_ uid: String?, for id: StartAttemptID) {
+        stateLock.lock()
+        if let attempt = currentAttempt, attempt.id == id {
+            attempt.resolvedDeviceUID = uid
+        }
+        stateLock.unlock()
+    }
+
+    /// Имя сохраняется тут же, где уже есть живой `AVCaptureDevice` (требование
+    /// 15/P2-1). Не `private` — тестовый шов: fake runner обходит
+    /// `configureAndStartAttempt`, где это обычно вызывается.
+    func recordResolvedDeviceName(_ name: String?, for id: StartAttemptID) {
+        stateLock.lock()
+        if let attempt = currentAttempt, attempt.id == id {
+            attempt.resolvedDeviceName = name
+        }
+        stateLock.unlock()
+    }
+
+    private func allocateCandidateID() -> SessionCandidateID {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        nextCandidateValue += 1
+        return SessionCandidateID(value: nextCandidateValue)
+    }
+
+    /// Делает `candidateID` живым: цель сверки identity для наблюдателей, и
+    /// «одно прерывание на запись» — per-candidate, не per-attempt (P1-3):
+    /// primary не должен ни обрывать fallback, ни расходовать на себя его
+    /// флаг. Вызывается из `configureAndStartAttempt` до подписки. Не
+    /// `private` — тестовый шов (см. AudioStartTimeoutTests).
+    func beginCandidate(_ candidateID: SessionCandidateID) {
+        stateLock.lock()
+        liveCandidateID = candidateID
+        didReportInterruption = false
+        pendingInterruption = nil
+        stateLock.unlock()
+    }
+
+    /// Снимает claim на разделяемые sampleQueue-поля, если они всё ещё
+    /// принадлежат этому bundle (сверка по identity output). Никогда не
+    /// трогает поля, которые уже перешли к более новой попытке (требование 5).
+    private func releaseSharedFields(ownedBy bundle: StartedBundle) {
+        sampleQueue.sync {
+            guard activeOutput === bundle.output else { return }
+            activeOutput = nil
+            writer = nil
+            writerFormat = nil
+            openGeneration = nil
+        }
+    }
+
+    /// Блокирующий (`stopRunning()` на зависшем устройстве) — НЕ на main (P1-2).
+    private func abandon(_ bundle: StartedBundle) {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        releaseSharedFields(ownedBy: bundle)
+        bundle.localTeardown(deletingFile: true)
+    }
+
+    /// Безопасен к вызову с main: teardown на sessionQueue, busy снимается по его завершении (требование 6).
+    private func abandonAsync(_ bundle: StartedBundle, releasingBusyFor attemptID: StartAttemptID) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.abandon(bundle)
+            DispatchQueue.main.async {
+                self.stateLock.lock()
+                if self.currentAttempt?.id == attemptID {
+                    self.currentAttempt = nil
+                    self.state = .idle
+                }
+                self.stateLock.unlock()
+            }
+        }
+    }
+
+    private func performStartOperation(
+        attemptID: StartAttemptID,
+        preferredDeviceUID: String?,
+        completion: @escaping StartOperationCompletion
+    ) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            let outcome = self.beginSessionAttempt(preferredDeviceUID: preferredDeviceUID, attemptID: attemptID)
+            completion(outcome)
+        }
+    }
+
+    private func handleStartOutcome(_ outcome: StartOutcome, attemptID: StartAttemptID) {
+        // Гарантированный хоп на main: контракт запрещает вызывать completion
+        // инлайн, даже если runner (в т.ч. тестовый fake) отвечает синхронно.
+        DispatchQueue.main.async { [weak self] in
+            self?.finishStartOutcome(outcome, attemptID: attemptID)
+        }
+    }
+
+    private func finishStartOutcome(_ outcome: StartOutcome, attemptID: StartAttemptID) {
+        dispatchPrecondition(condition: .onQueue(.main))
+
+        stateLock.lock()
+        guard let attempt = currentAttempt, attempt.id == attemptID else {
+            stateLock.unlock()
+            // Не должно быть достижимо при busy-гейте; fail-safe: чужой
+            // bundle не публикуем, чистим в фоне (P1-2, не блокирует main).
+            if case .success(let bundle) = outcome {
+                sessionQueue.async { [weak self] in self?.abandon(bundle) }
+            }
+            return
+        }
+        stateLock.unlock()
+
+        let wonRace = markResolved(attempt)
+
+        switch outcome {
+        case .failure(let error):
+            stateLock.lock()
+            currentAttempt = nil
+            state = .idle
+            stateLock.unlock()
+            guard wonRace else { return }
+            let comp = attempt.completion
+            attempt.completion = nil
+            comp?(.failure(error))
+
+        case .success(let bundle):
+            guard wonRace else {
+                // Требования 4/14: уже разрешена watchdog'ом/cancel — не
+                // финализируем, только освобождаем ресурсы bundle'а. Teardown
+                // и снятие busy — в фоне (P1-2), main не ждёт.
+                abandonAsync(bundle, releasingBusyFor: attemptID)
+                return
+            }
+            finalizeSuccess(bundle: bundle, attempt: attempt)
+        }
+    }
+
+    /// Требование 16: переход в `.recording`, публикация и `completion` — одним
+    /// неразрывным блоком на main, иначе прерывание проскочило бы между ними.
+    private func finalizeSuccess(bundle: StartedBundle, attempt: StartAttempt) {
+        dispatchPrecondition(condition: .onQueue(.main))
+
+        if let token = attempt.watchdogToken {
+            watchdogScheduler.cancelWatchdog(token)
+        }
+
+        // sampleQueue-поля уже привязаны в configureAndStartAttempt; тут — только
+        // session/recordingURL/observers (не sampleQueue-protected).
+        self.session = bundle.session
+        self.recordingURL = bundle.url
+        self.observers = bundle.observers
+
+        let elapsed = Date().timeIntervalSince(attempt.acceptedAt) // требование 13
+        let deviceLabel = bundle.deviceName ?? bundle.deviceUID ?? "system default"
+        AppLog.app.notice(
+            "Recording session started in \(String(format: "%.3f", elapsed), privacy: .public)s (device: \(deviceLabel, privacy: .public))"
+        )
+
+        stateLock.lock()
+        state = .recording
+        currentAttempt = nil
+        liveCandidateID = bundle.candidateID // P1-1: переживает очистку currentAttempt
+        let bufferedInterruption = pendingInterruption // P1-3: per-candidate, сброшен в beginCandidate
+        stateLock.unlock()
+
+        publishDevice(bundle.deviceUID, fallback: bundle.fallbackReason)
+        startMeterTimer()
+
+        let comp = attempt.completion
+        attempt.completion = nil
+        comp?(.success(()))
+
+        // Буферизованное прерывание — сразу после success; уже на main.
+        if let bufferedInterruption {
+            onInterruption?(bufferedInterruption)
+        }
+    }
+
+    /// Без throws, с fallback, запрещённым для заброшенной попытки (требование
+    /// 14). На `sessionQueue` (вызывающий уже там).
+    private func beginSessionAttempt(
+        preferredDeviceUID: String?,
+        attemptID: StartAttemptID
+    ) -> StartOutcome {
+        let systemDefaultUID = try? AudioDeviceService.systemDefaultInputUID()
         let available = (try? AudioDeviceService.inputDevices().map(\.uid)) ?? []
 
         switch AudioDeviceResolver.resolve(
@@ -153,49 +527,57 @@ public final class AudioCaptureService: NSObject, ObservableObject {
             systemDefaultUID: systemDefaultUID
         ) {
         case .noDevice:
-            throw AudioCaptureError.deviceUnavailable
+            return .failure(.deviceUnavailable)
 
         case .useSystemDefault(let uid):
-            try configureAndStart(deviceUID: uid)
-            publishDevice(uid, fallback: nil)
+            recordResolvedDeviceUID(uid, for: attemptID)
+            return configureAndStartAttempt(deviceUID: uid, fallback: nil, attemptID: attemptID)
 
         case let .fallback(uid, reason):
-            try configureAndStart(deviceUID: uid)
-            publishDevice(uid, fallback: reason)
+            recordResolvedDeviceUID(uid, for: attemptID)
+            return configureAndStartAttempt(deviceUID: uid, fallback: reason, attemptID: attemptID)
 
         case .usePreferred(let uid):
-            do {
-                try configureAndStart(deviceUID: uid)
-                publishDevice(uid, fallback: nil)
-            } catch {
-                // Откат допускается ровно один раз и только на СИНХРОННЫЙ сбой
-                // старта. Асинхронная runtime-ошибка откатом не считается — это
-                // прерывание уже начавшейся записи, и незаметно перезапускать её
-                // на другом устройстве после того, как человек заговорил, нельзя.
-                guard let fallbackUID = systemDefaultUID else { throw error }
-                try configureAndStart(deviceUID: fallbackUID)
-                publishDevice(fallbackUID, fallback: .selectedDeviceFailed(uid: uid))
+            recordResolvedDeviceUID(uid, for: attemptID)
+            let primary = configureAndStartAttempt(deviceUID: uid, fallback: nil, attemptID: attemptID)
+            guard case .failure = primary else { return primary }
+
+            // Откат — один раз, только на синхронный сбой и если попытка ещё
+            // актуальна (требование 14): не поднимать вторую сессию для мёртвой.
+            guard let fallbackUID = systemDefaultUID, isAttemptStillActionable(attemptID) else {
+                return primary
             }
+            recordResolvedDeviceUID(fallbackUID, for: attemptID)
+            return configureAndStartAttempt(
+                deviceUID: fallbackUID,
+                fallback: .selectedDeviceFailed(uid: uid),
+                attemptID: attemptID
+            )
         }
     }
 
-    /// Синхронный сбой старта — это буквально: устройства с таким UID нет,
-    /// `AVCaptureDeviceInput` бросил, вход или выход не добавляется, либо сессия
-    /// не оказалась запущенной сразу после `startRunning()`. Ничего больше.
-    private func configureAndStart(deviceUID: String?) throws {
+    /// Синхронный сбой старта: устройства нет, вход/выход не добавляется, либо
+    /// сессия не запустилась. Блокирующий `startRunning()` живёт здесь —
+    /// вызывающий уже на `sessionQueue` (требование 1: main не блокируется).
+    private func configureAndStartAttempt(
+        deviceUID: String?,
+        fallback: DeviceFallbackReason?,
+        attemptID: StartAttemptID
+    ) -> StartOutcome {
         let device: AVCaptureDevice?
         if let deviceUID {
             device = AVCaptureDevice(uniqueID: deviceUID)
         } else {
             device = AVCaptureDevice.default(for: .audio)
         }
-        guard let device else { throw AudioCaptureError.deviceUnavailable }
+        guard let device else { return .failure(.deviceUnavailable) }
+        recordResolvedDeviceName(device.localizedName, for: attemptID)
 
         let input: AVCaptureDeviceInput
         do {
             input = try AVCaptureDeviceInput(device: device)
         } catch {
-            throw AudioCaptureError.sessionConfigurationFailed(error)
+            return .failure(.sessionConfigurationFailed(error))
         }
 
         guard let format = AVAudioFormat(
@@ -204,13 +586,12 @@ public final class AudioCaptureService: NSObject, ObservableObject {
             channels: targetChannels,
             interleaved: true
         ) else {
-            throw AudioCaptureError.formatCreationFailed
+            return .failure(.formatCreationFailed)
         }
 
         let url = makeRecordingURL()
         // Явные commonFormat/interleaved обязательны: init(forWriting:settings:)
-        // берёт float32 processing format даже когда on-disk settings просят
-        // int16, и запись int16-буфера в такой writer недопустима.
+        // берёт float32 processing format, даже когда settings просят int16.
         let file: AVAudioFile
         do {
             file = try AVAudioFile(
@@ -220,7 +601,7 @@ public final class AudioCaptureService: NSObject, ObservableObject {
                 interleaved: true
             )
         } catch {
-            throw AudioCaptureError.recordingFileMissing
+            return .failure(.recordingFileMissing)
         }
 
         let session = AVCaptureSession()
@@ -235,73 +616,66 @@ public final class AudioCaptureService: NSObject, ObservableObject {
             AVLinearPCMIsNonInterleaved: false
         ]
 
-        try sessionQueue.sync {
-            session.beginConfiguration()
-            guard session.canAddInput(input) else {
-                session.commitConfiguration()
-                rollbackPartialStart(session: session, output: output, url: url)
-                throw AudioCaptureError.sessionInputRejected
-            }
-            session.addInput(input)
-            output.setSampleBufferDelegate(self, queue: sampleQueue)
-            guard session.canAddOutput(output) else {
-                session.commitConfiguration()
-                rollbackPartialStart(session: session, output: output, url: url)
-                throw AudioCaptureError.sessionOutputRejected
-            }
-            session.addOutput(output)
+        session.beginConfiguration()
+        guard session.canAddInput(input) else {
             session.commitConfiguration()
-
-            sampleQueue.sync {
-                generation += 1
-                openGeneration = generation
-                activeOutput = output
-                writer = file
-                writerFormat = format
-                receivedFrames = 0
-                writtenFrames = 0
-                writeError = nil
-                meterSumOfSquares = 0
-                meterSampleCount = 0
-                meterPeak = 0
-            }
-
-            // Наблюдатели — ДО startRunning(): между стартом и подпиской есть
-            // окно, в котором сессия может остановиться, и её уведомление
-            // некому было бы поймать — приложение осталось бы в .recording с
-            // мёртвым микрофоном.
-            installInterruptionObservers()
-
-            session.startRunning()
-            guard session.isRunning else {
-                removeInterruptionObservers()
-                rollbackPartialStart(session: session, output: output, url: url)
-                throw AudioCaptureError.sessionDidNotStart
-            }
-
-            self.session = session
-            self.recordingURL = url
+            try? FileManager.default.removeItem(at: url)
+            return .failure(.sessionInputRejected)
         }
-    }
+        session.addInput(input)
+        output.setSampleBufferDelegate(self, queue: sampleQueue)
+        guard session.canAddOutput(output) else {
+            session.commitConfiguration()
+            output.setSampleBufferDelegate(nil, queue: nil)
+            try? FileManager.default.removeItem(at: url)
+            return .failure(.sessionOutputRejected)
+        }
+        session.addOutput(output)
+        session.commitConfiguration()
 
-    /// Единый откат для сбоя на полпути к записи. Без него частично собранная
-    /// попытка оставляет за собой присоединённого делегата, открытый writer и
-    /// временный файл, а следующая попытка (в том числе откат на системное
-    /// устройство) начинается поверх этого мусора.
-    private func rollbackPartialStart(
-        session: AVCaptureSession,
-        output: AVCaptureAudioDataOutput,
-        url: URL
-    ) {
-        if session.isRunning { session.stopRunning() }
-        output.setSampleBufferDelegate(nil, queue: nil)
+        let candidateID = allocateCandidateID()
+        let bundle = StartedBundle(
+            candidateID: candidateID,
+            session: session,
+            output: output,
+            writer: file,
+            writerFormat: format,
+            url: url,
+            deviceUID: deviceUID,
+            deviceName: device.localizedName,
+            fallbackReason: fallback
+        )
+
+        beginCandidate(candidateID) // живой ДО подписки (P1-3: primary не глушит fallback)
+
+        // sampleQueue-поля — ДО startRunning() (требование 12): буферы могут
+        // прийти до подписки делегата. Один bundle — busy-гейт не пропустит
+        // новый старт, пока эти поля не освобождены (требования 4-6).
         sampleQueue.sync {
-            openGeneration = nil
-            activeOutput = nil
-            writer = nil
-            writerFormat = nil
+            generation += 1
+            openGeneration = generation
+            activeOutput = output
+            writer = file
+            writerFormat = format
+            receivedFrames = 0
+            writtenFrames = 0
+            writeError = nil
+            meterSumOfSquares = 0
+            meterSampleCount = 0
+            meterPeak = 0
         }
-        try? FileManager.default.removeItem(at: url)
+
+        // Наблюдатели — ДО startRunning(), привязаны к этой сессии и кандидату
+        // (требования 9/17; P1-1/P1-3 — candidateID, не attemptID).
+        installInterruptionObservers(session: session, candidateID: candidateID, into: bundle)
+
+        session.startRunning()
+        guard session.isRunning else {
+            abandon(bundle)
+            return .failure(.sessionDidNotStart)
+        }
+
+        return .success(bundle)
     }
 
     private func publishDevice(_ uid: String?, fallback: DeviceFallbackReason?) {
@@ -330,9 +704,10 @@ public final class AudioCaptureService: NSObject, ObservableObject {
 
     @discardableResult
     private func stopRecordingCore(savingAudioTo saveURL: URL?) throws -> CaptureResult {
-        // Обычная остановка и остановка по прерыванию идут через эту же функцию,
-        // поэтому оба состояния допустимы: .stopping означает, что прерывание
-        // уже перевело сюда, и второй остановки быть не должно.
+        // Обычная остановка и остановка по прерыванию идут через эту же функцию.
+        // Инвариант: к моменту .recording фоновая стартовая операция уже вышла
+        // из sessionQueue (финализация — только после runner'а, требование 10),
+        // поэтому `sessionQueue.sync` ниже безопасен.
         guard transition(to: .stopping, from: [.recording]) else {
             throw AudioCaptureError.notRecording
         }
@@ -343,6 +718,9 @@ public final class AudioCaptureService: NSObject, ObservableObject {
 
         stateLock.lock()
         let sessionInterruption = pendingInterruption
+        // Запись действительно закончилась — снимаем identity, чтобы её
+        // случайно не сверило с ней позднее уведомление (P1-1 hygiene).
+        liveCandidateID = nil
         stateLock.unlock()
 
         sessionQueue.sync {
@@ -354,8 +732,7 @@ public final class AudioCaptureService: NSObject, ObservableObject {
             session = nil
         }
 
-        // Барьер ДО закрытия generation: буферы, уже поставленные в очередь,
-        // обязаны попасть в файл.
+        // Барьер ДО закрытия generation: буферы в очереди обязаны попасть в файл.
         var failure: Error?
         var received = 0
         var written = 0
@@ -374,8 +751,7 @@ public final class AudioCaptureService: NSObject, ObservableObject {
             writerFormat = nil
         }
 
-        // Кадр, потерянный на любом guard делегата, исчез бы и из файла, и из
-        // счётчика записанных — равенство «записано == в файле» такое не ловит.
+        // Кадр, потерянный на guard'е делегата, исчез бы и из файла, и из счётчика.
         if failure == nil, received != written {
             failure = AudioCaptureError.framesDropped(received: received, written: written)
         }
@@ -437,41 +813,47 @@ public final class AudioCaptureService: NSObject, ObservableObject {
 
     // MARK: - Прерывания
 
-    private func installInterruptionObservers() {
+    private func installInterruptionObservers(
+        session: AVCaptureSession,
+        candidateID: SessionCandidateID,
+        into bundle: StartedBundle
+    ) {
         let center = NotificationCenter.default
 
         // queue: nil — намеренно. С `queue: .main` блок планируется на main, а
-        // подписка ставится из-под sessionQueue.sync, где main уже занят
-        // ожиданием: синхронно опубликованное уведомление упёрлось бы в
-        // заблокированный поток. Обработчику main и не нужен — reportInterruption
+        // подписка ставится из-под sessionQueue, где main может быть занят
+        // другой работой: обработчику main и не нужен — reportInterruption
         // сам уходит на него, когда вызван не оттуда.
-        func observe(_ name: Notification.Name, _ handler: @escaping (Notification) -> Void) {
-            observers.append(center.addObserver(forName: name, object: nil, queue: nil) { note in
+        func observe(_ name: Notification.Name, object: Any?, _ handler: @escaping (Notification) -> Void) {
+            bundle.observers.append(center.addObserver(forName: name, object: object, queue: nil) { note in
                 handler(note)
             })
         }
 
-        observe(AVCaptureSession.runtimeErrorNotification) { [weak self] note in
+        // object: session — иначе уведомление ЛЮБОЙ сессии, включая чужую,
+        // достигало бы этого обработчика (требование 9). requiredCandidateID
+        // в reportInterruption — вторая проверка, по КОНКРЕТНОМУ кандидату,
+        // не по всей попытке (P1-3): сессия могла устареть и сама по себе.
+        observe(AVCaptureSession.runtimeErrorNotification, object: session) { [weak self] note in
             let error = note.userInfo?[AVCaptureSessionErrorKey] as? NSError
-            self?.reportInterruption(.runtimeError(error?.localizedDescription ?? "unknown"))
+            self?.reportInterruption(.runtimeError(error?.localizedDescription ?? "unknown"), requiredCandidateID: candidateID)
         }
-        observe(AVCaptureSession.wasInterruptedNotification) { [weak self] _ in
-            self?.reportInterruption(.sessionInterrupted)
+        observe(AVCaptureSession.wasInterruptedNotification, object: session) { [weak self] _ in
+            self?.reportInterruption(.sessionInterrupted, requiredCandidateID: candidateID)
         }
-        // Сессия может просто перестать работать, не прислав ни runtime error,
-        // ни interruption. Без этой подписки приложение осталось бы в
-        // .recording с молчащим микрофоном до отпускания хоткея. Наша
-        // собственная остановка сюда не попадает: наблюдатели снимаются до
-        // stopRunning(), и состояние к тому моменту уже .stopping.
-        observe(AVCaptureSession.didStopRunningNotification) { [weak self] _ in
-            self?.reportInterruption(.sessionInterrupted)
+        // Сессия может просто перестать работать без runtime error/interruption;
+        // наша собственная остановка сюда не попадает (наблюдатели снимаются
+        // до stopRunning()).
+        observe(AVCaptureSession.didStopRunningNotification, object: session) { [weak self] _ in
+            self?.reportInterruption(.sessionInterrupted, requiredCandidateID: candidateID)
         }
-        observe(AVCaptureDevice.wasDisconnectedNotification) { [weak self] note in
-            guard let self else { return }
-            // Отключение постороннего устройства нас не касается.
+        // object: nil — шлёт устройство, не сессия; фильтруется вручную по
+        // UID ИМЕННО этого кандидата (bundle.deviceUID), не по глобальному
+        // activeDeviceUID — тот мог уже принадлежать следующей записи.
+        observe(AVCaptureDevice.wasDisconnectedNotification, object: nil) { [weak self] note in
             guard let disconnected = note.object as? AVCaptureDevice,
-                  disconnected.uniqueID == self.activeDeviceUID || self.activeDeviceUID == nil else { return }
-            self.reportInterruption(.deviceDisconnected)
+                  disconnected.uniqueID == bundle.deviceUID || bundle.deviceUID == nil else { return }
+            self?.reportInterruption(.deviceDisconnected, requiredCandidateID: candidateID)
         }
     }
 
@@ -482,26 +864,37 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         observers.removeAll()
     }
 
-    /// Владение остановкой при прерывании — ОДНО, и оно здесь: сервис только
-    /// доставляет событие, а останавливает запись `AppDelegate` обычным
-    /// `stopRecording()`. Единственный переход `.recording → .stopping` живёт
-    /// внутри остановки, поэтому гонки «сервис уже перевёл в .stopping, а
-    /// AppDelegate получил отказ» не существует.
+    /// Доставляется РОВНО одно событие на запись — решение «транскрибировать
+    /// частичное или показать ошибку» принимается позже, по барьеру.
     ///
-    /// Доставляется РОВНО одно событие на запись: `runtimeError`, отключение
-    /// устройства и сбой записи легко приходят пачкой, а пользователю нужно
-    /// одно сообщение и одна остановка. Решение «транскрибировать частичное
-    /// или показать ошибку» принимается после барьера по окончательному числу
-    /// сэмплов, а не по счётчику в момент уведомления.
-    private func reportInterruption(_ interruption: CaptureInterruption) {
+    /// `requiredCandidateID` нил — вызов из делегата sample buffer: identity
+    /// уже подтверждена `activeOutput`/`openGeneration` выше по стеку. Не-нил
+    /// — вызов из наблюдателя КОНКРЕТНОГО кандидата (требования 9/17,
+    /// P1-1/P1-3): событие может прийти ещё в `.starting` (буферизуется в
+    /// `pendingInterruption`, доставляется `finalizeSuccess`). Сверка — с
+    /// `liveCandidateID`: переживает очистку `currentAttempt` (P1-1) и
+    /// меняется на каждого нового кандидата внутри одной попытки, primary/
+    /// fallback (P1-3).
+    ///
+    /// Не `private` — тестовый шов (задача 5 плана, п.8/11; код-ревью п.1-2):
+    /// без живой AVCaptureSession тесты не спровоцируют уведомление, но могут
+    /// проверить identity-сверку напрямую.
+    func reportInterruption(
+        _ interruption: CaptureInterruption,
+        requiredCandidateID: SessionCandidateID? = nil
+    ) {
         stateLock.lock()
-        let accepted = (state == .recording) && !didReportInterruption
+        let identityOK = requiredCandidateID == nil || requiredCandidateID == liveCandidateID
+        let acceptableState = (state == .recording) || (state == .starting && requiredCandidateID != nil)
+        let accepted = identityOK && acceptableState && !didReportInterruption
+        var deliverNow = false
         if accepted {
             didReportInterruption = true
             pendingInterruption = interruption
+            deliverNow = (state == .recording)
         }
         stateLock.unlock()
-        guard accepted else { return }
+        guard accepted, deliverNow else { return }
 
         if Thread.isMainThread {
             onInterruption?(interruption)

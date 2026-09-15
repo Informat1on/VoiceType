@@ -25,6 +25,20 @@ public enum AudioCaptureError: LocalizedError, Equatable {
     case recordingFileMissing
     case recordingReadFailed(Error)
     case recordingConversionFailed
+    /// `startRunning()` не подтвердил старт в отведённый срок — CoreAudio сам
+    /// ретраит бесконечно (замерено на Elgato Wave Link MicFX: Error 0x3C /
+    /// ETIMEDOUT каждые ~14 с), и ждать его означает тот самый фриз, который
+    /// docs/plans/audio-start-hang.md устраняет. `uid` — устройство, которое
+    /// фоновая попытка уже разрешила (может отличаться от того, что выбрано в
+    /// настройках, если сработал откат на системный default).
+    case sessionStartTimedOut(uid: String?, seconds: Double)
+    /// Предыдущая (отменённая/просроченная) попытка старта ещё не освободила
+    /// ресурсы — новый старт отклонён немедленно, а не поставлен в очередь.
+    case captureDeviceBusy
+    /// Пользователь сам отменил старт (отпустил хоткей, пока сессия
+    /// поднималась) — не ошибка, UI ничего не показывает. Кейс существует
+    /// только затем, чтобы у отмены был однозначный терминальный исход.
+    case startCancelled
 
     public static func == (lhs: AudioCaptureError, rhs: AudioCaptureError) -> Bool {
         lhs.caseIdentifier == rhs.caseIdentifier
@@ -46,6 +60,9 @@ public enum AudioCaptureError: LocalizedError, Equatable {
         case .recordingFileMissing: return "recordingFileMissing"
         case .recordingReadFailed: return "recordingReadFailed"
         case .recordingConversionFailed: return "recordingConversionFailed"
+        case .sessionStartTimedOut: return "sessionStartTimedOut"
+        case .captureDeviceBusy: return "captureDeviceBusy"
+        case .startCancelled: return "startCancelled"
         }
     }
 
@@ -79,6 +96,18 @@ public enum AudioCaptureError: LocalizedError, Equatable {
             return "VoiceType could not read the recorded audio: \(error.localizedDescription)"
         case .recordingConversionFailed:
             return "VoiceType could not convert the recorded audio into the transcription format."
+        case let .sessionStartTimedOut(uid, seconds):
+            // Требование 15: НЕ запрашивать AVFoundation здесь — это вычисляется
+            // лениво на любом потоке (в т.ч. main, при логировании в AppDelegate),
+            // а разрешённое ИМЯ устройства уже есть на попытке (см.
+            // `AudioCaptureService.handleWatchdogFired`, которое логирует его
+            // отдельно). Текст ошибки называет только то, что несёт сам кейс.
+            let deviceLabel = uid ?? "the system default microphone"
+            return "VoiceType waited \(String(format: "%.1f", seconds))s for \(deviceLabel) to start, but macOS never confirmed the session. Check the active input device and try again."
+        case .captureDeviceBusy:
+            return "VoiceType is still releasing the previous microphone session. Wait a moment and try again."
+        case .startCancelled:
+            return "Recording start was cancelled before the microphone session finished opening."
         }
     }
 }
