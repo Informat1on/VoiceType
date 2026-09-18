@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.2] - 2026-09-18
+
+A bug-fix release: when the macOS audio service itself hangs, VoiceType now
+stays responsive, says what happened and recovers on its own.
+
+### Fixed
+
+- **VoiceType no longer freezes when the macOS audio service (`coreaudiod`)
+  hangs.** On 2026-09-18 `coreaudiod` deadlocked inside macOS itself — two of
+  its own threads waiting on each other, triggered by an Elgato Wave Link
+  aggregate-device config change over a Wave XLR MK.2 — and every process
+  that touched CoreAudio for the first time, on any thread including main,
+  hung forever. Before this fix, opening Settings froze VoiceType solid (it
+  had to be force-quit), and the hotkey showed a misleading "Mic not
+  responding · Check input" instead of naming the real problem. All CoreAudio
+  calls now go through a dedicated gateway with a 2-second deadline; the main
+  thread never touches CoreAudio directly, an invariant now enforced by a
+  SwiftLint rule. Settings shows "macOS audio isn't responding" instead of
+  freezing, the hotkey shows a toast with the recovery command instead of a
+  false device-specific error, stopping a recording now waits at most 1
+  second and keeps whatever audio was already captured, and the app recovers
+  by itself once the daemon is back — no VoiceType restart needed. Note:
+  `sudo killall coreaudiod` (SIGTERM) does not kill a deadlocked daemon —
+  `sudo killall -9 coreaudiod` does.
+
+### Changed
+
+- **Release builds pin SwiftPM's native build system.** Xcode 27's default
+  Swift Build engine compiles the whisper Metal shader into a ready
+  `default.metallib` inside the resource bundle and stops shipping the shader
+  source, which `build-app.sh` needs for its runtime-compile fallback, its
+  self-contained-shader check and its own `default.metallib` precompile — so
+  the bundle step failed with "ggml-metal.metal missing". The shipped app is
+  unchanged: the precompiled library still loads from inside the `.app`, as
+  the build's standalone self-check confirms.
+
 ## [1.4.1] - 2026-09-15
 
 A bug-fix release for two ways recording could fail on Elgato hardware:

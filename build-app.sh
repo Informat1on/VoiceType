@@ -7,7 +7,17 @@ APP_DIR="$DIST_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
-BUILD_PRODUCTS_DIR="$(swift build -c release --show-bin-path)"
+# Native build system pinned on purpose. Xcode 27's default engine (swiftbuild)
+# compiles ggml-metal.metal into the SwiftPM resource bundle as a ready
+# default.metallib (plus a bundle Info.plist) and no longer ships the shader
+# source — while everything below depends on that source: the runtime-compile
+# fallback in Contents/Resources, the self-contained-shader check and our own
+# macro-free default.metallib precompile. Found 2026-09-18 on Xcode 27.0
+# (27A266a), when this script failed with "ggml-metal.metal missing".
+# `native` is marked deprecated in SwiftPM; migrating means taking the shader
+# source from the SwiftWhisper checkout and skipping bundle Info.plist/metallib.
+SWIFT_BUILD_ARGS=(-c release --build-system native)
+BUILD_PRODUCTS_DIR="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
 BUILD_TEMP_DIR=".build/voicetype-bundle"
 ICON_ART_SOURCE="artwork/image_voice_transparent.png"
 ICON_SOURCE="$BUILD_TEMP_DIR/app-icon-cropped.png"
@@ -25,7 +35,7 @@ for legacy_dir in "${LEGACY_APP_DIRS[@]}"; do
     rm -rf "$legacy_dir"
 done
 
-swift build -c release
+swift build "${SWIFT_BUILD_ARGS[@]}"
 
 echo "📦 Creating app bundle..."
 rm -rf "$APP_DIR" "$BUILD_TEMP_DIR"

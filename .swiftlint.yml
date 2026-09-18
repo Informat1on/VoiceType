@@ -160,4 +160,23 @@ custom_rules:
       (see D9/D10). NSAlert.runModal() is removed in Tier A step 7.
     severity: error
 
+  # docs/plans/coreaudiod-hang-resilience.md, задача 1: любой прямой HAL/
+  # AVFoundation-вызов виснет навсегда, если coreaudiod мёртв — путь только
+  # через AudioHALGateway. Excluded — файлы, которые САМИ реализуют шлюз/
+  # переход на него; всё прочее в Sources обязано идти через perform/
+  # performSync/enqueueCleanup.
+  hal_outside_gateway:
+    name: "HAL/AVFoundation call outside AudioHALGateway"
+    regex: 'AudioObject(GetPropertyData|GetPropertyDataSize|SetPropertyData|HasProperty|IsPropertySettable|AddPropertyListener|AddPropertyListenerBlock|RemovePropertyListener|RemovePropertyListenerBlock)\s*\(|AudioHardware\w*\s*\(|AudioServicesPlay\w*\s*\(|AVCaptureDevice\s*\(|AVCaptureDevice\.default\b|AVCaptureDevice\.DiscoverySession|AVAudioPlayer\s*\(|AVAudioEngine\s*\(|NSSound\s*\('
+    included: "Sources/VoiceType/.*\\.swift"
+    excluded: "Sources/VoiceType/Services/AudioHALGateway\\.swift|Sources/VoiceType/Services/AudioDeviceService\\.swift|Sources/VoiceType/Services/AudioCaptureService\\.swift|Sources/VoiceType/Services/AudioCaptureService\\+Start\\.swift"
+    excluded_match_kinds:
+      - comment
+      - doccomment
+      - string
+    message: >
+      HAL/AVFoundation calls hang forever if coreaudiod is unresponsive — route
+      through AudioHALGateway. See docs/plans/coreaudiod-hang-resilience.md.
+    severity: error
+
 reporter: "xcode"

@@ -128,13 +128,68 @@ final class AudioDeviceSelectionTests: XCTestCase {
 
     /// Живая проверка на машине разработчика: встроенный микрофон есть всегда,
     /// и его UID обязан совпадать с тем, по которому захват берёт устройство.
+    ///
+    /// `AudioDeviceService.inputDevices()` теперь требует очереди
+    /// `AudioHALGateway` (precondition, docs/plans/coreaudiod-hang-resilience.md,
+    /// задача 1) — идёт через НЕстандартный экземпляр шлюза, не `.shared`, чтобы
+    /// не делить состояние здоровья с прочими тестами. Если coreaudiod не
+    /// отвечает, тест не виснет — сам шлюз укладывается в срок и отдаёт
+    /// `.unresponsive`, дальше `XCTSkip`.
     func testCoreAudioEnumerationReturnsUsableUIDs() throws {
-        let devices = try AudioDeviceService.inputDevices()
-        XCTAssertFalse(devices.isEmpty, "на машине с микрофоном список не может быть пустым")
-        for device in devices {
-            XCTAssertFalse(device.uid.isEmpty)
-            XCTAssertFalse(device.name.isEmpty)
-            XCTAssertEqual(device.id, device.uid)
+        let testGateway = AudioHALGateway(
+            label: "test.audio.hal.enumeration.\(UUID().uuidString)",
+            defaultTimeout: 4.0
+        )
+        let exp = expectation(description: "devices loaded")
+        var loadedResult: Result<[AudioInputDevice], AudioHALError>?
+        AudioDeviceService.loadInputDevices(via: testGateway) { result in
+            loadedResult = result
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 5)
+
+        switch try XCTUnwrap(loadedResult) {
+        case .success(let devices):
+            XCTAssertFalse(devices.isEmpty, "на машине с микрофоном список не может быть пустым")
+            for device in devices {
+                XCTAssertFalse(device.uid.isEmpty)
+                XCTAssertFalse(device.name.isEmpty)
+                XCTAssertEqual(device.id, device.uid)
+            }
+        case .failure(.unresponsive):
+            throw XCTSkip("coreaudiod не отвечает")
+        case .failure(.failed(let message)):
+            XCTFail("CoreAudio enumeration failed: \(message)")
+        }
+    }
+
+    /// Второй живой тест (план, требование 9): `performSync` реального
+    /// `AudioDeviceService.systemDefaultInputUID()` на очереди подставленного
+    /// шлюза не трапает на precondition — доказывает, что проверка
+    /// `isOnGatewayQueue` смотрит на очередь ЛЮБОГО шлюза, а не только
+    /// `.shared`. `performSync` запрещён на main — гоним с фоновой очереди.
+    func testSystemDefaultInputUIDViaGatewayPerformSyncDoesNotTrapOnPrecondition() throws {
+        let testGateway = AudioHALGateway(
+            label: "test.audio.hal.default.\(UUID().uuidString)",
+            defaultTimeout: 4.0
+        )
+        let exp = expectation(description: "performSync completed off main")
+        var outcome: Result<String?, AudioHALError>?
+        DispatchQueue.global().async {
+            outcome = testGateway.performSync("systemDefaultInputUID") {
+                try AudioDeviceService.systemDefaultInputUID()
+            }
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 5)
+
+        switch try XCTUnwrap(outcome) {
+        case .success:
+            break // отсутствие trap'а на precondition — и есть то, что тест доказывает.
+        case .failure(.unresponsive):
+            throw XCTSkip("coreaudiod не отвечает")
+        case .failure(.failed(let message)):
+            XCTFail("systemDefaultInputUID failed: \(message)")
         }
     }
 }
