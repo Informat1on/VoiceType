@@ -38,6 +38,14 @@ struct EvalEditorView: View {
     @State private var audioPlayer: AVAudioPlayer?
     @State private var playbackProgress: Double = 0
     @State private var playbackTimer: Timer?
+    /// Поколение текущей попытки воспроизведения. Код-ревью 2026-09-18: без
+    /// него Stop (или закрытие экрана) до прихода `perform`-completion не
+    /// защищал от гонки — поздний `.success` сохранял бы плеер, который уже
+    /// никто не остановит, а быстрый повторный старт мог перетереть плеер
+    /// новой попытки плеером старой. Инкрементируется в `startPlayback()` и
+    /// `stopPlayback()`; completion применяет результат только если
+    /// захваченное значение совпадает с текущим.
+    @State private var playbackGeneration = 0
     /// VT-REV-003: tracks whether the entry still exists in HistoryStore.
     /// Polled every 2 s so the user sees a warning if history rotation evicts the entry.
     @State private var stillExists: Bool = true
@@ -398,38 +406,86 @@ struct EvalEditorView: View {
 
     private func startPlayback() {
         guard let url = audioFileURL else { return }
-        do {
+        // Новая попытка обесценивает любую предыдущую в полёте — см. doc
+        // `playbackGeneration` выше (код-ревью 2026-09-18, гонка Stop/повторный
+        // Play против ещё не пришедшего completion).
+        playbackGeneration += 1
+        let generation = playbackGeneration
+        // Создание плеера, prepareToPlay() и play() — внутри
+        // AudioHALGateway.perform (docs/plans/coreaudiod-hang-resilience.md,
+        // задача 3): оба вызова висят навсегда, если coreaudiod мёртв (план,
+        // «Контекст»). Плеер и isPlayingAudio/таймер выставляются только в
+        // completion на main, и только при .success — при .unresponsive
+        // кнопка просто остаётся в исходном состоянии, без toast (это экран
+        // разработчика — eval-плеер, а не пользовательский путь записи).
+        AudioHALGateway.shared.perform("evalPlayback") {
+            // Вызов внутри AudioHALGateway.perform — main HAL не трогает.
+            // swiftlint:disable:next hal_outside_gateway
             let player = try AVAudioPlayer(contentsOf: url)
             player.prepareToPlay()
             player.play()
-            audioPlayer = player
-            isPlayingAudio = true
-
-            // Update progress every 50ms.
-            playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [self] _ in
-                guard let player = audioPlayer else { return }
-                if player.isPlaying {
-                    playbackProgress = player.duration > 0
-                        ? player.currentTime / player.duration : 0
-                } else {
-                    // Finished naturally.
-                    playbackProgress = 0
-                    isPlayingAudio = false
-                    playbackTimer?.invalidate()
-                    playbackTimer = nil
+            return player
+        } completion: { result in
+            // Поколение устарело: Stop или новый Play уже сбросили UI, пока
+            // этот вызов летел (код-ревью 2026-09-18, P1). Успевший
+            // проиграться плеер никому не принадлежит — останавливаем его
+            // через шлюз и не сохраняем; устаревший .failure не требует
+            // никакого действия, UI уже в исходном состоянии.
+            guard generation == playbackGeneration else {
+                if case .success(let player) = result {
+                    AudioHALGateway.shared.enqueueCleanup("evalPlaybackStale") {
+                        player.stop()
+                    }
                 }
+                return
             }
-        } catch {
-            print("[EvalEditor] Audio playback failed: \(error)")
+            switch result {
+            case .success(let player):
+                audioPlayer = player
+                isPlayingAudio = true
+
+                // Update progress every 50ms. Геттеры player.isPlaying/
+                // currentTime/duration оставлены как есть (не через шлюз) —
+                // осознанный остаточный риск на экране разработчика (план,
+                // задача 3, п.3).
+                playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [self] _ in
+                    guard let player = audioPlayer else { return }
+                    if player.isPlaying {
+                        playbackProgress = player.duration > 0
+                            ? player.currentTime / player.duration : 0
+                    } else {
+                        // Finished naturally.
+                        playbackProgress = 0
+                        isPlayingAudio = false
+                        playbackTimer?.invalidate()
+                        playbackTimer = nil
+                    }
+                }
+            case .failure(let error):
+                print("[EvalEditor] Audio playback failed: \(error)")
+                isPlayingAudio = false
+            }
         }
     }
 
     private func stopPlayback() {
+        // Инкремент ДО остального: если ещё летит completion от
+        // AudioHALGateway.perform (запущенного в startPlayback), он увидит
+        // устаревшее поколение и остановит свой плеер сам, а не перезапишет
+        // им audioPlayer/isPlayingAudio уже после Stop (код-ревью 2026-09-18,
+        // P1). Так же страхует onDisappear, который зовёт stopPlayback().
+        playbackGeneration += 1
         playbackTimer?.invalidate()
         playbackTimer = nil
-        audioPlayer?.stop()
-        audioPlayer = nil
         isPlayingAudio = false
+        // stop() — через enqueueCleanup: main не должен трогать HAL напрямую,
+        // даже на выходе (план, задача 3, п.3). UI-состояние сбрасывается
+        // сразу, сам player.stop() выполнится на очереди шлюза.
+        let player = audioPlayer
+        audioPlayer = nil
+        AudioHALGateway.shared.enqueueCleanup("evalPlaybackStop") {
+            player?.stop()
+        }
     }
 
     private func seekAudio(to fraction: Double) {

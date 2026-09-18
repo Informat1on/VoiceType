@@ -44,8 +44,15 @@ enum AudioDeviceService {
 
     /// Устройства с ненулевым числом ВХОДНЫХ каналов. Пустой массив означает,
     /// что входов в системе нет; сбой опроса — это throw, а не пустой массив.
+    ///
+    /// Синхронная и `throws` — но вызывать её напрямую с main нельзя: HAL
+    /// виснет навсегда, если coreaudiod мёртв (docs/plans/
+    /// coreaudiod-hang-resilience.md). Единственный легальный путь — через
+    /// `AudioHALGateway` (см. `loadInputDevices(via:completion:)` ниже);
+    /// precondition это закрепляет, а не полагается на дисциплину вызывающих.
     static func inputDevices() throws -> [AudioInputDevice] {
-        try deviceIDs().compactMap { deviceID in
+        precondition(AudioHALGateway.isOnGatewayQueue, "HAL — только через AudioHALGateway")
+        return try deviceIDs().compactMap { deviceID in
             guard hasInputChannels(deviceID), !isHidden(deviceID) else { return nil }
             guard let uid = stringProperty(deviceID, kAudioDevicePropertyDeviceUID),
                   !uid.isEmpty else { return nil }
@@ -59,6 +66,7 @@ enum AudioDeviceService {
     /// `inputDevices()`: «микрофона нет» и «спросить не удалось» ведут к разному
     /// поведению, и склеивать их в один nil значит терять эту разницу.
     static func systemDefaultInputUID() throws -> String? {
+        precondition(AudioHALGateway.isOnGatewayQueue, "HAL — только через AudioHALGateway")
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -74,15 +82,27 @@ enum AudioDeviceService {
         return stringProperty(deviceID, kAudioDevicePropertyDeviceUID)
     }
 
+    /// Через шлюз; completion на main ровно один раз. Единственный легальный
+    /// способ для UI спросить список устройств — `inputDevices()` синхронный
+    /// и предполагает уже быть на очереди шлюза (precondition выше).
+    static func loadInputDevices(
+        via gateway: AudioHALGateway = .shared,
+        completion: @escaping (Result<[AudioInputDevice], AudioHALError>) -> Void
+    ) {
+        gateway.perform("loadInputDevices", { try inputDevices() }, completion: completion)
+    }
+
     /// Слушает И состав устройств, И смену системного устройства по умолчанию:
     /// пикер, открытый в момент подключения гарнитуры, обязан её показать, а
     /// строка «System Default» — перестать врать о том, что за ней стоит.
-    /// Обработчик всегда вызывается на main.
-    static func observeChanges(_ handler: @escaping () -> Void) -> AudioDeviceObservation {
-        AudioDeviceObservation(selectors: [
-            kAudioHardwarePropertyDevices,
-            kAudioHardwarePropertyDefaultInputDevice
-        ], handler: handler)
+    /// Обработчик всегда вызывается на main. Регистрация/снятие listener'ов
+    /// идут через `gateway`, вне main — см. `AudioDeviceObservation`.
+    static func observeChanges(via gateway: AudioHALGateway = .shared, _ handler: @escaping () -> Void) -> AudioDeviceObservation {
+        AudioDeviceObservation(
+            gateway: gateway,
+            selectors: [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultInputDevice],
+            handler: handler
+        )
     }
 
     // MARK: - CoreAudio
@@ -173,42 +193,135 @@ enum AudioDeviceService {
     }
 }
 
+/// Один зарегистрированный CoreAudio listener: адрес + блок, которым его
+/// сняли обратно.
+private typealias DeviceListenerEntry = (AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)
+
+/// Подставная (в тестах) или живая функция add/removePropertyListener —
+/// вынесены typealias'ами, чтобы сигнатура `init` ниже укладывалась в
+/// построчный лимит.
+typealias DeviceListenerAdder = (AudioObjectPropertyAddress, @escaping AudioObjectPropertyListenerBlock) -> OSStatus
+typealias DeviceListenerRemover = (AudioObjectPropertyAddress, @escaping AudioObjectPropertyListenerBlock) -> OSStatus
+
+/// Учёт РЕАЛЬНО зарегистрированных listener'ов одной подписки — отдельно от
+/// completion шлюза (план, требование 6, ревью раунд 3 P2): `gateway.perform`
+/// может отбросить свой результат по таймауту, но регистрация внутри work всё
+/// равно продолжает выполняться и добавляет listener'ы в систему — снять их
+/// обязан именно этот реестр, а не что-то завязанное на completion.
+/// Reference type со своим замком: регистрация (на очереди шлюза) и cleanup
+/// (тоже на очереди шлюза, но позже по FIFO) обращаются к нему из разных
+/// замыканий.
+private final class DeviceListenerRegistry {
+    private let lock = NSLock()
+    private var isCancelled = false
+    private var entries: [DeviceListenerEntry] = []
+
+    /// Проверяется перед КАЖДЫМ `Add…` — если отменено, регистрация дальше не идёт.
+    func canRegister() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !isCancelled
+    }
+
+    func recordRegistered(_ entry: DeviceListenerEntry) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isCancelled else { return }
+        entries.append(entry)
+    }
+
+    /// Идемпотентно: помечает отменённым и отдаёт всё, что накопилось К
+    /// МОМЕНТУ своего вызова, — включая listener'ы, добавленные регистрацией
+    /// уже ПОСЛЕ того, как шлюз отбросил её completion по таймауту. Второй
+    /// вызов возвращает пустой список — снимать нечего и незачем дважды.
+    func cancelAndDrain() -> [DeviceListenerEntry] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isCancelled else { return [] }
+        isCancelled = true
+        defer { entries.removeAll() }
+        return entries
+    }
+}
+
 /// Подписка на изменения состава устройств. Отписывается по `cancel()` или при
 /// освобождении — забытый слушатель CoreAudio переживает окно настроек и
 /// продолжает дёргать замыкание, удерживающее уже закрытый экран.
+///
+/// Регистрация и снятие идут ИСКЛЮЧИТЕЛЬНО через `gateway` — сам HAL с main
+/// (или любого другого потока) эта подписка не трогает. `addListener`/
+/// `removeListener` — тестовый шов (требование 9 плана): подставные
+/// счётчики вместо живого CoreAudio.
 final class AudioDeviceObservation {
 
-    private var listeners: [(AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
-    private var isCancelled = false
+    private let gateway: AudioHALGateway
+    private let registry = DeviceListenerRegistry()
+    private let removeListener: DeviceListenerRemover
 
-    init(selectors: [AudioObjectPropertySelector], handler: @escaping () -> Void) {
-        for selector in selectors {
-            var address = AudioObjectPropertyAddress(
-                mSelector: selector,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            let block: AudioObjectPropertyListenerBlock = { _, _ in handler() }
-            let status = AudioObjectAddPropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block
-            )
-            if status == noErr {
-                listeners.append((address, block))
+    init(
+        gateway: AudioHALGateway,
+        selectors: [AudioObjectPropertySelector],
+        handler: @escaping () -> Void,
+        addListener: @escaping DeviceListenerAdder = AudioDeviceObservation.liveAddListener,
+        removeListener: @escaping DeviceListenerRemover = AudioDeviceObservation.liveRemoveListener
+    ) {
+        self.gateway = gateway
+        self.removeListener = removeListener
+
+        let registry = self.registry
+        let registerListeners: () -> Void = {
+            for selector in selectors {
+                guard registry.canRegister() else { return }
+                let address = AudioObjectPropertyAddress(
+                    mSelector: selector,
+                    mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: kAudioObjectPropertyElementMain
+                )
+                // Сам блок HAL не трогает — только вызывает handler на main.
+                let block: AudioObjectPropertyListenerBlock = { _, _ in handler() }
+                if addListener(address, block) == noErr {
+                    registry.recordRegistered((address, block))
+                }
+            }
+        }
+        // Результат не используется для учёта регистрации — см. doc
+        // DeviceListenerRegistry выше.
+        gateway.perform("observeDeviceChanges", registerListeners, completion: { _ in })
+    }
+
+    /// С main HAL не трогает — снятие уходит в очередь шлюза и выполнится,
+    /// когда та освободится (даже если сейчас `.unresponsive`).
+    func cancel() {
+        let registry = self.registry
+        let removeListener = self.removeListener
+        gateway.enqueueCleanup("cancelDeviceObservation") {
+            for entry in registry.cancelAndDrain() {
+                _ = removeListener(entry.0, entry.1)
             }
         }
     }
 
-    func cancel() {
-        guard !isCancelled else { return }
-        isCancelled = true
-        for (address, block) in listeners {
-            var mutableAddress = address
-            AudioObjectRemovePropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject), &mutableAddress, DispatchQueue.main, block
-            )
-        }
-        listeners.removeAll()
+    deinit { cancel() }
+
+    /// Очередь доставки — `DispatchQueue.main`: обработчик листенера
+    /// (переданный CoreAudio-блок) сам HAL не трогает, только зовёт handler.
+    private static func liveAddListener(
+        _ address: AudioObjectPropertyAddress,
+        _ block: @escaping AudioObjectPropertyListenerBlock
+    ) -> OSStatus {
+        var mutableAddress = address
+        return AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &mutableAddress, DispatchQueue.main, block
+        )
     }
 
-    deinit { cancel() }
+    private static func liveRemoveListener(
+        _ address: AudioObjectPropertyAddress,
+        _ block: @escaping AudioObjectPropertyListenerBlock
+    ) -> OSStatus {
+        var mutableAddress = address
+        return AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &mutableAddress, DispatchQueue.main, block
+        )
+    }
 }

@@ -59,6 +59,16 @@ struct SettingsView: View {
     /// «ещё не загружали»: на машине без встроенного микрофона отключение
     /// единственного внешнего даёт честно пустой список.
     @State private var didLoadInputDevices = false
+    /// true, пока `AudioHALGateway` не отвечает: coreaudiod завис
+    /// (docs/plans/coreaudiod-hang-resilience.md, задача 3). Отдельно от
+    /// `didLoadInputDevices`/`inputDevices` — их трогать нельзя, иначе
+    /// временный отказ шлюза стёр бы последний известный список.
+    @State private var audioSystemUnresponsive = false
+    /// Поколение последнего запущенного `reloadInputDevices()`. completion
+    /// применяет результат только если поколение не устарело — иначе
+    /// отставший успех после `onDisappear` мог бы сбросить свежий флаг
+    /// `.unresponsive`, и наоборот (план, задача 3, п.2).
+    @State private var deviceLoadGeneration = 0
 
     var body: some View {
         // Flat HStack layout per prototype .settings-window { display:flex }
@@ -209,12 +219,31 @@ struct SettingsView: View {
                             Text("\(selectedDeviceMenuTitle) (unavailable)")
                                 .tag(String?.some(missing))
                         }
+                        // Список ещё ни разу не загружался (первый рендер,
+                        // либо шлюз .unresponsive с самого начала) — без этого
+                        // пункта Picker.selection не совпадает ни с одним
+                        // тегом, и SwiftUI пишет "selection is invalid" в
+                        // консоль на каждый рендер (план, задача 3, п.2).
+                        if let pending = pendingSelectedDeviceUID {
+                            Text(selectedDeviceMenuTitle).tag(String?.some(pending))
+                        }
                     }
                     .labelsHidden()
                     .frame(maxWidth: 220)
                     .accessibilityLabel("Input device")
                 }
                 RowDivider()
+                if audioSystemUnresponsive {
+                    // Отдельно от "Selected device unavailable" ниже: это про
+                    // всю аудиосистему macOS, а не про конкретное устройство
+                    // (план, задача 3, п.2).
+                    PrefsRow("macOS audio isn't responding",
+                             subtitle: "Can't list microphones. Restart the audio service in Terminal: "
+                                 + "sudo killall -9 coreaudiod — or restart your Mac.") {
+                        EmptyView()
+                    }
+                    RowDivider()
+                }
                 if unavailableSelectedDeviceUID != nil {
                     // Инлайн, без модалок: DESIGN.md запрещает NSAlert.runModal
                     // для ошибок. Выбор при этом НЕ сбрасывается — устройство
@@ -244,8 +273,25 @@ struct SettingsView: View {
             deviceObservation = AudioDeviceService.observeChanges { reloadInputDevices() }
         }
         .onDisappear {
+            // Поколение — ДО cancel(): иначе completion уже летящего
+            // reloadInputDevices() мог бы применить результат после того,
+            // как подписка снята (план, задача 3, п.2).
+            deviceLoadGeneration += 1
             deviceObservation?.cancel()
             deviceObservation = nil
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: AudioHALGateway.healthDidChangeNotification, object: AudioHALGateway.shared
+            )
+        ) { _ in
+            // Фильтр по object уже отсеял чужие шлюзы (тестовые экземпляры) —
+            // здесь реагируем только на переход .shared в .healthy.
+            guard case .healthy = AudioHALGateway.shared.health else { return }
+            audioSystemUnresponsive = false
+            deviceObservation?.cancel()
+            deviceObservation = AudioDeviceService.observeChanges { reloadInputDevices() }
+            reloadInputDevices()
         }
     }
 
@@ -288,17 +334,52 @@ struct SettingsView: View {
         return inputDevices.contains(where: { $0.uid == selected }) ? nil : selected
     }
 
-    private func reloadInputDevices() {
-        inputDevices = (try? AudioDeviceService.inputDevices()) ?? []
-        didLoadInputDevices = true
+    /// UID выбранного устройства, пока список ЕЩЁ НИ РАЗУ не загрузился
+    /// успешно или с явным отказом (`didLoadInputDevices == false`). Без
+    /// пункта под этим тегом Picker.selection не совпадает ни с одним
+    /// элементом меню — SwiftUI логирует "selection is invalid" на каждый
+    /// рендер, пока список пуст.
+    private var pendingSelectedDeviceUID: String? {
+        guard let selected = settings.preferredInputDeviceUID, !selected.isEmpty else { return nil }
+        guard !didLoadInputDevices else { return nil }
+        return inputDevices.contains(where: { $0.uid == selected }) ? nil : selected
+    }
 
-        // Настройка, сохранённая до появления имён, лечится сама, как только
-        // устройство снова видно: имя спрашивается у системы и запоминается,
-        // чтобы следующее отключение показало его, а не идентификатор.
-        if let selected = settings.preferredInputDeviceUID,
-           let device = inputDevices.first(where: { $0.uid == selected }),
-           settings.preferredInputDeviceName != device.name {
-            settings.preferredInputDeviceName = device.name
+    // Синхронный API AudioDeviceService требует теперь очереди
+    // AudioHALGateway (docs/plans/coreaudiod-hang-resilience.md, задача 1) —
+    // main зовёт только асинхронный loadInputDevices. `.unresponsive`
+    // (coreaudiod мёртв) различается от прочих `.failure` (обычный сбой
+    // CoreAudio): список и `didLoadInputDevices` НЕ трогаются — временный
+    // отказ шлюза не должен стирать последний известный список устройств.
+    private func reloadInputDevices() {
+        deviceLoadGeneration += 1
+        let generation = deviceLoadGeneration
+        AudioDeviceService.loadInputDevices { result in
+            // Устаревший результат (окно уже скрылось/подписка пересоздана
+            // после восстановления) — не применяется вовсе, план, задача 3, п.2.
+            guard generation == deviceLoadGeneration else { return }
+
+            switch result {
+            case .success(let devices):
+                inputDevices = devices
+                didLoadInputDevices = true
+                audioSystemUnresponsive = false
+            case .failure(.unresponsive):
+                audioSystemUnresponsive = true
+            case .failure(.failed):
+                inputDevices = []
+                didLoadInputDevices = true
+                audioSystemUnresponsive = false
+            }
+
+            // Настройка, сохранённая до появления имён, лечится сама, как только
+            // устройство снова видно: имя спрашивается у системы и запоминается,
+            // чтобы следующее отключение показало его, а не идентификатор.
+            if let selected = settings.preferredInputDeviceUID,
+               let device = inputDevices.first(where: { $0.uid == selected }),
+               settings.preferredInputDeviceName != device.name {
+                settings.preferredInputDeviceName = device.name
+            }
         }
     }
 

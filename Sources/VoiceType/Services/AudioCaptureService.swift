@@ -60,8 +60,9 @@ enum DeviceFallbackReason: Equatable {
 
 public final class AudioCaptureService: NSObject, ObservableObject {
 
-    private let targetSampleRate: Double = 16000.0
-    private let targetChannels: AVAudioChannelCount = 1
+    // internal, не private: читаются из AudioCaptureService+FileIO.swift (file_length).
+    let targetSampleRate: Double = 16000.0
+    let targetChannels: AVAudioChannelCount = 1
 
     private let sessionQueue = DispatchQueue(label: "com.voicetype.audiocapture.session")
     private let sampleQueue = DispatchQueue(label: "com.voicetype.audiocapture.sample", qos: .userInitiated)
@@ -71,6 +72,10 @@ public final class AudioCaptureService: NSObject, ObservableObject {
     /// чьи фоновые ресурсы на `sessionQueue` ещё не освобождены: busy держится
     /// до конца cleanup, а не до момента резолва (docs/plans/audio-start-hang.md,
     /// задача 1, требование 6).
+    /// stopping → abandoning → idle — тот же busy-гейт, но на остановке:
+    /// `stopRunning()` завис дольше `stopTimeout`, сэмплы уже отданы, сессия
+    /// доосвобождается в фоне (docs/plans/coreaudiod-hang-resilience.md,
+    /// задача 2, п.5).
     /// Прерывание принимается в `.starting` (буферизуется на попытке) и в
     /// `.recording` (доставляется сразу); остальные состояния его игнорируют.
     private enum State {
@@ -105,7 +110,8 @@ public final class AudioCaptureService: NSObject, ObservableObject {
     private var session: AVCaptureSession?
     private var recordingURL: URL?
     private var meterTimer: DispatchSourceTimer?
-    private var observers: [NSObjectProtocol] = []
+    // internal: install/removeInterruptionObservers живут в +FileIO.swift (file_length).
+    var observers: [NSObjectProtocol] = []
 
     // MARK: - Старт: попытки
 
@@ -146,6 +152,10 @@ public final class AudioCaptureService: NSObject, ObservableObject {
     /// identity весь свой срок жизни, до `stopRecordingCore` (P1-1).
     private var liveCandidateID: SessionCandidateID?
 
+    /// Не-nil, пока `state == .abandoning` из-за зависшей ОСТАНОВКИ (не старта)
+    /// — identity для позднего блока `stopRecordingCore` (`StopAttempt`, см. ниже, задача 2 плана).
+    private var abandoningStopAttempt: StopAttempt?
+
     /// Тестовый шов: дождаться фонового teardown, не блокируя main (P1-2).
     var sessionQueueForTesting: DispatchQueue { sessionQueue }
 
@@ -178,6 +188,18 @@ public final class AudioCaptureService: NSObject, ObservableObject {
     }
     /// Тестовый шов: подставной планировщик watchdog вместо реальных часов.
     var watchdogScheduler: WatchdogScheduling = RealWatchdogScheduler()
+
+    /// Шов задачи 2: нестандартный экземпляр шлюза в тестах — с `.shared`
+    /// тесты стучались бы в живой CoreAudio и не могли бы симулировать мёртвый демон.
+    var halGateway: AudioHALGateway = .shared
+
+    /// Шов: сколько main синхронно ждёт `stopRunning()` до ухода в фон
+    /// (план, задача 2, п.5). В тестах — доли секунды, не реальная секунда.
+    var stopTimeout: TimeInterval = 1.0
+
+    /// Шов: сама остановка сессии — в тестах подменяется "зависающим"
+    /// стоппером, который никогда не возвращается, без живого микрофона.
+    var sessionStopper: (AVCaptureSession) -> Void = { $0.stopRunning() }
 
     @Published public var audioLevel: Float = 0.0
 
@@ -218,14 +240,31 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         nextAttemptValue += 1
         let id = StartAttemptID(nextAttemptValue)
 
-        guard state == .idle else {
-            // .starting/.recording/.stopping — обычное «уже пишем».
-            // .abandoning — резолвнута, но sessionQueue-работа не закончена:
-            // до конца cleanup ресурс занят (требование 6).
-            let failure: AudioCaptureError = (state == .abandoning) ? .captureDeviceBusy : .alreadyRecording
+        // Порядок отказов (coreaudiod-hang-resilience.md, задача 2, п.2):
+        // состояние решает первым — нельзя отдать «система мертва», пока
+        // сервис реально пишет/поднимается/останавливается. Здоровье смотрим
+        // только для .abandoning (текст отказа) и .idle (заводить ли попытку).
+        func rejectAndReturn(_ error: AudioCaptureError) -> StartAttemptID {
             stateLock.unlock()
-            DispatchQueue.main.async { completion(.failure(failure)) }
+            DispatchQueue.main.async { completion(.failure(error)) }
             return id
+        }
+
+        switch state {
+        case .starting, .recording, .stopping:
+            return rejectAndReturn(.alreadyRecording)
+        case .abandoning:
+            // Резолвнута, но фоновая работа ещё не освободила ресурс — до
+            // конца cleanup занят (audio-start-hang.md, требование 6); текст
+            // отказа зависит от того, жив ли демон.
+            return rejectAndReturn(halGateway.health != .healthy ? .audioSystemUnresponsive : .captureDeviceBusy)
+        case .idle:
+            if halGateway.health != .healthy {
+                // Заводить попытку бессмысленно — beginSessionAttempt всё
+                // равно упрётся в шлюз (п.3), но main узнает точную причину
+                // немедленно, не дожидаясь sessionQueue.
+                return rejectAndReturn(.audioSystemUnresponsive)
+            }
         }
 
         let attempt = StartAttempt(
@@ -322,9 +361,14 @@ public final class AudioCaptureService: NSObject, ObservableObject {
             "Recording start timed out after \(String(format: "%.3f", elapsed))s (device: \(deviceLabel), uid: \(uid ?? "nil"))"
         )
 
+        // Задача 2, п.4: демон уже мёртв — та же точная ошибка, что и на входе.
+        let outcome: AudioCaptureError = (halGateway.health != .healthy)
+            ? .audioSystemUnresponsive
+            : .sessionStartTimedOut(uid: uid, seconds: elapsed)
+
         let comp = attempt.completion
         attempt.completion = nil
-        comp?(.failure(.sessionStartTimedOut(uid: uid, seconds: elapsed)))
+        comp?(.failure(outcome))
     }
 
     /// Читает и обновляет состояние попытки под замком — используется и
@@ -518,8 +562,24 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         preferredDeviceUID: String?,
         attemptID: StartAttemptID
     ) -> StartOutcome {
-        let systemDefaultUID = try? AudioDeviceService.systemDefaultInputUID()
-        let available = (try? AudioDeviceService.inputDevices().map(\.uid)) ?? []
+        // AudioDeviceService требует очереди AudioHALGateway (задача 1, план).
+        let resolved = halGateway.performSync("resolveDevices") { () -> (String?, [String]) in
+            (try? AudioDeviceService.systemDefaultInputUID(), (try? AudioDeviceService.inputDevices().map(\.uid)) ?? [])
+        }
+        let systemDefaultUID: String?
+        let available: [String]
+        switch resolved {
+        case .failure(.unresponsive):
+            // Задача 2, п.3: демон мёртв — ни один AVFoundation-вызов ниже не
+            // открываем, отдаём точную ошибку сразу же.
+            return .failure(.audioSystemUnresponsive)
+        case .failure(.failed):
+            // Прежняя семантика try?: сбой чтения устройств не фатален сам по
+            // себе — резолвер ниже получит пустые данные.
+            (systemDefaultUID, available) = (nil, [])
+        case .success(let value):
+            (systemDefaultUID, available) = value
+        }
 
         switch AudioDeviceResolver.resolve(
             preferredUID: preferredDeviceUID,
@@ -564,6 +624,10 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         fallback: DeviceFallbackReason?,
         attemptID: StartAttemptID
     ) -> StartOutcome {
+        // «Дополнительно» плана задачи 2: AVCaptureDevice(uniqueID:) ниже
+        // виснет навсегда при мёртвом демоне — вызывающий обязан уже быть на
+        // sessionQueue, не на main (файл исключён из hal_outside_gateway).
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
         let device: AVCaptureDevice?
         if let deviceUID {
             device = AVCaptureDevice(uniqueID: deviceUID)
@@ -702,16 +766,91 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         try stopRecordingCore(savingAudioTo: saveURL)
     }
 
+    /// Identity одной попытки остановки (coreaudiod-hang-resilience.md, задача
+    /// 2, п.5): совмещает "StopToken" плана и общий флаг исхода — обе стороны
+    /// гонки (main-таймаут и фоновый блок) мутируют его только под `stateLock`.
+    /// `===` — identity-сверка: вправе ли поздний фоновый блок вернуть сервис
+    /// из `.abandoning` в `.idle`, или это уже сделал кто-то другой.
+    private final class StopAttempt {
+        enum Outcome { case pending, completedInTime, timedOut }
+        var outcome: Outcome = .pending
+    }
+
+    /// Шаг 3 целиком (вынесено ради cyclomatic_complexity): стопает сессию
+    /// (no-op, если её не было — как прежний `session?.stopRunning()`),
+    /// снимает делегат со всех выходов, решает исход под `stateLock`.
+    private func performBackgroundStop(
+        _ stoppingSession: AVCaptureSession?,
+        stopAttempt: StopAttempt,
+        stall: AudioHALStallToken,
+        semaphore: DispatchSemaphore
+    ) {
+        if let stoppingSession {
+            sessionStopper(stoppingSession)
+            // Снять делегата, чтобы после барьера точно ничего не пришло.
+            for output in stoppingSession.outputs {
+                (output as? AVCaptureAudioDataOutput)?.setSampleBufferDelegate(nil, queue: nil)
+            }
+        }
+        let outcome = resolveStopOutcomeFromBackground(stopAttempt)
+        if outcome.shouldSignal { semaphore.signal() }
+        if outcome.shouldEndStall { halGateway.endStall(stall) }
+        // stoppingSession освобождается здесь, в конце функции: её dealloc
+        // тоже может тронуть HAL (план, шаг 3).
+    }
+
+    /// Решение под `stateLock`. Пишет .completedInTime, если main ещё не
+    /// объявил таймаут; иначе закрывает "наш" абандон по identity `===`.
+    private func resolveStopOutcomeFromBackground(_ stopAttempt: StopAttempt) -> (shouldSignal: Bool, shouldEndStall: Bool) {
+        var shouldSignal = false
+        var shouldEndStall = false
+        stateLock.lock()
+        switch stopAttempt.outcome {
+        case .pending:
+            stopAttempt.outcome = .completedInTime
+            shouldSignal = true
+        case .timedOut:
+            shouldEndStall = true
+            if state == .abandoning, abandoningStopAttempt === stopAttempt {
+                state = .idle
+                abandoningStopAttempt = nil
+            }
+        case .completedInTime:
+            break // недостижимо: только этот блок пишет .completedInTime
+        }
+        stateLock.unlock()
+        return (shouldSignal, shouldEndStall)
+    }
+
+    /// Шаг 4: `state` мутируется здесь же, не отложенно — иначе фон мог бы
+    /// прочитать его раньше и никогда не вернуть сервис в `.idle`.
+    private func resolveStopOutcomeFromMain(_ stopAttempt: StopAttempt) -> State {
+        var finalState: State = .idle
+        stateLock.lock()
+        switch stopAttempt.outcome {
+        case .completedInTime:
+            break // в срок
+        case .pending:
+            stopAttempt.outcome = .timedOut
+            abandoningStopAttempt = stopAttempt
+            finalState = .abandoning
+        case .timedOut:
+            break // недостижимо: только main пишет .timedOut
+        }
+        state = finalState
+        stateLock.unlock()
+        return finalState
+    }
+
     @discardableResult
     private func stopRecordingCore(savingAudioTo saveURL: URL?) throws -> CaptureResult {
         // Обычная остановка и остановка по прерыванию идут через эту же функцию.
         // Инвариант: к моменту .recording фоновая стартовая операция уже вышла
-        // из sessionQueue (финализация — только после runner'а, требование 10),
-        // поэтому `sessionQueue.sync` ниже безопасен.
+        // из sessionQueue (финализация — только после runner'а, требование 10
+        // audio-start-hang.md).
         guard transition(to: .stopping, from: [.recording]) else {
             throw AudioCaptureError.notRecording
         }
-        defer { setState(.idle) }
 
         stopMeterTimer()
         removeInterruptionObservers()
@@ -723,16 +862,43 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         liveCandidateID = nil
         stateLock.unlock()
 
-        sessionQueue.sync {
-            session?.stopRunning()
-            // Снять делегата, чтобы после барьера точно ничего не пришло.
-            for output in session?.outputs ?? [] {
-                (output as? AVCaptureAudioDataOutput)?.setSampleBufferDelegate(nil, queue: nil)
-            }
-            session = nil
+        // Шаг 2: поле перестаёт владеть сессией СРАЗУ — фон работает с копией.
+        let stoppingSession = session
+        session = nil
+
+        let stopAttempt = StopAttempt()
+        let stall = AudioHALStallToken(label: "stopRunning")
+        let semaphore = DispatchSemaphore(value: 0)
+
+        // Шаг 3: блокирующий sessionStopper — на sessionQueue, НЕ на main.
+        sessionQueue.async { [weak self] in
+            self?.performBackgroundStop(stoppingSession, stopAttempt: stopAttempt, stall: stall, semaphore: semaphore)
         }
 
-        // Барьер ДО закрытия generation: буферы в очереди обязаны попасть в файл.
+        // Шаг 4: main ждёт не дольше stopTimeout; wait(timeout:) не решает
+        // напрямую — на границе дедлайна решает флаг под stateLock.
+        _ = semaphore.wait(timeout: .now() + stopTimeout)
+        let finalState = resolveStopOutcomeFromMain(stopAttempt)
+
+        if finalState == .abandoning {
+            // Застой шлюза — ВНЕ stateLock. Гонка на границе: если фоновый
+            // блок шага 3 успел увидеть .timedOut и уже закрыл `stall` своим
+            // endStall, этот beginStall — no-op по контракту шлюза
+            // (AudioHALStallToken.isClosed), health обратно не откатится.
+            halGateway.beginStall(stall)
+            logToErrorFile(
+                "Recording stop: stopRunning() did not return within \(String(format: "%.3f", stopTimeout))s"
+                    + " — session abandoned in background, captured audio is kept"
+            )
+        }
+
+        // Требование 6 плана: таймаут остановки НЕ становится ошибкой записи —
+        // звук в файле цел. `state` уже выставлен веткой выше — throw-пути
+        // ниже унаследуют то же значение, повторно выставлять не нужно.
+
+        // Барьер ДО закрытия generation (план, шаг 5): даже если stopRunning()
+        // ещё висит, делегат после барьера падает на guard'е идентичности
+        // activeOutput/openGeneration (captureOutput) и ничего не пишет.
         var failure: Error?
         var received = 0
         var written = 0
@@ -813,56 +979,8 @@ public final class AudioCaptureService: NSObject, ObservableObject {
 
     // MARK: - Прерывания
 
-    private func installInterruptionObservers(
-        session: AVCaptureSession,
-        candidateID: SessionCandidateID,
-        into bundle: StartedBundle
-    ) {
-        let center = NotificationCenter.default
-
-        // queue: nil — намеренно. С `queue: .main` блок планируется на main, а
-        // подписка ставится из-под sessionQueue, где main может быть занят
-        // другой работой: обработчику main и не нужен — reportInterruption
-        // сам уходит на него, когда вызван не оттуда.
-        func observe(_ name: Notification.Name, object: Any?, _ handler: @escaping (Notification) -> Void) {
-            bundle.observers.append(center.addObserver(forName: name, object: object, queue: nil) { note in
-                handler(note)
-            })
-        }
-
-        // object: session — иначе уведомление ЛЮБОЙ сессии, включая чужую,
-        // достигало бы этого обработчика (требование 9). requiredCandidateID
-        // в reportInterruption — вторая проверка, по КОНКРЕТНОМУ кандидату,
-        // не по всей попытке (P1-3): сессия могла устареть и сама по себе.
-        observe(AVCaptureSession.runtimeErrorNotification, object: session) { [weak self] note in
-            let error = note.userInfo?[AVCaptureSessionErrorKey] as? NSError
-            self?.reportInterruption(.runtimeError(error?.localizedDescription ?? "unknown"), requiredCandidateID: candidateID)
-        }
-        observe(AVCaptureSession.wasInterruptedNotification, object: session) { [weak self] _ in
-            self?.reportInterruption(.sessionInterrupted, requiredCandidateID: candidateID)
-        }
-        // Сессия может просто перестать работать без runtime error/interruption;
-        // наша собственная остановка сюда не попадает (наблюдатели снимаются
-        // до stopRunning()).
-        observe(AVCaptureSession.didStopRunningNotification, object: session) { [weak self] _ in
-            self?.reportInterruption(.sessionInterrupted, requiredCandidateID: candidateID)
-        }
-        // object: nil — шлёт устройство, не сессия; фильтруется вручную по
-        // UID ИМЕННО этого кандидата (bundle.deviceUID), не по глобальному
-        // activeDeviceUID — тот мог уже принадлежать следующей записи.
-        observe(AVCaptureDevice.wasDisconnectedNotification, object: nil) { [weak self] note in
-            guard let disconnected = note.object as? AVCaptureDevice,
-                  disconnected.uniqueID == bundle.deviceUID || bundle.deviceUID == nil else { return }
-            self?.reportInterruption(.deviceDisconnected, requiredCandidateID: candidateID)
-        }
-    }
-
-    private func removeInterruptionObservers() {
-        for observer in observers {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        observers.removeAll()
-    }
+    // installInterruptionObservers/removeInterruptionObservers — в
+    // AudioCaptureService+FileIO.swift (file_length, см. комментарий выше).
 
     /// Доставляется РОВНО одно событие на запись — решение «транскрибировать
     /// частичное или показать ошибку» принимается позже, по барьеру.
@@ -965,129 +1083,10 @@ public final class AudioCaptureService: NSObject, ObservableObject {
         return pow(10, decibels / 20)
     }
 
-    // MARK: - Файл
-
-    private func makeRecordingURL() -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("VoiceType-\(UUID().uuidString)")
-            .appendingPathExtension("caf")
-    }
-
-    private func loadSamples(from url: URL) throws -> [Float] {
-        do {
-            let audioFile = try AVAudioFile(forReading: url)
-            let sourceFormat = audioFile.processingFormat
-
-            guard Self.isUsableInputFormat(sourceFormat) else {
-                throw AudioCaptureError.invalidInputFormat(
-                    sampleRate: sourceFormat.sampleRate,
-                    channelCount: sourceFormat.channelCount
-                )
-            }
-            guard audioFile.length > 0 else { return [] }
-
-            guard let sourceBuffer = AVAudioPCMBuffer(
-                pcmFormat: sourceFormat,
-                frameCapacity: AVAudioFrameCount(audioFile.length)
-            ) else {
-                throw AudioCaptureError.formatCreationFailed
-            }
-
-            try audioFile.read(into: sourceBuffer)
-
-            if !Self.requiresConversion(
-                from: sourceFormat,
-                targetSampleRate: targetSampleRate,
-                targetChannels: targetChannels
-            ) {
-                return Self.normalizedSamples(from: sourceBuffer) ?? []
-            }
-
-            let convertedBuffer = try convertBuffer(sourceBuffer)
-            return Self.normalizedSamples(from: convertedBuffer) ?? []
-        } catch let error as AudioCaptureError {
-            throw error
-        } catch {
-            throw AudioCaptureError.recordingReadFailed(error)
-        }
-    }
-
-    private func convertBuffer(_ sourceBuffer: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
-        guard let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: targetSampleRate,
-            channels: targetChannels,
-            interleaved: false
-        ) else {
-            throw AudioCaptureError.formatCreationFailed
-        }
-
-        guard let converter = AVAudioConverter(from: sourceBuffer.format, to: targetFormat) else {
-            throw AudioCaptureError.recordingConversionFailed
-        }
-
-        let estimatedFrameCount = max(
-            AVAudioFrameCount(
-                Double(sourceBuffer.frameLength) * (targetSampleRate / max(sourceBuffer.format.sampleRate, 1))
-            ) + 1024,
-            1024
-        )
-
-        guard let outputBuffer = AVAudioPCMBuffer(
-            pcmFormat: targetFormat,
-            frameCapacity: estimatedFrameCount
-        ) else {
-            throw AudioCaptureError.formatCreationFailed
-        }
-
-        var didProvideInput = false
-        var convertedSamples: [Float] = []
-
-        while true {
-            var conversionError: NSError?
-            let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
-                guard !didProvideInput else {
-                    outStatus.pointee = .endOfStream
-                    return nil
-                }
-
-                didProvideInput = true
-                outStatus.pointee = .haveData
-                return sourceBuffer
-            }
-
-            if status == .error {
-                throw AudioCaptureError.recordingConversionFailed
-            }
-
-            if outputBuffer.frameLength > 0 {
-                convertedSamples.append(contentsOf: Self.normalizedSamples(from: outputBuffer) ?? [])
-                outputBuffer.frameLength = 0
-            }
-
-            if status != .haveData {
-                break
-            }
-        }
-
-        guard let finalBuffer = AVAudioPCMBuffer(
-            pcmFormat: targetFormat,
-            frameCapacity: AVAudioFrameCount(max(convertedSamples.count, 1))
-        ) else {
-            throw AudioCaptureError.formatCreationFailed
-        }
-
-        finalBuffer.frameLength = AVAudioFrameCount(convertedSamples.count)
-        guard let channelData = finalBuffer.floatChannelData else {
-            throw AudioCaptureError.recordingConversionFailed
-        }
-
-        for (index, sample) in convertedSamples.enumerated() {
-            channelData[0][index] = sample
-        }
-
-        return finalBuffer
-    }
+    // MARK: - Файл, наблюдатели прерываний
+    //
+    // makeRecordingURL/loadSamples/convertBuffer и install/removeInterruptionObservers
+    // — в AudioCaptureService+FileIO.swift (файл упирался в file_length).
 }
 
 // MARK: - Делегат

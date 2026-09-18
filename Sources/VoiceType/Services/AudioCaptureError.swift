@@ -39,6 +39,10 @@ public enum AudioCaptureError: LocalizedError, Equatable {
     /// поднималась) — не ошибка, UI ничего не показывает. Кейс существует
     /// только затем, чтобы у отмены был однозначный терминальный исход.
     case startCancelled
+    /// coreaudiod не отвечает: вызов CoreAudio не уложился в срок шлюза, либо
+    /// шлюз уже в `.unresponsive`. Не про конкретное устройство — про всю
+    /// аудиосистему macOS.
+    case audioSystemUnresponsive
 
     public static func == (lhs: AudioCaptureError, rhs: AudioCaptureError) -> Bool {
         lhs.caseIdentifier == rhs.caseIdentifier
@@ -63,6 +67,7 @@ public enum AudioCaptureError: LocalizedError, Equatable {
         case .sessionStartTimedOut: return "sessionStartTimedOut"
         case .captureDeviceBusy: return "captureDeviceBusy"
         case .startCancelled: return "startCancelled"
+        case .audioSystemUnresponsive: return "audioSystemUnresponsive"
         }
     }
 
@@ -108,6 +113,9 @@ public enum AudioCaptureError: LocalizedError, Equatable {
             return "VoiceType is still releasing the previous microphone session. Wait a moment and try again."
         case .startCancelled:
             return "Recording start was cancelled before the microphone session finished opening."
+        case .audioSystemUnresponsive:
+            return "The macOS audio service (coreaudiod) isn't responding, so VoiceType can't reach any microphone. "
+                + "Restart it in Terminal with \u{201c}sudo killall -9 coreaudiod\u{201d}, or restart your Mac."
         }
     }
 }

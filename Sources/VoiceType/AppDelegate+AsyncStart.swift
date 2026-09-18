@@ -65,10 +65,26 @@ extension AppDelegate {
                 hotkeyService.syncIsRecording(false)
                 appState = .idle
 
+            case .audioSystemUnresponsive:
+                // Про всю аудиосистему, а не про устройство — capsule здесь
+                // ввела бы в заблуждение (план, задача 3, п.1). showErrorToast
+                // сам пишет в errors.log — дублировать ErrorLogger не нужно.
+                showErrorToast(
+                    title: "macOS audio isn't responding",
+                    body: "The system audio service is stuck. Restart it in Terminal: sudo killall -9 coreaudiod — or restart your Mac."
+                )
+                hotkeyService.syncIsRecording(false)
+                appState = .idle
+
             case .captureDeviceBusy:
-                ErrorLogger.shared.log(error, category: "app")
-                voiceTypeWindow?.show(state: .errorInline(message: "Mic not responding · Check input"))
-                voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss()
+                // Toast вместо прежнего лживого inline "Mic not responding" —
+                // устройство ни при чём, предыдущая сессия ещё не освободилась
+                // (план, задача 3, п.1). showErrorToast сам пишет в errors.log.
+                showErrorToast(
+                    title: "Microphone session is stuck",
+                    body: "macOS hasn't released the previous recording session yet. Try again in a moment"
+                        + " — if it keeps happening, quit and reopen VoiceType."
+                )
                 hotkeyService.syncIsRecording(false)
                 appState = .idle
 
