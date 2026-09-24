@@ -7,16 +7,26 @@
 // native rows + dividers, no glassmorphism.
 //
 // Flow:
-//   1. Show whisper output read-only.
+//   1. Show whisper output read-only (raw + final, side by side, when the
+//      pipeline changed the text — see rawText).
 //   2. Pre-fill editable correction field with whisper output.
-//   3. Save button enabled only when correction differs from whisper output.
-//   4. On Save: update HistoryStore entry with userCorrection + isSavedEval=true.
+//   3. Save button: unedited correction saves a control ("correct") example;
+//      an edited correction saves an eval pair with an optional issue class.
+//   4. On Save: update HistoryStore entry with userCorrection + isSavedEval=true
+//      (+ evalIssue when an eval pair, nil for a control example).
 //   5. Show brief "Saved eval pair #N" notification, then close.
 //
 // 2026-04-27 — Eval Collector (initial implementation)
+// 2026-09-24 — "Save as correct" control examples, issue class, raw/final split.
+// Errors were the only thing accumulating in history — no control examples to
+// compare against in the replay-based quality harness. See DESIGN.md Decisions Log.
 
 import SwiftUI
 import AVFoundation
+
+// EvalIssueOption / EvalSaveButtonState / EvalEditorView.saveButtonState(entry:correction:)
+// live in EvalEditorView+SaveState.swift (kept out of this file to stay under
+// its file_length lint budget).
 
 // MARK: - EvalEditorView
 
@@ -26,7 +36,7 @@ struct EvalEditorView: View {
 
     /// Designated initialiser. Window manages the entry lifecycle.
     let entryID: UUID
-    let onSave: (_ correction: String) -> Void
+    let onSave: (_ correction: String, _ issue: String?) -> Void
     let onCancel: () -> Void
 
     /// Resolved entry — loaded from HistoryStore on appear.
@@ -34,6 +44,9 @@ struct EvalEditorView: View {
     @State private var entry: HistoryStore.Entry?
 
     @State private var correctionText: String = ""
+    /// Eval issue class picker selection (R3/K2). Only surfaced — and only
+    /// consulted on Save — when `saveState == .saveEvalPair`.
+    @State private var selectedIssue: EvalIssueOption = .notSet
     @State private var isPlayingAudio = false
     @State private var audioPlayer: AVAudioPlayer?
     @State private var playbackProgress: Double = 0
@@ -52,7 +65,11 @@ struct EvalEditorView: View {
     @State private var rotationPollTimer: Timer?
 
     /// Primary init: takes an explicit entry ID — works for any history entry.
-    init(entryID: UUID, onSave: @escaping (_ correction: String) -> Void, onCancel: @escaping () -> Void) {
+    init(
+        entryID: UUID,
+        onSave: @escaping (_ correction: String, _ issue: String?) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
         self.entryID = entryID
         self.onSave = onSave
         self.onCancel = onCancel
@@ -64,7 +81,7 @@ struct EvalEditorView: View {
     /// Returns nil when the history store is empty (caller should show a toast instead).
     @MainActor
     static func lastEntry(
-        onSave: @escaping (_ correction: String) -> Void,
+        onSave: @escaping (_ correction: String, _ issue: String?) -> Void,
         onCancel: @escaping () -> Void
     ) -> EvalEditorView? {
         guard let latest = HistoryStore.shared.latestEntry() else { return nil }
@@ -73,9 +90,28 @@ struct EvalEditorView: View {
 
     // MARK: - Computed
 
+    private var saveState: EvalSaveButtonState {
+        Self.saveButtonState(entry: entry, correction: correctionText)
+    }
+
     private var isCorrectionChanged: Bool {
         guard let entry else { return false }
         return correctionText != entry.text
+    }
+
+    /// Footer button label (R3): "Save as correct" for an unedited control
+    /// example, "Save eval pair" otherwise — including while disabled, so the
+    /// label doesn't flicker as the user types.
+    private var saveButtonTitle: String {
+        saveState == .saveAsCorrect ? "Save as correct" : "Save eval pair"
+    }
+
+    private var saveButtonAccessibilityLabel: String {
+        switch saveState {
+        case .saveAsCorrect: return "Save transcription as a correct control example"
+        case .saveEvalPair: return "Save correction as eval pair"
+        case .disabled: return "Nothing to save"
+        }
     }
 
     private var audioFileURL: URL? {
@@ -109,6 +145,7 @@ struct EvalEditorView: View {
             let resolved = HistoryStore.shared.entry(byID: entryID)
             entry = resolved
             correctionText = resolved?.text ?? ""
+            selectedIssue = .notSet
             // VT-REV-003: poll every 2 s to detect entry rotation while the editor is open.
             rotationPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
                 Task { @MainActor in
@@ -301,33 +338,16 @@ struct EvalEditorView: View {
 
     private var contentArea: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Whisper output (read-only)
-            VStack(alignment: .leading, spacing: Spacing.xs) {
-                Text("WHISPER OUTPUT")
-                    .font(Typography.metaLabel)
-                    .tracking(Typography.metaLabelTracking)
-                    .textCase(.uppercase)
-                    .foregroundStyle(Palette.textMuted)
-
-                ScrollView {
-                    Text(entry?.text ?? "")
-                        .font(Typography.body)
-                        .foregroundStyle(Palette.textSecondary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minHeight: 60, maxHeight: 100)
-                .padding(Spacing.sm)
-                .background(Palette.surfaceInset)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.control))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Radius.control)
-                        .stroke(Palette.strokeSubtle, lineWidth: 1)
-                )
+            // Whisper output (read-only). Raw + final as two blocks when the
+            // pipeline changed the text — no diff highlighting (deliberate,
+            // see DESIGN.md Decisions Log).
+            if let raw = entry?.rawText {
+                readOnlyTextBlock(label: "RAW (BEFORE POST-PROCESSING)", text: raw, minHeight: 40, maxHeight: 80)
+                Palette.divider.frame(height: 1)
+                readOnlyTextBlock(label: "FINAL TEXT", text: entry?.text ?? "")
+            } else {
+                readOnlyTextBlock(label: "WHISPER OUTPUT", text: entry?.text ?? "")
             }
-            .padding(.horizontal, Spacing.xl)
-            .padding(.top, Spacing.lg)
-            .padding(.bottom, Spacing.md)
 
             Palette.divider.frame(height: 1)
 
@@ -361,11 +381,65 @@ struct EvalEditorView: View {
                                 lineWidth: isCorrectionChanged ? 1.5 : 1
                             )
                     )
+
+                if saveState == .saveEvalPair {
+                    issuePicker
+                }
             }
             .padding(.horizontal, Spacing.xl)
             .padding(.top, Spacing.md)
             .padding(.bottom, Spacing.lg)
         }
+    }
+
+    /// Read-only text block shared by WHISPER OUTPUT / RAW / FINAL TEXT (R3).
+    private func readOnlyTextBlock(label: String, text: String, minHeight: CGFloat = 60, maxHeight: CGFloat = 100) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Text(label)
+                .font(Typography.metaLabel)
+                .tracking(Typography.metaLabelTracking)
+                .textCase(.uppercase)
+                .foregroundStyle(Palette.textMuted)
+
+            ScrollView {
+                Text(text)
+                    .font(Typography.body)
+                    .foregroundStyle(Palette.textSecondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: minHeight, maxHeight: maxHeight)
+            .padding(Spacing.sm)
+            .background(Palette.surfaceInset)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.control))
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.control)
+                    .stroke(Palette.strokeSubtle, lineWidth: 1)
+            )
+        }
+        .padding(.horizontal, Spacing.xl)
+        .padding(.top, Spacing.lg)
+        .padding(.bottom, Spacing.md)
+    }
+
+    /// Issue-class segmented picker (R3/K2), shown only when `saveState ==
+    /// .saveEvalPair`. Uses the shared `SegmentedControl`, not a native
+    /// `Picker(.segmented)` — see DESIGN.md Decisions Log 2026-09-24.
+    private var issuePicker: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Text("ISSUE")
+                .font(Typography.metaLabel)
+                .tracking(Typography.metaLabelTracking)
+                .textCase(.uppercase)
+                .foregroundStyle(Palette.textMuted)
+
+            SegmentedControl(
+                options: EvalIssueOption.allCases.map { (label: $0.label, value: $0) },
+                selection: $selectedIssue
+            )
+            .accessibilityLabel("Eval issue class")
+        }
+        .padding(.top, Spacing.sm)
     }
 
     // MARK: - Footer
@@ -378,17 +452,18 @@ struct EvalEditorView: View {
 
             Spacer()
 
-            Button("Save eval pair") {
-                onSave(correctionText)
+            Button(saveButtonTitle) {
+                // Saving without edits is a control example — evalIssue is
+                // forced to nil regardless of any stale picker selection
+                // (the picker is hidden in this state, but the state can't
+                // leak into the saved record either way).
+                let issue = saveState == .saveAsCorrect ? nil : selectedIssue.rawIssue
+                onSave(correctionText, issue)
             }
             .buttonStyle(ChecklistPrimaryButtonStyle())
-            .disabled(!isCorrectionChanged)
+            .disabled(saveState == .disabled)
             .keyboardShortcut(.return, modifiers: .command)
-            .accessibilityLabel(
-                isCorrectionChanged
-                    ? "Save correction as eval pair"
-                    : "No changes to save"
-            )
+            .accessibilityLabel(saveButtonAccessibilityLabel)
         }
         .padding(.horizontal, Spacing.xl)
         .padding(.vertical, Spacing.md)

@@ -114,7 +114,7 @@ final class HistoryFailedEntryTests: XCTestCase {
 
     func testWithEvalSavedPreservesStatusAndLatency() {
         let entry = failedEntry().withLatency(["asr": 500])
-        let updated = entry.withEvalSaved(correction: "corrected")
+        let updated = entry.withEvalSaved(correction: "corrected", issue: nil)
         XCTAssertEqual(updated.status, .failed)
         XCTAssertEqual(updated.failureReason, "timeout")
         XCTAssertEqual(updated.latencyMs, ["asr": 500])

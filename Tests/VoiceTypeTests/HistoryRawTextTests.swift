@@ -79,7 +79,7 @@ final class HistoryRawTextTests: XCTestCase {
             rawText: "trimmed  ",
             pipelineStamp: "n0:pabc123abc123"
         )
-        let updated = entry.withEvalSaved(correction: "corrected text")
+        let updated = entry.withEvalSaved(correction: "corrected text", issue: nil)
 
         XCTAssertEqual(updated.rawText, "trimmed  ")
         XCTAssertEqual(updated.pipelineStamp, "n0:pabc123abc123")

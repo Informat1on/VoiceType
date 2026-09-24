@@ -305,7 +305,7 @@ final class HistoryStoreTests: XCTestCase {
             text: "eval", targetAppName: "T", targetAppBundleID: "t", language: "en", audioPath: evalAudioPath
         )
         store.append(evalEntry)
-        store.update(evalEntry.withEvalSaved(correction: "eval fixed"))
+        store.update(evalEntry.withEvalSaved(correction: "eval fixed", issue: nil))
 
         // Append 101 regular entries (each with its own audio file), pushing the
         // regular-entry count one past the cap.
@@ -374,7 +374,7 @@ final class HistoryStoreTests: XCTestCase {
             try Data().write(to: audioDir.appendingPathComponent(path))
             let entry = HistoryStore.Entry(
                 text: "saved\(i)", targetAppName: "T", targetAppBundleID: "t", language: "en", audioPath: path
-            ).withEvalSaved(correction: "fixed \(i)")
+            ).withEvalSaved(correction: "fixed \(i)", issue: nil)
             savedIDs.append(entry.id)
             allEntries.append(entry)
         }

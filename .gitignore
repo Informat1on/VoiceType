@@ -50,3 +50,6 @@ history*.jsonl
 # test suite — not real dictation, safe to commit.
 !Tests/Fixtures/history-report/history.jsonl
 *history-report*.md
+
+# Python bytecode (scripts/replay-compare.py imports scripts/wer.py)
+__pycache__/

@@ -69,6 +69,11 @@ final class HistoryStore {
         /// Saved eval pairs are never subject to audio rotation.
         let isSavedEval: Bool?
 
+        /// Eval Collector: what went wrong, set by the user when saving a corrected
+        /// pair — "asr" | "postprocess" | "insertion" | "capture". nil = not set, or a
+        /// control example saved as correct. Legacy entries decode as nil.
+        let evalIssue: String?
+
         /// Transcription model used (e.g. "small.en-q5_1"). nil for legacy entries.
         let model: String?
 
@@ -135,6 +140,7 @@ final class HistoryStore {
             self.audioPath = audioPath
             self.userCorrection = nil
             self.isSavedEval = nil
+            self.evalIssue = nil
             self.model = model
             self.audioDurationSeconds = audioDurationSeconds
             self.insertSuccess = insertSuccess
@@ -148,83 +154,12 @@ final class HistoryStore {
         }
 
         // MARK: Mutation helpers (produces a new value; Entry is a struct)
-
-        /// Returns a copy with userCorrection and isSavedEval set.
-        func withEvalSaved(correction: String) -> Entry {
-            Entry(
-                id: id,
-                timestamp: timestamp,
-                text: text,
-                charCount: charCount,
-                targetAppName: targetAppName,
-                targetAppBundleID: targetAppBundleID,
-                language: language,
-                audioPath: audioPath,
-                userCorrection: correction,
-                isSavedEval: true,
-                model: model,
-                audioDurationSeconds: audioDurationSeconds,
-                insertSuccess: insertSuccess,
-                rawText: rawText,
-                pipelineStamp: pipelineStamp,
-                status: status,
-                failureReason: failureReason,
-                latencyMs: latencyMs
-            )
-        }
-
-        /// Returns a copy with audioPath cleared (rotation).
-        func withAudioPathCleared() -> Entry {
-            Entry(
-                id: id,
-                timestamp: timestamp,
-                text: text,
-                charCount: charCount,
-                targetAppName: targetAppName,
-                targetAppBundleID: targetAppBundleID,
-                language: language,
-                audioPath: nil,
-                userCorrection: userCorrection,
-                isSavedEval: isSavedEval,
-                model: model,
-                audioDurationSeconds: audioDurationSeconds,
-                insertSuccess: insertSuccess,
-                rawText: rawText,
-                pipelineStamp: pipelineStamp,
-                status: status,
-                failureReason: failureReason,
-                latencyMs: latencyMs
-            )
-        }
-
-        /// Returns a copy with insertSuccess set to the actual injection outcome
-        /// (task 1/P1: the entry is written BEFORE injection is attempted).
-        func withInsertOutcome(_ succeeded: Bool) -> Entry {
-            Entry(
-                id: id,
-                timestamp: timestamp,
-                text: text,
-                charCount: charCount,
-                targetAppName: targetAppName,
-                targetAppBundleID: targetAppBundleID,
-                language: language,
-                audioPath: audioPath,
-                userCorrection: userCorrection,
-                isSavedEval: isSavedEval,
-                model: model,
-                audioDurationSeconds: audioDurationSeconds,
-                insertSuccess: succeeded,
-                rawText: rawText,
-                pipelineStamp: pipelineStamp,
-                status: status,
-                failureReason: failureReason,
-                latencyMs: latencyMs
-            )
-        }
-
-        // withTranscriptionResult/withLatency/withFailureReason (see
-        // HistoryStore+FailedTranscriptions.swift) also call this full
-        // memberwise init, hence `internal` rather than `private`.
+        //
+        // withEvalSaved/withAudioPathCleared/withInsertOutcome: see
+        // HistoryStore+EntryMutations.swift. withTranscriptionResult/
+        // withLatency/withFailureReason: see
+        // HistoryStore+FailedTranscriptions.swift. All call this full
+        // memberwise init below, hence `internal` rather than `private`.
         init(
             id: UUID,
             timestamp: Date,
@@ -236,6 +171,7 @@ final class HistoryStore {
             audioPath: String?,
             userCorrection: String?,
             isSavedEval: Bool?,
+            evalIssue: String?,
             model: String?,
             audioDurationSeconds: Double?,
             insertSuccess: Bool?,
@@ -255,6 +191,7 @@ final class HistoryStore {
             self.audioPath = audioPath
             self.userCorrection = userCorrection
             self.isSavedEval = isSavedEval
+            self.evalIssue = evalIssue
             self.model = model
             self.audioDurationSeconds = audioDurationSeconds
             self.insertSuccess = insertSuccess
