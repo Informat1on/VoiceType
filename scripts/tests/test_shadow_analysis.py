@@ -965,5 +965,165 @@ class TestPrivacy(ShadowAnalysisMainTestCase):
         self.assertEqual(mode, 0o600)
 
 
+class TestKeysBelowRms(ShadowAnalysisMainTestCase):
+    """docs/plans/silence-gate.md T3(e): --keys-below-rms writes a sorted
+    JSON array of analyzed record keys with recordRms < threshold."""
+
+    @staticmethod
+    def _fake_read_pcm16_mono_by_index(wav_path):
+        from array import array
+        # analyze_record names dst_path f"{idx:06d}.wav" from the record's
+        # position in the JSONL, in order — idx 0 (quiet.wav) gets near-zero
+        # samples, idx 1 (loud.wav) gets full-scale samples.
+        if wav_path.name == "000000.wav":
+            return array("h", [1] * 16000), 16000
+        return array("h", [30000] * 16000), 16000
+
+    @staticmethod
+    def _fake_energy_stats_by_samples(samples, framerate):
+        if samples[0] == 1:
+            return 0.00001, 0.00002, 0.00003  # quiet
+        return 0.5, 0.6, 0.7  # loud
+
+    def test_selects_only_records_below_threshold(self):
+        self.touch_audio("quiet.wav")
+        self.touch_audio("loud.wav")
+        records = [
+            {
+                "key": "quiet-key", "audioFile": "quiet.wav", "audioSeconds": 1.0,
+                "raw": "", "final": "", "removedTemplates": None, "segments": [],
+            },
+            {
+                "key": "loud-key", "audioFile": "loud.wav", "audioSeconds": 1.0,
+                "raw": "text", "final": "text", "removedTemplates": None,
+                "segments": [{"text": "text", "startMs": 0, "endMs": 500}],
+            },
+        ]
+        path = self.write_jsonl("run.jsonl", self.base_run_header(), records,
+                                 {"records": 2, "errors": 0})
+        out_path = self.tmp_path / "gated.json"
+
+        with mock.patch.object(sa, "read_pcm16_mono", self._fake_read_pcm16_mono_by_index), \
+                mock.patch.object(sa, "energy_stats", self._fake_energy_stats_by_samples):
+            code, out, err = self.run_main([
+                str(path), "--audio-dir", str(self.audio_dir), "--vad-model", str(self.fake_model),
+                "--keys-below-rms", "0.001", str(out_path),
+            ])
+
+        self.assertEqual(code, 0)
+        self.assertIn("keys-below-rms written:", err)
+        self.assertIn(str(out_path), err)
+        self.assertTrue(out_path.is_file())
+        written = json.loads(out_path.read_text(encoding="utf-8"))
+        self.assertEqual(written, ["quiet-key"])
+
+    def test_invalid_threshold_exits_two(self):
+        path = self.write_jsonl("run.jsonl", self.base_run_header(), [],
+                                 {"records": 0, "errors": 0})
+        code, out, err = self.run_main([
+            str(path), "--audio-dir", str(self.audio_dir), "--vad-model", str(self.fake_model),
+            "--keys-below-rms", "not-a-number", str(self.tmp_path / "gated.json"),
+        ])
+        self.assertEqual(code, 2)
+
+    def test_nonfinite_threshold_exits_two(self):
+        path = self.write_jsonl("run.jsonl", self.base_run_header(), [],
+                                 {"records": 0, "errors": 0})
+        code, out, err = self.run_main([
+            str(path), "--audio-dir", str(self.audio_dir), "--vad-model", str(self.fake_model),
+            "--keys-below-rms", "nan", str(self.tmp_path / "gated.json"),
+        ])
+        self.assertEqual(code, 2)
+
+    def test_omitted_produces_no_file(self):
+        self.touch_audio("ok.wav")
+        records = [{
+            "key": "ok", "audioFile": "ok.wav", "audioSeconds": 1.0,
+            "raw": "x", "final": "x", "removedTemplates": None,
+            "segments": [{"text": "x", "startMs": 0, "endMs": 100}],
+        }]
+        path = self.write_jsonl("run.jsonl", self.base_run_header(), records,
+                                 {"records": 1, "errors": 0})
+        out_path = self.tmp_path / "should-not-exist.json"
+        code, out, err = self.run_main([str(path), "--audio-dir", str(self.audio_dir),
+                                         "--vad-model", str(self.fake_model)])
+        self.assertEqual(code, 0)
+        self.assertFalse(out_path.exists())
+
+    def test_analysis_error_does_not_write_keys_file(self):
+        # Code review round 1 item 3: fail-closed — a run with any
+        # analysis/replay error must not produce (or touch) the keys file,
+        # since it would silently be an incomplete answer.
+        self.touch_audio("ok.wav")
+        records = [
+            {
+                "key": "ok", "audioFile": "ok.wav", "audioSeconds": 1.0,
+                "raw": "text", "final": "text", "removedTemplates": None,
+                "segments": [{"text": "text", "startMs": 0, "endMs": 500}],
+            },
+            {
+                "key": "missing", "audioFile": "missing.wav", "audioSeconds": 1.0,
+                "raw": "text2", "final": "text2", "removedTemplates": None,
+                "segments": [{"text": "text2", "startMs": 0, "endMs": 500}],
+            },
+        ]
+        path = self.write_jsonl("run.jsonl", self.base_run_header(), records,
+                                 {"records": 2, "errors": 0})
+        out_path = self.tmp_path / "gated.json"
+        code, out, err = self.run_main([
+            str(path), "--audio-dir", str(self.audio_dir), "--vad-model", str(self.fake_model),
+            "--keys-below-rms", "1.0", str(out_path),
+        ])
+        self.assertEqual(code, 1)
+        self.assertFalse(out_path.exists())
+        self.assertIn("keys-below-rms NOT written", err)
+        self.assertNotIn("keys-below-rms written:", err)
+
+    def test_analysis_error_leaves_preexisting_keys_file_untouched(self):
+        self.touch_audio("ok.wav")
+        records = [
+            {
+                "key": "ok", "audioFile": "ok.wav", "audioSeconds": 1.0,
+                "raw": "text", "final": "text", "removedTemplates": None,
+                "segments": [{"text": "text", "startMs": 0, "endMs": 500}],
+            },
+            {
+                "key": "missing", "audioFile": "missing.wav", "audioSeconds": 1.0,
+                "raw": "text2", "final": "text2", "removedTemplates": None,
+                "segments": [{"text": "text2", "startMs": 0, "endMs": 500}],
+            },
+        ]
+        path = self.write_jsonl("run.jsonl", self.base_run_header(), records,
+                                 {"records": 2, "errors": 0})
+        out_path = self.tmp_path / "gated.json"
+        out_path.write_text('["previous-key"]', encoding="utf-8")
+        code, out, err = self.run_main([
+            str(path), "--audio-dir", str(self.audio_dir), "--vad-model", str(self.fake_model),
+            "--keys-below-rms", "1.0", str(out_path),
+        ])
+        self.assertEqual(code, 1)
+        self.assertEqual(out_path.read_text(encoding="utf-8"), '["previous-key"]')
+
+    def test_success_writes_keys_file_atomically_no_tmp_leftover(self):
+        self.touch_audio("quiet.wav")
+        records = [{
+            "key": "quiet-key", "audioFile": "quiet.wav", "audioSeconds": 1.0,
+            "raw": "", "final": "", "removedTemplates": None, "segments": [],
+        }]
+        path = self.write_jsonl("run.jsonl", self.base_run_header(), records,
+                                 {"records": 1, "errors": 0})
+        out_path = self.tmp_path / "gated.json"
+        with mock.patch.object(sa, "read_pcm16_mono", self._fake_read_pcm16_mono_by_index), \
+                mock.patch.object(sa, "energy_stats", self._fake_energy_stats_by_samples):
+            code, out, err = self.run_main([
+                str(path), "--audio-dir", str(self.audio_dir), "--vad-model", str(self.fake_model),
+                "--keys-below-rms", "1.0", str(out_path),
+            ])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out_path.read_text(encoding="utf-8")), ["quiet-key"])
+        leftover_tmp_files = list(self.tmp_path.glob("gated.json.*.tmp"))
+        self.assertEqual(leftover_tmp_files, [])
+
+
 if __name__ == "__main__":
     unittest.main()

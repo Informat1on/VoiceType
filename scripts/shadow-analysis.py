@@ -35,6 +35,7 @@ import argparse
 import contextlib
 import hashlib
 import importlib.util
+import json
 import math
 import os
 import re
@@ -988,6 +989,34 @@ def render_private_block(rec, vad_thresholds):
     return "\n".join(lines)
 
 
+def write_keys_below_rms(path, analyzed_records, threshold):
+    """docs/plans/silence-gate.md T3(e); code review round 1 item 3:
+    sorted JSON array of `key` for every analyzed record with
+    recordRms < threshold. Keys are UUIDs/filenames, not transcript text, so
+    unlike write_private_file/--out this is NOT subject to the
+    outside-the-repository restriction.
+
+    Written atomically (temp file in the same directory, then os.replace) so
+    a crash or a caller checking the file mid-write never observes a partial
+    array — and so a pre-existing file at `path` is only ever replaced by a
+    COMPLETE, successful write, never left half-written. Callers must only
+    invoke this after confirming the analysis run had zero errors (see
+    _main_impl): --expect-gated-keys is meant to check a run's gated set
+    against a known-complete answer, and a keys file written despite
+    analysis errors would silently be an incomplete answer."""
+    keys = sorted(r["key"] for r in analyzed_records if r["recordRms"] < threshold)
+    path = Path(path)
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(keys, handle)
+        os.replace(tmp_name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+
+
 def write_private_file(path, records, vad_thresholds):
     flagged = [r for r in records if needs_markup(r, vad_thresholds)]
     blocks = [render_private_block(r, vad_thresholds) for r in flagged]
@@ -1039,6 +1068,10 @@ def build_arg_parser():
     parser.add_argument("--out", type=Path, default=None,
                          help="destination for the private markup listing (required with "
                               "--include-private-text; refused inside the repository)")
+    parser.add_argument("--keys-below-rms", nargs=2, default=None, metavar=("THRESHOLD", "FILE"),
+                         help="write a sorted JSON array of analyzed record keys with "
+                              "recordRms < THRESHOLD to FILE (docs/plans/silence-gate.md T3(e)); "
+                              "keys only, no transcript text, so FILE may be inside the repository")
     return parser
 
 
@@ -1107,6 +1140,20 @@ def _main_impl():
     if not math.isfinite(silence_overlap):
         error_exit(2, f"--silence-overlap must be a finite number: {ascii(str(args.silence_overlap))}")
         return
+
+    keys_below_rms_threshold = None
+    keys_below_rms_path = None
+    if args.keys_below_rms is not None:
+        threshold_raw, out_raw = args.keys_below_rms
+        try:
+            keys_below_rms_threshold = float(threshold_raw)
+        except ValueError:
+            error_exit(2, f"invalid --keys-below-rms threshold: {ascii(threshold_raw)}")
+            return
+        if not math.isfinite(keys_below_rms_threshold):
+            error_exit(2, f"--keys-below-rms threshold must be finite: {ascii(threshold_raw)}")
+            return
+        keys_below_rms_path = Path(out_raw).expanduser()
 
     try:
         run, records, summary = load_replay(str(args.replay))
@@ -1229,7 +1276,24 @@ def _main_impl():
         write_private_file(out_path, analyzed_records, vad_thresholds)
         safe_print(f"private markup written: {ascii(str(out_path))}", file=sys.stderr)
 
-    sys.exit(1 if (replay_errors > 0 or analysis_errors > 0) else 0)
+    had_errors = replay_errors > 0 or analysis_errors > 0
+    if keys_below_rms_path is not None:
+        if had_errors:
+            # Fail-closed (code review round 1 item 3): a keys file written
+            # despite replay/analysis errors would silently be an incomplete
+            # answer to "which records are below this RMS" — refuse instead
+            # of writing (or overwriting) it, and leave any pre-existing
+            # file at this path untouched.
+            safe_print(
+                f"keys-below-rms NOT written (replayErrors={replay_errors} "
+                f"analysisErrors={analysis_errors}): {ascii(str(keys_below_rms_path))}",
+                file=sys.stderr,
+            )
+        else:
+            write_keys_below_rms(keys_below_rms_path, analyzed_records, keys_below_rms_threshold)
+            safe_print(f"keys-below-rms written: {ascii(str(keys_below_rms_path))}", file=sys.stderr)
+
+    sys.exit(1 if had_errors else 0)
 
 
 if __name__ == "__main__":

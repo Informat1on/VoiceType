@@ -90,10 +90,17 @@ def percentile(sorted_values, pct):
 
 
 def timing_stats(records):
+    """Timing over records where whisper actually ran — excludes any record
+    with silenceGated == True (docs/plans/silence-gate.md T3(d) code review
+    P2): a gated record's transcribeMs/rtf are contractually 0, and mixing
+    them in would pull p50/p95/meanRTF toward zero. Records predating the
+    silenceGated field (legacy JSONL) are unaffected — they were never
+    gated, so nothing to exclude."""
+    timed = [r for r in records if r.get("silenceGated") is not True]
     ms_values = sorted(
-        r["transcribeMs"] for r in records if isinstance(r.get("transcribeMs"), (int, float))
+        r["transcribeMs"] for r in timed if isinstance(r.get("transcribeMs"), (int, float))
     )
-    rtf_values = [r["rtf"] for r in records if isinstance(r.get("rtf"), (int, float))]
+    rtf_values = [r["rtf"] for r in timed if isinstance(r.get("rtf"), (int, float))]
     return {
         "p50": percentile(ms_values, 50),
         "p95": percentile(ms_values, 95),
@@ -122,6 +129,111 @@ def wer_stats(records):
         issue: (sum(values) / len(values), len(values)) for issue, values in by_issue.items()
     }
     return {"mean": mean, "n": len(scored), "byIssue": by_issue_stats}
+
+
+def gated_keys(records):
+    """Sorted keys of every record with silenceGated == true — used both for
+    the report line and for --expect-gated-keys (docs/plans/silence-gate.md
+    T3(d)). Keys are UUIDs/filenames, not transcript text."""
+    return sorted(r.get("key") for r in records if r.get("silenceGated") is True)
+
+
+def check_silence_gate_consistency(records, summary, path):
+    """docs/plans/silence-gate.md T3(d): fail-closed consistency checks for
+    ONE replay run (`records`/`summary` from a single JSONL file), gated on
+    `summary` carrying the new-schema marker field `silenceGated` — its
+    absence means a legacy JSONL predating this gate, and every check here
+    is skipped (not failed).
+
+    Checks:
+      1. Every record with silenceGated == true has final == "", raw == "",
+         transcribeMs == 0 — the replay contract for a gated record
+         (docs/plans/silence-gate.md T3), checked here as a format/shape
+         check, not as evidence that ASR was skipped.
+      2. summary.silenceGated equals the number of records with
+         silenceGated == true.
+      3. Every record with error == None carries a boolean silenceGated;
+         every record with an error carries silenceGated absent or null.
+
+    Returns a list of violation strings (empty == consistent). Each message
+    names only the record key and which check failed — never field values,
+    since a violated check 1 means final/raw are non-empty and may be the
+    owner's transcribed speech."""
+    if "silenceGated" not in summary:
+        return []
+
+    violations = []
+    gated_count = 0
+    for record in records:
+        key = record.get("key")
+        gated = record.get("silenceGated")
+        has_error = record.get("error") is not None
+
+        if has_error:
+            if gated is not None:
+                violations.append(
+                    f"{path}: record {key!r}: has an error but silenceGated is present "
+                    "(check: silenceGated-absent-on-error)"
+                )
+            continue
+
+        if not isinstance(gated, bool):
+            violations.append(
+                f"{path}: record {key!r}: no error but silenceGated is missing/not-bool "
+                "(check: silenceGated-present-on-success)"
+            )
+            continue
+
+        if gated:
+            gated_count += 1
+            if record.get("final") != "":
+                violations.append(
+                    f"{path}: record {key!r}: silenceGated but final is not empty (check: gated-final-empty)"
+                )
+            if record.get("raw") != "":
+                violations.append(
+                    f"{path}: record {key!r}: silenceGated but raw is not empty (check: gated-raw-empty)"
+                )
+            if record.get("transcribeMs") != 0:
+                violations.append(
+                    f"{path}: record {key!r}: silenceGated but transcribeMs != 0 (check: gated-transcribems-zero)"
+                )
+
+    if summary.get("silenceGated") != gated_count:
+        violations.append(
+            f"{path}: summary.silenceGated={summary.get('silenceGated')!r} but {gated_count} "
+            "record(s) have silenceGated=true (check: summary-gated-count)"
+        )
+
+    return violations
+
+
+def load_expected_gated_keys(path):
+    """--expect-gated-keys file: a JSON array of key strings."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"{path}: cannot read --expect-gated-keys file: {exc}")
+    if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+        raise SystemExit(f"{path}: --expect-gated-keys file must be a JSON array of strings")
+    return set(data)
+
+
+def check_expected_gated_keys(records, expected_keys, records_path, expected_path):
+    """docs/plans/silence-gate.md T3(d): the set of keys with silenceGated
+    == true must equal `expected_keys` exactly. Returns a list with zero or
+    one violation string naming the missing/extra keys (keys only, not
+    transcript text)."""
+    actual = set(gated_keys(records))
+    missing = sorted(expected_keys - actual)
+    extra = sorted(actual - expected_keys)
+    if not missing and not extra:
+        return []
+    return [
+        f"{records_path}: --expect-gated-keys ({expected_path}) mismatch: "
+        f"missing={missing} extra={extra} (check: expect-gated-keys)"
+    ]
 
 
 def compare_against_history(records, path):
@@ -193,7 +305,7 @@ def inside_repository(path):
     return bool(top) and Path(top) in path.parents
 
 
-def format_report(args, run_a, summary_a, timing_a, wer_a, extra):
+def format_report(args, run_a, summary_a, timing_a, wer_a, extra, records_a):
     lines = []
     add = lines.append
 
@@ -205,7 +317,10 @@ def format_report(args, run_a, summary_a, timing_a, wer_a, extra):
     add("")
     add(f"mode={run_a.get('mode')} model={run_a.get('model')} coreMLRequested={run_a.get('coreMLRequested')} "
         f"pipelineStamp={run_a.get('pipelineStamp')}")
-    add(f"records={summary_a.get('records')} errors={summary_a.get('errors')}")
+    silence_gated_str = summary_a.get("silenceGated", "n/a") if "silenceGated" in summary_a else "n/a"
+    add(f"records={summary_a.get('records')} errors={summary_a.get('errors')} silenceGated={silence_gated_str}")
+    gated = gated_keys(records_a)
+    add(f"silenceGated keys ({len(gated)}): " + (", ".join(f"`{k}`" for k in gated) if gated else "(none)"))
     add("")
 
     add("## Timing (A) — transcribeMs is the production `transcribe` call only "
@@ -283,6 +398,9 @@ def main():
                         help="show the actual transcript text of changed/mismatched records — this is the "
                              "owner's speech, never print it in CI or agent tool output")
     parser.add_argument("--out", type=Path, help="write the report to a file (0600); refused inside the repo")
+    parser.add_argument("--expect-gated-keys", type=Path,
+                        help="JSON array of keys that must equal exactly the set of A's "
+                             "silenceGated==true record keys (docs/plans/silence-gate.md T3(d))")
     args = parser.parse_args()
 
     run_a, records_a, summary_a = load_replay(args.a)
@@ -293,8 +411,9 @@ def main():
     timing_a = timing_stats(records_a)
     wer_a = wer_stats(records_a)
 
+    records_b, summary_b = None, None
     if args.b:
-        _run_b, records_b, _summary_b = load_replay(args.b)
+        _run_b, records_b, summary_b = load_replay(args.b)
         extra = compare_two_runs(records_a, records_b, args.a, args.b)
     elif run_a.get("mode") == "history":
         extra = compare_against_history(records_a, args.a)
@@ -304,7 +423,21 @@ def main():
         # whole report; there is no "A vs ..." section to add.
         extra = None
 
-    report = format_report(args, run_a, summary_a, timing_a, wer_a, extra)
+    # docs/plans/silence-gate.md T3(d): fail-closed consistency, checked per
+    # run (A, and B too when given) — independent of A-vs-B/A-vs-history mode.
+    violations = check_silence_gate_consistency(records_a, summary_a, args.a)
+    if args.b:
+        violations += check_silence_gate_consistency(records_b, summary_b, args.b)
+    if args.expect_gated_keys:
+        expected = load_expected_gated_keys(args.expect_gated_keys)
+        violations += check_expected_gated_keys(records_a, expected, args.a, args.expect_gated_keys)
+    if violations:
+        print("replay-compare: silenceGated consistency violations:", file=sys.stderr)
+        for violation in violations:
+            print(f"  - {violation}", file=sys.stderr)
+        sys.exit(1)
+
+    report = format_report(args, run_a, summary_a, timing_a, wer_a, extra, records_a)
 
     if args.out:
         write_output(report, args.out)

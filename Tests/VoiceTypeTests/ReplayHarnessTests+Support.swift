@@ -46,8 +46,16 @@ extension ReplayHarnessTests {
     struct RecordOutcome {
         let json: ReplayRecordJSON
         let isError: Bool
+        /// Whisper's own transcribe duration — nil for both an error record
+        /// and a silence-gated record (whisper wasn't called either way), so
+        /// callers can gate timing aggregation with a single `if let`.
         let transcribeMs: Int?
+        /// Seconds of audio successfully loaded — set for a gated record too
+        /// (the audio WAS read; only ASR was skipped), nil only on error.
         let audioSeconds: Double?
+        /// docs/plans/silence-gate.md T3: whether `DigitalSilenceGate` gated
+        /// this record. false for both a normal success and an error record.
+        let silenceGated: Bool
     }
 
     struct Comparability {
@@ -57,6 +65,8 @@ extension ReplayHarnessTests {
 
     struct ReplaySummaryCounts {
         let errorCount: Int
+        /// docs/plans/silence-gate.md T3: number of records `DigitalSilenceGate` gated.
+        let silenceGatedCount: Int
         let transcribeMsSamples: [Int]
         let totalAudioSeconds: Double
         let totalTranscribeMs: Int
@@ -111,6 +121,166 @@ extension ReplayHarnessTests {
             asrMs: entry.latencyMs?["asr"],
             status: entry.status?.rawValue
         )
+    }
+
+    // computeComparability/transcribeOne: moved here from ReplayHarnessTests.swift
+    // purely for that file's 600-line file_length warning threshold
+    // (docs/plans/silence-gate.md T3 pushed it over budget) — same reasoning as
+    // every other split in this file. Not `private`, unlike their original
+    // declaration, because runAllRecords (which stays in ReplayHarnessTests.swift)
+    // calls transcribeOne, and Swift's `private` doesn't cross files even between
+    // extensions of the same type.
+
+    static func computeComparability(record: ReplayInput.Record, context: RunContext) -> Comparability {
+        guard context.mode == "history", let entry = record.historyEntry else {
+            return Comparability(matches: nil, comparable: nil)
+        }
+        guard let entryStamp = entry.pipelineStamp, let entryParts = parseStamp(entryStamp) else {
+            return Comparability(matches: false, comparable: false)
+        }
+        let promptMatches = entryParts.promptHashHex == context.runStampParts.promptHashHex
+        let comparable = promptMatches
+            && entryParts.hasNoFill == context.runStampParts.hasNoFill
+            && entryParts.hasNoLex == context.runStampParts.hasNoLex
+            && entry.model == context.runModelRawValue
+        return Comparability(matches: promptMatches, comparable: comparable)
+    }
+
+    static func transcribeOne(record: ReplayInput.Record, context: RunContext) async -> RecordOutcome {
+        let comparability = computeComparability(record: record, context: context)
+        let historySnap = historySnapshot(for: record.historyEntry)
+        let audioFile = record.audioURL?.lastPathComponent
+
+        guard let audioURL = record.audioURL, FileManager.default.fileExists(atPath: audioURL.path) else {
+            return RecordOutcome(
+                json: ReplayRecordJSON(
+                    key: record.key,
+                    audioFile: audioFile,
+                    audioSeconds: nil,
+                    raw: nil,
+                    final: nil,
+                    removedTemplates: nil,
+                    segments: nil,
+                    transcribeMs: nil,
+                    rtf: nil,
+                    promptMatchesHistory: comparability.matches,
+                    comparableToHistory: comparability.comparable,
+                    reference: record.reference,
+                    evalIssue: record.evalIssue,
+                    history: historySnap,
+                    error: "audio-missing",
+                    silenceGated: nil
+                ),
+                isError: true,
+                transcribeMs: nil,
+                audioSeconds: nil,
+                silenceGated: false
+            )
+        }
+
+        let samples: [Float]
+        do {
+            samples = try AudioCaptureService().loadSamples(from: audioURL)
+        } catch {
+            return RecordOutcome(
+                json: ReplayRecordJSON(
+                    key: record.key,
+                    audioFile: audioFile,
+                    audioSeconds: nil,
+                    raw: nil,
+                    final: nil,
+                    removedTemplates: nil,
+                    segments: nil,
+                    transcribeMs: nil,
+                    rtf: nil,
+                    promptMatchesHistory: comparability.matches,
+                    comparableToHistory: comparability.comparable,
+                    reference: record.reference,
+                    evalIssue: record.evalIssue,
+                    history: historySnap,
+                    error: "read-failed: \(error.localizedDescription)",
+                    silenceGated: nil
+                ),
+                isError: true,
+                transcribeMs: nil,
+                audioSeconds: nil,
+                silenceGated: false
+            )
+        }
+
+        let audioSeconds = Double(samples.count) / 16000.0
+
+        // Replay must reproduce the production pipeline (contract s23) —
+        // docs/plans/silence-gate.md T3: the same gate AppDelegate.runASR
+        // applies, before whisper is ever invoked.
+        let silenceDecision = DigitalSilenceGate.evaluate(samples)
+        if silenceDecision.isDigitalSilence {
+            let json = ReplayRecordJSON(
+                key: record.key,
+                audioFile: audioFile,
+                audioSeconds: audioSeconds,
+                raw: "",
+                final: "",
+                removedTemplates: [],
+                segments: [],
+                transcribeMs: 0,
+                rtf: 0,
+                promptMatchesHistory: comparability.matches,
+                comparableToHistory: comparability.comparable,
+                reference: record.reference,
+                evalIssue: record.evalIssue,
+                history: historySnap,
+                error: nil,
+                silenceGated: true
+            )
+            return RecordOutcome(json: json, isError: false, transcribeMs: nil, audioSeconds: audioSeconds, silenceGated: true)
+        }
+
+        let start = ContinuousClock.now
+        do {
+            let outcome = try await context.service.transcribe(audio: samples, language: context.language)
+            let ms = durationMs(from: start, to: ContinuousClock.now)
+            let rtf = ms > 0 ? audioSeconds / (Double(ms) / 1000.0) : 0
+            let json = ReplayRecordJSON(
+                key: record.key,
+                audioFile: audioFile,
+                audioSeconds: audioSeconds,
+                raw: outcome.rawText,
+                final: outcome.text,
+                removedTemplates: outcome.removedTemplates,
+                segments: outcome.segments.map { ReplaySegmentJSON(text: $0.text, startMs: $0.startMs, endMs: $0.endMs) },
+                transcribeMs: ms,
+                rtf: rtf,
+                promptMatchesHistory: comparability.matches,
+                comparableToHistory: comparability.comparable,
+                reference: record.reference,
+                evalIssue: record.evalIssue,
+                history: historySnap,
+                error: nil,
+                silenceGated: false
+            )
+            return RecordOutcome(json: json, isError: false, transcribeMs: ms, audioSeconds: audioSeconds, silenceGated: false)
+        } catch {
+            let json = ReplayRecordJSON(
+                key: record.key,
+                audioFile: audioFile,
+                audioSeconds: audioSeconds,
+                raw: nil,
+                final: nil,
+                removedTemplates: nil,
+                segments: nil,
+                transcribeMs: nil,
+                rtf: nil,
+                promptMatchesHistory: comparability.matches,
+                comparableToHistory: comparability.comparable,
+                reference: record.reference,
+                evalIssue: record.evalIssue,
+                history: historySnap,
+                error: "transcription: \(error.localizedDescription)",
+                silenceGated: nil
+            )
+            return RecordOutcome(json: json, isError: true, transcribeMs: nil, audioSeconds: nil, silenceGated: false)
+        }
     }
 
     /// Reads the SwiftWhisper pin's revision out of Package.resolved, at the

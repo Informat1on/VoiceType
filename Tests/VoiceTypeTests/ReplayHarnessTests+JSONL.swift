@@ -57,6 +57,11 @@ struct ReplayRecordJSON: Encodable {
     let evalIssue: String?
     let history: ReplayHistorySnapshot?
     let error: String?
+    /// docs/plans/silence-gate.md T3: true/false when whisper either was or
+    /// wasn't called because `DigitalSilenceGate` gated the recording; nil
+    /// on every record that carries an `error` (no ASR decision was made at
+    /// all). Encoded as an absent key when nil, per this file's header note.
+    let silenceGated: Bool?
 }
 
 struct ReplaySummaryJSON: Encodable {
@@ -67,4 +72,6 @@ struct ReplaySummaryJSON: Encodable {
     let transcribeP95Ms: Int
     let totalAudioSeconds: Double
     let totalTranscribeMs: Int
+    /// Count of records with `silenceGated == true` — docs/plans/silence-gate.md T3.
+    let silenceGated: Int
 }

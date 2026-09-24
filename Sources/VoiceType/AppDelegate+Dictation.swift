@@ -101,6 +101,32 @@ extension AppDelegate {
     /// "повторная проверка экземпляра"). Shared by `transcribeAndInject` and
     /// `retryTranscription(for:)` so both get the same one-shot recovery.
     private func runASR(samples: [Float]) async throws -> TranscriptionOutcome {
+        // docs/plans/silence-gate.md: a recording that is entirely digital
+        // silence must not reach whisper — on this corpus it hallucinates
+        // instead of returning "". The gate lives here, not inside
+        // TranscriptionService.transcribe, because performWarmUp pushes its
+        // own 8000 zeros through runNative directly, bypassing both
+        // transcribe and runASR, to warm the model — so the gate placement
+        // here leaves that warm-up path untouched. Placing the gate in
+        // runASR (rather than TranscriptionService.transcribe) covers both
+        // production callers at once and leaves TranscriptionService itself
+        // unchanged. Both callers of runASR (transcribeAndInject,
+        // retryTranscription) already treat an empty outcome.text as
+        // .emptyResult, so returning one here needs no changes on their side.
+        let decision = DigitalSilenceGate.evaluate(samples)
+        if decision.isDigitalSilence {
+            AppLog.transcription.notice(
+                "Digital silence — ASR skipped rms=\(decision.rms, privacy: .public) sampleCount=\(samples.count, privacy: .public) durationSeconds=\(Double(samples.count) / 16000.0, privacy: .public)"
+            )
+            return TranscriptionOutcome(
+                rawText: "",
+                text: "",
+                pipelineStamp: "",
+                removedTemplates: [],
+                segments: []
+            )
+        }
+
         do {
             try await ensureModelLoaded()
             return try await transcriptionService.transcribe(
