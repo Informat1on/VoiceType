@@ -68,7 +68,14 @@ final class FocusCaptureService {
 
     /// Capture frontmost app + focused-window screen. Call at hotkey press,
     /// BEFORE the capsule is shown (so VoiceType is not yet frontmost).
-    func capture() {
+    ///
+    /// - Returns: `true` when a non-VoiceType app was actually captured by
+    ///   THIS call, `false` when the self-capture guard fired (VoiceType itself
+    ///   was frontmost, or there was no frontmost app at all). D2
+    ///   (reliable-dictation): AppDelegate uses this to decide whether the
+    ///   insertion-target check applies to the session being started.
+    @discardableResult
+    func capture() -> Bool {
         // Always reset suppression at the start of every capture attempt — even
         // if the self-capture early-return fires below. The user pressing the
         // hotkey signals "new recording session", which invalidates any prior
@@ -91,7 +98,7 @@ final class FocusCaptureService {
             // is frontmost. Preserve the previous good capture instead.
             // Suppression has already been cleared above so the next restore()
             // will proceed normally.
-            return
+            return false
         }
         capturedApp = frontmost
         capturedAt = Date()
@@ -99,6 +106,7 @@ final class FocusCaptureService {
         let (screen, window) = focusedWindowInfo(for: frontmost)
         capturedWindowScreen = screen ?? screenContainingMouse()
         capturedWindow = window
+        return true
     }
 
     /// Mark the next `restore()` call as a no-op. Use this when the app has

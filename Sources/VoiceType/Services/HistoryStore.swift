@@ -4,34 +4,22 @@
 // File: ~/Library/Application Support/VoiceType/history.jsonl
 // Rolling cap: 100 REGULAR entries (oldest evicted on insert). Saved eval
 // pairs (isSavedEval == true) are exempt — see evictExcessRegularEntries().
-// In-memory cache + atomic flush-on-write. Re-writes whole file each time
-// (acceptable at regular-entry scale; grows unbounded with saved eval pairs
-// — accepted cost, see evictExcessRegularEntries() doc comment, task 2 fix).
+// In-memory cache + atomic flush-on-write (re-writes whole file each time;
+// grows unbounded with saved eval pairs — accepted cost, task 2 fix).
 //
-// Eval Collector extension (2026-04-27):
-//   - Entry gains optional audioPath, userCorrection, isSavedEval, model,
-//     audioDurationSeconds fields. All optional for backward compat.
-//   - Audio files live in ~/Library/Application Support/VoiceType/audio/<uuid>.caf
-//   - Rolling buffer: up to 100 unsaved audio files; saved eval pairs kept forever.
+// Eval Collector (2026-04-27): audioPath/userCorrection/isSavedEval/model/
+// audioDurationSeconds fields, all optional for backward compat. Audio files
+// live in .../VoiceType/audio/<uuid>.caf; up to 100 unsaved kept, saved eval
+// pairs forever.
 //
-// insertSuccess field (task 1 fix, architectural audit): records whether
-// injectText actually succeeded. Populated by HistoryRecorder after the
-// entry is already persisted, so a failed insert never loses the transcript.
+// insertSuccess (task 1 fix): the entry is written BEFORE injectText runs and
+// then updated with the actual outcome, so a failed insert never loses the
+// transcript.
 //
-// rawText + pipelineStamp (added ahead of the text normalizer, 2026-07-27):
-// once a normalizer sits between whisper and `text`, the corpus otherwise
-// becomes unable to tell ASR errors apart from post-processing errors.
-// rawText preserves whisper's untouched output; pipelineStamp records which
-// pipeline (post-processing version + prompt hash) produced `text`.
-// Both are nil on legacy entries (absent keys decode to nil). On new entries
-// pipelineStamp is always written, while rawText is written only when it
-// differs from `text`, so nil legitimately reads as "raw == text".
-// Consumers: `rawText ?? text`.
-//
-// Since 2026-07-27 (pipeline n1) the two differ whenever the hallucination
-// filter or the lexicon normalizer changed anything, not just when
-// conditionallyTrim did — so rawText is now populated on most entries rather
-// than almost none.
+// rawText + pipelineStamp (2026-07-27): rawText is whisper's untouched output
+// (nil when it equals `text`, to avoid doubling file size), pipelineStamp
+// names the post-processing pipeline that produced `text`. Both nil on legacy
+// entries. Consumers read `rawText ?? text`.
 //
 // DESIGN.md § Transcription History. Step 9.
 
@@ -39,10 +27,17 @@ import Foundation
 
 // swiftlint:disable force_unwrapping
 
+// D4/D6 (reliable-dictation): TranscriptionStatus, maxFailedEntries,
+// evictExcessFailedEntries, promoteRetried and Entry's failed-transcription
+// with…-helpers live in HistoryStore+FailedTranscriptions.swift, kept
+// separate to stay under this file's line budget. A few members below are
+// `internal` rather than `private` solely so that file can reach them.
+
 /// Append-only JSONL store for transcription history.
 /// File: ~/Library/Application Support/VoiceType/history.jsonl
 /// Rolling cap: 100 regular entries (oldest evicted on insert); saved eval
-/// pairs are exempt and kept forever.
+/// pairs are exempt and kept forever. Failed entries (status == .failed) have
+/// their own separate cap — see maxFailedEntries.
 @MainActor
 final class HistoryStore {
 
@@ -81,26 +76,37 @@ final class HistoryStore {
         let audioDurationSeconds: Double?
 
         /// Whether text injection actually succeeded. nil for legacy entries
-        /// written before this field existed, and briefly nil for the
-        /// "pending" record HistoryRecorder writes before injectText runs —
-        /// see HistoryRecorder.recordOutcome(id:insertSuccess:).
-        /// DESIGN.md § Transcription History specifies this field; audit
-        /// finding (task 1, P1): the entry used to be written only on
-        /// success, so a failed insert silently dropped the transcript.
+        /// and briefly nil for the "pending" record written before injectText
+        /// runs — see HistoryRecorder.recordOutcome(id:insertSuccess:).
         let insertSuccess: Bool?
 
         // MARK: Pre-normalizer fields (added ahead of the text normalizer landing)
 
-        /// Untouched whisper output, before conditionallyTrim. nil means "identical
-        /// to `text`" — true both for legacy entries (written before this field
-        /// existed) and for new entries where trimming didn't change anything.
-        /// Consumers read `entry.rawText ?? entry.text`. Kept nil when equal so
-        /// history.jsonl doesn't double in size for the common no-op-trim case.
+        /// Untouched whisper output, before conditionallyTrim. nil means
+        /// "identical to `text`" (legacy entries, or a no-op trim) — kept nil
+        /// when equal so history.jsonl doesn't double in size. Consumers read
+        /// `entry.rawText ?? entry.text`.
         let rawText: String?
 
         /// Snapshot of the pipeline that produced `text` — see
         /// TranscriptionService.pipelineStamp(forPrompt:). nil for legacy entries.
         let pipelineStamp: String?
+
+        // MARK: D4/D6 fields (reliable-dictation plan, task C)
+
+        /// nil for a regular entry (incl. every legacy entry). `.failed` = ASR
+        /// error/timeout: text empty, audio kept, retryable from History.
+        let status: TranscriptionStatus?
+
+        /// "timeout" | "error" | "empty". nil for regular entries.
+        let failureReason: String?
+
+        /// Per-stage dictation latency in ms (D6), e.g. "asr"/"insert"/"total".
+        /// nil when not measured.
+        let latencyMs: [String: Int]?
+
+        // isFailed + failed-transcription with…-helpers: see
+        // HistoryStore+FailedTranscriptions.swift.
 
         // MARK: Primary init (used by AppDelegate transcription pipeline)
 
@@ -114,7 +120,10 @@ final class HistoryStore {
             audioDurationSeconds: Double? = nil,
             insertSuccess: Bool? = nil,
             rawText: String? = nil,
-            pipelineStamp: String? = nil
+            pipelineStamp: String? = nil,
+            status: TranscriptionStatus? = nil,
+            failureReason: String? = nil,
+            latencyMs: [String: Int]? = nil
         ) {
             self.id = UUID()
             self.timestamp = Date()
@@ -133,6 +142,9 @@ final class HistoryStore {
             // see the field's doc comment for why (avoids doubling file size).
             self.rawText = (rawText == text) ? nil : rawText
             self.pipelineStamp = pipelineStamp
+            self.status = status
+            self.failureReason = failureReason
+            self.latencyMs = latencyMs
         }
 
         // MARK: Mutation helpers (produces a new value; Entry is a struct)
@@ -154,7 +166,10 @@ final class HistoryStore {
                 audioDurationSeconds: audioDurationSeconds,
                 insertSuccess: insertSuccess,
                 rawText: rawText,
-                pipelineStamp: pipelineStamp
+                pipelineStamp: pipelineStamp,
+                status: status,
+                failureReason: failureReason,
+                latencyMs: latencyMs
             )
         }
 
@@ -175,15 +190,15 @@ final class HistoryStore {
                 audioDurationSeconds: audioDurationSeconds,
                 insertSuccess: insertSuccess,
                 rawText: rawText,
-                pipelineStamp: pipelineStamp
+                pipelineStamp: pipelineStamp,
+                status: status,
+                failureReason: failureReason,
+                latencyMs: latencyMs
             )
         }
 
-        /// Returns a copy with insertSuccess set to the actual injection outcome.
-        /// HistoryRecorder calls this after injectText returns — see task 1 (P1):
-        /// the entry itself is written BEFORE injection is attempted (via the
-        /// primary init above, insertSuccess left nil), so the transcript is
-        /// never lost even if injection fails; this call just records the result.
+        /// Returns a copy with insertSuccess set to the actual injection outcome
+        /// (task 1/P1: the entry is written BEFORE injection is attempted).
         func withInsertOutcome(_ succeeded: Bool) -> Entry {
             Entry(
                 id: id,
@@ -200,12 +215,17 @@ final class HistoryStore {
                 audioDurationSeconds: audioDurationSeconds,
                 insertSuccess: succeeded,
                 rawText: rawText,
-                pipelineStamp: pipelineStamp
+                pipelineStamp: pipelineStamp,
+                status: status,
+                failureReason: failureReason,
+                latencyMs: latencyMs
             )
         }
 
-        // Full memberwise init used by mutation helpers above.
-        private init(
+        // withTranscriptionResult/withLatency/withFailureReason (see
+        // HistoryStore+FailedTranscriptions.swift) also call this full
+        // memberwise init, hence `internal` rather than `private`.
+        init(
             id: UUID,
             timestamp: Date,
             text: String,
@@ -220,7 +240,10 @@ final class HistoryStore {
             audioDurationSeconds: Double?,
             insertSuccess: Bool?,
             rawText: String?,
-            pipelineStamp: String?
+            pipelineStamp: String?,
+            status: TranscriptionStatus?,
+            failureReason: String?,
+            latencyMs: [String: Int]?
         ) {
             self.id = id
             self.timestamp = timestamp
@@ -235,11 +258,12 @@ final class HistoryStore {
             self.model = model
             self.audioDurationSeconds = audioDurationSeconds
             self.insertSuccess = insertSuccess
-            // Already normalized by the primary init at creation time — carry
-            // over as-is, do not re-collapse (these values were possibly set
-            // intentionally by a future caller and must round-trip exactly).
+            // Already normalized by the primary init — carry over as-is.
             self.rawText = rawText
             self.pipelineStamp = pipelineStamp
+            self.status = status
+            self.failureReason = failureReason
+            self.latencyMs = latencyMs
         }
     }
 
@@ -249,25 +273,29 @@ final class HistoryStore {
     /// Directory where audio recordings are stored. Defaults to
     /// ~/Library/Application Support/VoiceType/audio/
     let audioDirectory: URL
-    /// Cap on REGULAR (non-eval) entries only — see evictExcessRegularEntries().
+    /// Cap on REGULAR (non-eval, non-failed) entries only — see
+    /// evictExcessRegularEntries().
     private let maxEntries: Int = 100
     /// Maximum number of unsaved audio files to keep in rolling buffer.
     private let maxUnsavedAudio: Int = 100
+    // maxFailedEntries: see HistoryStore+FailedTranscriptions.swift.
     /// Upper bound on the deferred-deletion queue, so a persistently failing
     /// disk cannot grow it without limit. Generous on purpose: reaching it
     /// means writes have failed thousands of times in a row.
     private let maxPendingAudioDeletions: Int = 1000
     private let fileManager = FileManager.default
-    /// Newest-first ordering in memory.
-    private var cachedEntries: [Entry] = []
+    /// Newest-first ordering in memory. `internal` (not `private`) for
+    /// HistoryStore+FailedTranscriptions.swift.
+    var cachedEntries: [Entry] = []
     private var loaded: Bool = false
     /// Audio files whose owning entries are already gone from the cache but whose
     /// removal is still unsafe, because the JSONL that stops referencing them has
     /// not been written yet. Accumulates across failed flushes: a per-call list
     /// would be lost on the failing call, and the next successful flush would
     /// delete only its own files, orphaning the earlier ones forever.
-    /// Review finding, wave A re-review.
-    private var pendingAudioDeletions: [String] = []
+    /// Review finding, wave A re-review. `internal` for the same reason as
+    /// cachedEntries above.
+    var pendingAudioDeletions: [String] = []
     /// True when the history file existed but could not be read on first load.
     /// Blocks flush() from overwriting a file we couldn't parse.
     private var loadFailed: Bool = false
@@ -289,9 +317,8 @@ final class HistoryStore {
             self.storeURL = voiceTypeDir.appendingPathComponent("history.jsonl")
             self.audioDirectory = audioDirectory
                 ?? voiceTypeDir.appendingPathComponent("audio")
-            // Only create the audio directory eagerly for the production path.
-            // Test paths create it on demand to avoid interfering with
-            // disk-full edge-case tests that deliberately omit the parent dir.
+            // Eager only on the production path — test paths create it on
+            // demand (some disk-full tests deliberately omit the parent dir).
             try? FileManager.default.createDirectory(
                 at: self.audioDirectory, withIntermediateDirectories: true)
         }
@@ -315,24 +342,21 @@ final class HistoryStore {
     func append(_ entry: Entry) {
         loadIfNeeded()
         cachedEntries.insert(entry, at: 0)
-        // Audio deletion is deferred until the new state is safely on disk:
-        // if flush() fails (full disk, permissions), the old JSONL survives and
-        // would otherwise point at files we had already removed. Leaking an
-        // audio file on a crashed write is recoverable; a dangling reference
-        // in a record the user can still see is not. Review finding, wave A.
-        pendingAudioDeletions += evictExcessRegularEntries() + rotateAudioIfNeeded()
+        // Audio deletion is deferred until the new state is safely on disk —
+        // a failed flush would otherwise leave the old JSONL pointing at
+        // files we already removed. Review finding, wave A.
+        pendingAudioDeletions += evictExcessRegularEntries() + rotateAudioIfNeeded() + evictExcessFailedEntries()
         flushAndReapAudio()
     }
 
-    /// Writes the cache and, only on success, deletes every audio file queued so
-    /// far. Failed flushes leave the queue intact so a later successful write
-    /// still reaps them.
+    /// Writes the cache and, only on success, deletes every audio file queued
+    /// so far. Failed flushes leave the queue intact for a later retry.
     ///
-    /// EVERY successful write goes through here, not just append(): update(),
-    /// delete() and clear() also persist the cache, and if one of them were the
-    /// first write to succeed after a disk problem, a queue drained only by
-    /// append() would be stranded until the process exited. Review finding, wave B.
-    private func flushAndReapAudio() {
+    /// EVERY successful write goes through here, not just append() — update(),
+    /// delete() and clear() also persist the cache, and a queue drained only
+    /// by append() could be stranded until the process exited (wave B).
+    /// `internal` (not `private`) for HistoryStore+FailedTranscriptions.swift.
+    func flushAndReapAudio() {
         guard flush() else {
             // A disk that stays broken would otherwise grow this queue by one
             // filename per eviction forever. Bound it: past the cap the oldest
@@ -369,10 +393,12 @@ final class HistoryStore {
         return cachedEntries
     }
 
-    /// The most recent entry, or nil if the store is empty.
+    /// The most recent REGULAR entry (status == nil), or nil if there is none.
+    /// Used by Cmd+Opt+E re-insert — a failed entry has no text to re-insert,
+    /// so it must be skipped in favor of the newest entry that actually has one.
     func latestEntry() -> Entry? {
         loadIfNeeded()
-        return cachedEntries.first
+        return cachedEntries.first { $0.status == nil }
     }
 
     /// Replace an existing entry by ID. No-op if the ID is not found. Flushes to disk.
@@ -382,6 +408,8 @@ final class HistoryStore {
         cachedEntries[idx] = updated
         flushAndReapAudio()
     }
+
+    // promoteRetried(_:) is declared in HistoryStore+FailedTranscriptions.swift.
 
     /// Delete a single entry by ID. Flushes to disk.
     func delete(_ id: UUID) {
@@ -410,33 +438,28 @@ final class HistoryStore {
 
     // MARK: - Rolling cap (entries)
 
-    /// Evicts the oldest REGULAR (non-eval) entries once their count exceeds
-    /// maxEntries and hands their audio filenames to the caller for deletion
-    /// after a successful flush (an evicted entry is gone from the cache
-    /// entirely, so rotateAudioIfNeeded() will never see its audio again —
-    /// leaving the file unclaimed would orphan it on disk).
+    /// Evicts the oldest REGULAR entries once their count exceeds maxEntries,
+    /// returning their audio filenames for deletion after a successful flush
+    /// (an evicted entry is gone from the cache, so rotateAudioIfNeeded()
+    /// would never see its audio again — leaving it unclaimed would orphan it).
     ///
-    /// Saved eval pairs (isSavedEval == true) are exempt from this cap — the
-    /// file header promises "saved eval pairs kept forever". Cost accepted
-    /// (review finding, task 2): history.jsonl, the saved audio files, and the
-    /// full-file rewrite in flush() now grow without an upper bound as saved
-    /// eval pairs accumulate, since nothing currently caps that count. Track
-    /// via HistoryStore.savedEvalCount() if this needs revisiting.
+    /// Saved eval pairs (isSavedEval == true) are exempt — "kept forever" per
+    /// the file header — as an accepted cost (task 2): history.jsonl grows
+    /// without bound as they accumulate. Track via savedEvalCount().
     ///
-    /// Called from both append() and loadIfNeeded() — the same rule must hold
-    /// after a restart, otherwise entries saved before this fix (when the cap
-    /// applied to the total regardless of isSavedEval) would be silently
-    /// re-pruned on the next load.
-    /// Returns the audio filenames belonging to evicted entries. The caller
-    /// deletes them only after flush() succeeds — see append().
-    private func evictExcessRegularEntries() -> [String] {
-        let regularCount = cachedEntries.filter { $0.isSavedEval != true }.count
+    /// Called from both append() and loadIfNeeded() so a restart re-applies
+    /// the same rule. D4: a REGULAR entry is now `isSavedEval != true &&
+    /// !isFailed` — see evictExcessFailedEntries() in
+    /// HistoryStore+FailedTranscriptions.swift for the failed-entry cap.
+    /// `internal` for that file's use.
+    func evictExcessRegularEntries() -> [String] {
+        let regularCount = cachedEntries.filter { $0.isSavedEval != true && !$0.isFailed }.count
         guard regularCount > maxEntries else { return [] }
         let excess = regularCount - maxEntries
 
         // Oldest-first among regular entries (cachedEntries itself is newest-first).
         let evicted = cachedEntries
-            .filter { $0.isSavedEval != true }
+            .filter { $0.isSavedEval != true && !$0.isFailed }
             .reversed()
             .prefix(excess)
 
@@ -446,24 +469,27 @@ final class HistoryStore {
         return orphanedAudio
     }
 
+    // evictExcessFailedEntries() is declared in
+    // HistoryStore+FailedTranscriptions.swift.
+
     // MARK: - Audio rotation
 
-    /// Rotate unsaved audio files: keeps up to maxUnsavedAudio.
-    /// Saved eval pairs (isSavedEval == true) are never rotated.
-    /// Called automatically after every append().
+    /// Rotate unsaved audio files: keeps up to maxUnsavedAudio. Saved eval
+    /// pairs and failed entries (D4 — their audio is what a retry needs, and
+    /// they have their own eviction path) are never rotated. Called
+    /// automatically after every append().
     ///
-    /// Note that with maxUnsavedAudio == maxEntries this is currently
-    /// unreachable for regular entries: evictExcessRegularEntries() caps them
-    /// at maxEntries first, and entries carrying audio are a subset of those.
-    /// It is kept as the guard that keeps holding if the two caps ever diverge
-    /// (a smaller audio budget than entry budget is the plausible change).
+    /// With maxUnsavedAudio == maxEntries this is currently unreachable for
+    /// regular entries (evictExcessRegularEntries() caps them first); kept as
+    /// the guard that holds if the two caps ever diverge.
     ///
-    /// Returns the audio filenames it detached, for deletion after a successful
-    /// flush() — same ordering rule as evictExcessRegularEntries().
-    private func rotateAudioIfNeeded() -> [String] {
-        // Collect unsaved entries that have audio, oldest-first (cachedEntries is newest-first).
+    /// Returns the detached audio filenames, for deletion after a successful
+    /// flush(). `internal` for HistoryStore+FailedTranscriptions.swift's use.
+    func rotateAudioIfNeeded() -> [String] {
+        // Collect unsaved, non-failed entries that have audio, oldest-first
+        // (cachedEntries is newest-first).
         let unsavedWithAudio = cachedEntries
-            .filter { $0.isSavedEval != true && $0.audioPath != nil }
+            .filter { $0.isSavedEval != true && !$0.isFailed && $0.audioPath != nil }
             .reversed() // oldest first
 
         guard unsavedWithAudio.count > maxUnsavedAudio else { return [] }
@@ -504,7 +530,8 @@ final class HistoryStore {
 
     // MARK: - Private helpers
 
-    private func loadIfNeeded() {
+    /// `internal` (not `private`) for HistoryStore+FailedTranscriptions.swift.
+    func loadIfNeeded() {
         guard !loaded else { return }
         loaded = true
         guard fileManager.fileExists(atPath: storeURL.path),
@@ -528,18 +555,12 @@ final class HistoryStore {
                 entries.append(entry)
             }
         }
-        // File is stored oldest-first (chronological append order).
-        // Reverse to get newest-first for in-memory usage.
+        // File is stored oldest-first; reverse for newest-first in-memory use.
         cachedEntries = entries.reversed()
-        // Same rule as append(): cap applies only to regular entries, saved eval
-        // pairs are exempt (task 2 fix). Re-flush if this actually trimmed
-        // anything so the on-disk file matches — otherwise a restart-only
-        // eviction would delete orphaned audio here but leave stale JSONL
-        // lines on disk until the next append().
-        let orphanedAudio = evictExcessRegularEntries()
+        // Same rule as append() (task 2 fix + D4's separate failed-entry cap),
+        // re-applied on load so a restart-only eviction still cleans up.
+        let orphanedAudio = evictExcessRegularEntries() + evictExcessFailedEntries()
         if !orphanedAudio.isEmpty || cachedEntries.count != entries.count {
-            // Audio is deleted only once the trimmed file is safely written —
-            // same ordering rule as append(), for the same reason.
             pendingAudioDeletions += orphanedAudio
             flushAndReapAudio()
         }

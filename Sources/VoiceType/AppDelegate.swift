@@ -61,7 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     var voiceTypeWindow: VoiceTypeWindow? // not private: used from AppDelegate+AsyncStart.swift
     private var errorToastWindow: ErrorToastWindow?
-    private var modelLoadTask: Task<Void, Never>?
+    /// Not private: `ensureModelLoaded` reads it from AppDelegate+Dictation.swift.
+    var modelLoadTask: Task<Void, Never>?
     /// Guards applicationShouldTerminate against re-entry while the teardown runs.
     private var isShuttingDown = false
     private var pendingModelLoadRequest: ModelLoadRequest?
@@ -90,7 +91,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Cleared by `transcribeAndInject`'s else-branch so the capsule is NOT hidden
     /// immediately after `injectText` already presented the inline error.
     /// P2 review finding #1 (flag approach — less intrusive than enum return type).
-    private var pendingErrorInlineShown = false
+    /// Not private: `injectText`/`transcribeAndInject` live in
+    /// AppDelegate+Dictation.swift (file_length budget) and need to reach it.
+    var pendingErrorInlineShown = false
+
+    /// D2 (reliable-dictation § 3): the app that was frontmost when the current
+    /// dictation session's hotkey was pressed — the ONLY app text from this
+    /// session may be inserted into. `nil` means VoiceType itself was frontmost
+    /// at hotkey press (e.g. dictating into Settings), in which case the target
+    /// check does not apply — see AppDelegate+Dictation.swift's
+    /// `insertionTargetDecision`. Not private: set in `handleRecordingStarted`
+    /// here, read from AppDelegate+Dictation.swift.
+    var sessionTargetApp: NSRunningApplication?
+
+    /// D5 (reliable-dictation § 3): identifies the current capsule "session" so
+    /// a delayed `hide()` scheduled by one dictation's `.inserted`/`.emptyResult`
+    /// flash cannot hide a capsule already showing the NEXT dictation's state —
+    /// appState now returns to `.idle` immediately after insertion, so the next
+    /// hotkey press can start a new recording well before the flash timer fires.
+    /// Bumped once per `handleRecordingStarted`. Not private: read/compared from
+    /// AppDelegate+Dictation.swift.
+    var capsuleSessionID = 0
 
     var currentStartAttemptID: StartAttemptID? // in-flight attempt's identity — see AppDelegate+AsyncStart.swift
 
@@ -749,7 +770,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         // Capture previous app + screen BEFORE showing the capsule so that
         // VoiceType has not yet become frontmost. DESIGN.md § Focus Return.
-        FocusCaptureService.shared.capture()
+        // D2: snapshot this session's insertion target too. sessionTargetApp
+        // stays nil when VoiceType itself was frontmost (capturedThisSession ==
+        // false) — the target check then does not apply, matching prior
+        // behavior for e.g. dictating into Settings.
+        let capturedThisSession = FocusCaptureService.shared.capture()
+        sessionTargetApp = capturedThisSession ? FocusCaptureService.shared.capturedApp : nil
+        capsuleSessionID &+= 1
 
         permissionManager.checkAllPermissions()
         let recordingReadiness = Self.recordingReadiness(
@@ -801,6 +828,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// потому что остановка по прерыванию обязана идти тем же путём, что и
     /// обычная, — иначе состояния разойдутся.
     func handleRecordingStopped() {
+        // D6 (reliable-dictation § 3): anchors the `stopToSamples` latency leg —
+        // must be the very first thing this function does, before any of the
+        // early-return branches below, so it reflects the actual moment the
+        // stop was requested regardless of which path is taken afterward.
+        let stopStartedAt = ContinuousClock.now
         print("[AppDelegate] handleRecordingStopped, currentState: \(appState.rawValue)")
         // Push-to-talk: hotkey released mid-`.starting` — cancel, don't stop.
         if cancelStartAttemptIfPending() {
@@ -862,6 +894,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         do {
             let result = try audioCaptureService.stopRecordingRetaining(savingAudioTo: audioDestination)
+            // D6: samples are ready right here — anchors the `asr` latency leg's start.
+            let samplesReady = ContinuousClock.now
             samples = result.samples
             savedAudioPath = result.savedDuration != nil ? audioFileName : nil
             savedAudioDuration = result.savedDuration
@@ -938,7 +972,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 await self.transcribeAndInject(
                     samples: samples,
                     audioPath: audioPathCapture,
-                    audioDuration: audioDurationCapture
+                    audioDuration: audioDurationCapture,
+                    stopStartedAt: stopStartedAt,
+                    samplesReady: samplesReady
                 )
                 print("[AppDelegate] Transcription Task completed")
             }
@@ -966,181 +1002,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         print("[AppDelegate] State forced to idle")
     }
 
-    // MARK: - Transcription Pipeline
-
-    private func transcribeAndInject(
-        samples: [Float],
-        audioPath: String? = nil,
-        audioDuration: Double? = nil
-    ) async {
-        print("[AppDelegate] transcribeAndInject: \(samples.count) samples")
-
-        var transcriptionText: String?
-        var transcriptionOutcome: TranscriptionOutcome?
-
-        do {
-            try await ensureModelLoaded()
-            print("[AppDelegate] Model ready, starting transcription")
-
-            let outcome = try await transcriptionService.transcribe(
-                audio: samples,
-                language: AppSettings.shared.language
-            )
-
-            transcriptionText = outcome.text
-            transcriptionOutcome = outcome
-            print("[AppDelegate] Transcription finished successfully")
-            AppLog.transcription.notice("Transcription completed")
-        } catch {
-            print("[AppDelegate] Transcription error: \(error)")
-            AppLog.transcription.error("Transcription failed")
-            // P2-2: log to file before showing inline error so the most common
-            // runtime failure path produces a diagnostic entry in errors.log.
-            ErrorLogger.shared.log(error, category: "transcription")
-            // Inline capsule error only — no NSAlert. Blocking modal would
-            // steal focus and double-notify the user. Codex review P1.
-            // Schedule 4s auto-dismiss so the capsule does not hang indefinitely.
-            // P2 review finding #2.
-            voiceTypeWindow?.show(state: .errorInline(message: "Transcription failed"))
-            voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss(after: 4)
-            appState = .idle
-            return
-        }
-
-        // Trim is handled upstream by TranscriptionService.conditionallyTrim(_:),
-        // gated on AppSettings.shared.trimWhitespaceAfterInsert. No secondary trim here.
-        let text = transcriptionText ?? ""
-        guard !text.isEmpty else {
-            print("[AppDelegate] Transcription produced empty string — flashing emptyResult")
-            AppLog.transcription.notice("Transcription produced empty text")
-            voiceTypeWindow?.show(state: .emptyResult)
-            Task { @MainActor [weak self] in
-                let flashMs = insertedFlashDurationMs(
-                    reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-                try? await Task.sleep(for: .milliseconds(flashMs))
-                self?.voiceTypeWindow?.hide()
-                self?.appState = .idle
-            }
-            return
-        }
-
-        appState = .injecting
-
-        // Capture target app name BEFORE injection — injection may shift focus.
-        let targetAppName = NSWorkspace.shared.frontmostApplication?.localizedName ?? "app"
-        let targetBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let charCount = text.count
-
-        // Record to history BEFORE injectText runs — task 1 (P1) fix. Previously
-        // the entry was only appended after a successful injection, so a failed
-        // insert (e.g. revoked Accessibility permission) silently dropped the
-        // transcript and its audio file became an orphan on disk. Recording here
-        // means the transcript survives regardless of outcome; recordOutcome
-        // below fills in the actual insertSuccess once it's known.
-        // Best-effort: flush failures are logged to ErrorLogger but never
-        // surface to the user. DESIGN.md § Transcription History. Step 9.
-        let historyEntryID = historyRecorder.recordPending(.init(
-            text: text,
-            targetAppName: targetAppName,
-            targetAppBundleID: targetBundleID,
-            language: AppSettings.shared.language.rawValue,
-            audioPath: audioPath,
-            model: AppSettings.shared.selectedModel.rawValue,
-            audioDurationSeconds: audioDuration,
-            rawText: transcriptionOutcome?.rawText,
-            pipelineStamp: transcriptionOutcome?.pipelineStamp
-        ))
-
-        // Keep the app busy until the text is fully inserted, so the next hotkey
-        // press cannot race with the paste/typing sequence.
-        let injectionSucceeded = injectText(text, mode: AppSettings.shared.textInjectionMode)
-        historyRecorder.recordOutcome(id: historyEntryID, insertSuccess: injectionSucceeded)
-
-        if injectionSucceeded {
-            // Flash `.inserted` for 400ms (per v5-inserted-state.html), then hide.
-            // DESIGN.md § Reduced motion: shorten to 200ms when Reduce Motion is on.
-            // appState stays non-idle during the flash so a hotkey press mid-flash
-            // cannot pass canStartRecording() and start a new recording.
-            voiceTypeWindow?.show(state: .inserted(charCount: charCount, targetAppName: targetAppName))
-            Task { @MainActor [weak self] in
-                let flashMs = insertedFlashDurationMs(
-                    reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-                try? await Task.sleep(for: .milliseconds(flashMs))
-                self?.voiceTypeWindow?.hide()
-                self?.appState = .idle
-            }
-        } else {
-            // Only hide the capsule if injectText did NOT already show an inline error.
-            // If pendingErrorInlineShown is true, the capsule is displaying errorInline
-            // and the 4s scheduleErrorInlineDismiss will dismiss it. P2 finding #1.
-            if !pendingErrorInlineShown {
-                voiceTypeWindow?.hide()
-            }
-            pendingErrorInlineShown = false
-            appState = .idle
-        }
-    }
-
-    private func ensureModelLoaded() async throws {
-        while let modelLoadTask {
-            await modelLoadTask.value
-        }
-
-        guard !transcriptionService.isModelLoaded else {
-            print("[AppDelegate] Model already loaded")
-            return
-        }
-
-        let model = AppSettings.shared.selectedModel
-        let language = AppSettings.shared.language
-        guard modelManager.isModelDownloaded(model: model) else {
-            print("[AppDelegate] Model not downloaded: \(model.rawValue)")
-            throw TranscriptionError.modelNotLoaded
-        }
-
-        let modelURL = modelManager.modelURL(for: model)
-        print("[AppDelegate] Loading model on-demand: \(modelURL.lastPathComponent) with language: \(language.rawValue)")
-        try await transcriptionService.loadModel(at: modelURL, language: language, model: model)
-    }
-
-    /// Returns `true` on successful injection, `false` on failure. Callers use
-    /// the result to decide whether to flash the `.inserted` capsule or route
-    /// through the error path.
-    @discardableResult
-    private func injectText(_ text: String, mode: TextInjectionMode) -> Bool {
-        permissionManager.checkAllPermissions()
-
-        print("[AppDelegate] Injecting text (mode: \(mode.rawValue), characters: \(text.count))")
-        do {
-            try textInjectionService.injectText(
-                text,
-                mode: mode,
-                pressEnterAfter: AppSettings.shared.autoEnterAfterInsert
-            )
-            print("[AppDelegate] Text injected successfully")
-            AppLog.insertion.notice("Text insertion completed")
-            return true
-        } catch {
-            print("[AppDelegate] Text injection failed: \(error)")
-            AppLog.insertion.error("Text insertion failed")
-
-            ErrorLogger.shared.log(error, category: "insertion")
-            if case TextInjectionService.TextInjectionError.missingAccessibilityPermission = error {
-                permissionManager.openAccessibilitySettings()
-                // User has been directed to System Settings to grant permission. Don't
-                // auto-pull focus back to the captured app on errorInline auto-dismiss.
-                FocusCaptureService.shared.suppressNextRestore()
-                voiceTypeWindow?.show(state: .errorInline(message: "Accessibility denied · Open"))
-            } else {
-                voiceTypeWindow?.show(state: .errorInline(message: "Text insertion failed · Retry"))
-            }
-            voiceTypeWindow?.stateModel.scheduleErrorInlineDismiss(after: 4)
-            // Signal to transcribeAndInject that the inline error is already displayed.
-            // Prevents the else-branch from hiding the capsule immediately. P2 finding #1.
-            pendingErrorInlineShown = true
-            return false
-        }
-    }
+    // Transcription pipeline (transcribeAndInject, runASR, ensureModelLoaded,
+    // injectText, retryTranscription and their pure helpers) lives in
+    // AppDelegate+Dictation.swift — this file was already at the file_length
+    // budget before the reliable-dictation work (D2/D4/D5/D6) added to it.
 
     // MARK: - Error Handling
 

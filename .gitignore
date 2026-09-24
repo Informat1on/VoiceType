@@ -46,4 +46,7 @@ Tests/Fixtures/bench/.bench-device
 # scripts/history-report.py reads history.jsonl; neither the source nor a report
 # derived from it may reach a public repository.
 history*.jsonl
+# Exception: fabricated, neutral test fixture for history-report.py's own
+# test suite — not real dictation, safe to commit.
+!Tests/Fixtures/history-report/history.jsonl
 *history-report*.md
