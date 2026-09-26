@@ -9,13 +9,30 @@
 # Usage:
 #   scripts/replay.sh --out <file> [--only-saved] [--limit N] [--dir <dir>]
 #                      [--prompt-file <file>] [--model <path>]
+#                      [--keep-audio <dir>]
 #
 # Default mode (no --dir): replays against the app's own history.jsonl — a
 # FROZEN COPY of it, taken at the start of this run and held in a private
 # temp directory outside the repo, since the owner may be dictating while the
-# replay runs (docs/plans/quality-tools.md gotcha, session 21). Audio is read
-# directly from the app's audio/ directory — never copied, since it is only
-# ever read, not written.
+# replay runs (docs/plans/quality-tools.md gotcha, session 21). Audio is
+# ALSO frozen: history rotation (HistoryStore.rotateAudioIfNeeded) can delete
+# the oldest records' audio out from under a running replay, so
+# scripts/freeze-audio.py copies exactly the audio the frozen history.jsonl
+# references into a private directory before the harness runs
+# (docs/plans/pre-release-wave.md §3 T1). Without --keep-audio, that copy
+# lives at $WORK_DIR/audio (mode 700, files 600) and is removed by the exit
+# trap along with the rest of $WORK_DIR. With `--keep-audio <dir>` (history
+# mode only — rejected together with --dir), the copy is made at <dir>
+# instead: <dir> must not already exist (its parent must exist and must not
+# be inside this repo), is created with `mkdir -m 700`, and — this is the
+# point of the flag — is kept on disk after this script exits, on ANY exit
+# path (success, swift test failure, SIGINT/SIGTERM/SIGHUP) ONCE THE FREEZE
+# ITSELF HAS SUCCEEDED. If this script is interrupted (including by a
+# signal) before the freeze finishes, the partial copy it created is
+# removed instead — never left half-written. Deleting the completed copy
+# afterwards is the caller's job. Use it
+# to keep the same audio around for a later `shadow-analysis.py run.jsonl
+# --audio-dir <dir>` pass over this run's output.
 #
 # Exit code mirrors `swift test`'s: a nonzero test result (including the
 # harness's own fail-closed XCTFails) makes this script fail too. Two extra
@@ -37,10 +54,23 @@ LIMIT=""
 DIR_MODE=""
 PROMPT_FILE=""
 MODEL_OVERRIDE=""
+KEEP_AUDIO=""
+# Set to 1 only immediately after THIS run's own `mkdir -m 700 "$KEEP_AUDIO"`
+# succeeds — never based on merely observing the directory exists, since a
+# racing process could have created it after our own pre-check and before
+# our mkdir (which would then fail, leaving someone else's directory on
+# disk for on_exit to find).
+KEEP_AUDIO_CREATED=0
+# Set to 1 only once freeze-audio.py has succeeded for THIS run's
+# --keep-audio directory — see the on_exit trap below.
+FREEZE_COMPLETE=0
 
 usage() {
     echo "Usage: $0 --out <file> [--only-saved] [--limit N] [--dir <dir>]" \
-        "[--prompt-file <file>] [--model <path>]" >&2
+        "[--prompt-file <file>] [--model <path>] [--keep-audio <dir>]" >&2
+    echo "  --keep-audio <dir>  History mode only (not with --dir). <dir> must" \
+        "not already exist; it is created (mkdir -m 700) and kept on disk" \
+        "after this script exits, on any outcome — delete it yourself." >&2
     exit 1
 }
 
@@ -70,6 +100,14 @@ while [ $# -gt 0 ]; do
             MODEL_OVERRIDE="$2"
             shift 2
             ;;
+        --keep-audio)
+            if [ $# -lt 2 ]; then
+                echo "--keep-audio requires a <dir> argument" >&2
+                usage
+            fi
+            KEEP_AUDIO="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -84,13 +122,60 @@ if [ -z "$OUT" ]; then
     usage
 fi
 
+# --- Argument validation (ALL of it, before anything touches history.jsonl) ---
+
+if [ -n "$KEEP_AUDIO" ] && [ -n "$DIR_MODE" ]; then
+    echo "--keep-audio is only valid in history mode (not with --dir)" >&2
+    usage
+fi
+
+if [ -n "$KEEP_AUDIO" ]; then
+    if [ -e "$KEEP_AUDIO" ]; then
+        echo "--keep-audio target already exists: $KEEP_AUDIO" >&2
+        exit 1
+    fi
+    KEEP_AUDIO_PARENT="$(dirname "$KEEP_AUDIO")"
+    if [ ! -d "$KEEP_AUDIO_PARENT" ]; then
+        echo "--keep-audio target's parent directory does not exist: $KEEP_AUDIO_PARENT" >&2
+        exit 1
+    fi
+    KEEP_AUDIO_PARENT_ABS="$(cd "$KEEP_AUDIO_PARENT" && pwd -P)"
+    KEEP_AUDIO_ABS="$KEEP_AUDIO_PARENT_ABS/$(basename "$KEEP_AUDIO")"
+    case "$KEEP_AUDIO_ABS" in
+        "$REPO_DIR"|"$REPO_DIR"/*)
+            echo "--keep-audio target must be outside the repository: $KEEP_AUDIO_ABS" >&2
+            exit 1
+            ;;
+    esac
+fi
+
 # Private temp working dir, OUTSIDE the repo, mode 700, auto-removed. Holds
 # the swift test log (may contain whisper segment texts) and, in history
 # mode, the frozen copy of history.jsonl. The --out JSONL is NOT in here —
 # it lives wherever the caller pointed --out, and survives this trap.
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/voicetype-replay.XXXXXX")"
 chmod 700 "$WORK_DIR"
-trap 'rm -rf "$WORK_DIR"' EXIT
+
+# on_exit always removes WORK_DIR. It ALSO removes the --keep-audio
+# directory, but ONLY when BOTH: (a) KEEP_AUDIO_CREATED is 1 — this run's
+# own `mkdir` is what created it, not some other process racing us — and
+# (b) FREEZE_COMPLETE is still 0 — the freeze this run started never
+# finished. Once freeze-audio.py has succeeded, FREEZE_COMPLETE flips to 1
+# and this directory is kept on any further exit, per --keep-audio's
+# contract. The INT/TERM/HUP traps below just call `exit`, which always
+# runs the EXIT trap in bash — so a signal mid-freeze is cleaned up the
+# same as a normal failure.
+on_exit() {
+    rm -rf "$WORK_DIR"
+    if [ -n "$KEEP_AUDIO" ] && [ "$KEEP_AUDIO_CREATED" -eq 1 ] && [ "$FREEZE_COMPLETE" -ne 1 ] \
+        && [ -e "$KEEP_AUDIO" ]; then
+        rm -rf "$KEEP_AUDIO"
+    fi
+}
+trap on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 TEST_LOG="$WORK_DIR/swift-test.log"
 TEST_STDERR_LOG="$WORK_DIR/swift-test-stderr.log"
@@ -122,7 +207,45 @@ else
     FROZEN_HISTORY="$WORK_DIR/history.jsonl"
     (umask 077; cp "$HISTORY_FILE" "$FROZEN_HISTORY")
     export VOICETYPE_REPLAY_HISTORY="$FROZEN_HISTORY"
-    export VOICETYPE_REPLAY_AUDIO_DIR="$AUDIO_DIR"
+
+    # Freeze the audio the frozen history.jsonl references, alongside it —
+    # history.jsonl is a point-in-time copy, but AUDIO_DIR is still live and
+    # subject to rotation for as long as this script runs
+    # (docs/plans/pre-release-wave.md §3 T1).
+    if [ -n "$KEEP_AUDIO" ]; then
+        AUDIO_COPY_DIR="$KEEP_AUDIO"
+    else
+        AUDIO_COPY_DIR="$WORK_DIR/audio"
+    fi
+    mkdir -m 700 "$AUDIO_COPY_DIR"
+    # Only reached if the mkdir above actually succeeded — i.e. this run,
+    # not a racing process, is what created AUDIO_COPY_DIR. See
+    # KEEP_AUDIO_CREATED's declaration and on_exit above.
+    if [ -n "$KEEP_AUDIO" ]; then
+        KEEP_AUDIO_CREATED=1
+    fi
+
+    FREEZE_EXIT=0
+    FREEZE_OUTPUT="$("$SCRIPT_DIR/freeze-audio.py" "$FROZEN_HISTORY" "$AUDIO_DIR" "$AUDIO_COPY_DIR")" || FREEZE_EXIT=$?
+    if [ "$FREEZE_EXIT" -ne 0 ]; then
+        echo "freeze-audio.py failed (exit $FREEZE_EXIT)" >&2
+        # on_exit removes AUDIO_COPY_DIR itself (KEEP_AUDIO_CREATED=1,
+        # FREEZE_COMPLETE still 0) — no separate rm needed here.
+        exit "$FREEZE_EXIT"
+    fi
+
+    # From here on, a --keep-audio directory is a COMPLETE freeze, not a
+    # partial one — on_exit must stop removing it on any later exit
+    # (swift test failure, SIGINT, ...), which is the whole point of the
+    # flag.
+    FREEZE_COMPLETE=1
+
+    FREEZE_STATS="$(python3 -c 'import json, sys; d = json.loads(sys.argv[1]); print(d["copied"], d["missing"])' "$FREEZE_OUTPUT")"
+    read -r FROZEN_COPIED FROZEN_MISSING <<< "$FREEZE_STATS"
+    AUDIO_COPY_DIR_ABS="$(cd "$AUDIO_COPY_DIR" && pwd -P)"
+    echo "frozen audio: copied=$FROZEN_COPIED missing=$FROZEN_MISSING dir=$AUDIO_COPY_DIR_ABS" >&2
+
+    export VOICETYPE_REPLAY_AUDIO_DIR="$AUDIO_COPY_DIR_ABS"
 fi
 
 echo "Running ReplayHarnessTests in release (first run may take a while to build)..." >&2

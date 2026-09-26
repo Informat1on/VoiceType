@@ -34,7 +34,9 @@ final class HistoryFailedEntryTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         let url = dir.appendingPathComponent("history.jsonl")
-        let store = HistoryStore.test(storeURL: url, audioDirectory: audioDir)
+        let store = HistoryStore.test(
+            storeURL: url, audioDirectory: audioDir, errorLogger: makeTestErrorLogger(in: dir)
+        )
         return Fixture(store: store, url: url, audioDir: audioDir)
     }
 
@@ -102,7 +104,11 @@ final class HistoryFailedEntryTests: XCTestCase {
         let entry = failedEntry(audioPath: "abc.caf", reason: "timeout")
         store.append(entry)
 
-        let store2 = HistoryStore.test(storeURL: url, audioDirectory: store.audioDirectory)
+        let store2 = HistoryStore.test(
+            storeURL: url,
+            audioDirectory: store.audioDirectory,
+            errorLogger: makeTestErrorLogger(in: url.deletingLastPathComponent())
+        )
         let loaded = try XCTUnwrap(store2.entries().first)
         XCTAssertEqual(loaded.status, .failed)
         XCTAssertEqual(loaded.failureReason, "timeout")

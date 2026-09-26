@@ -25,7 +25,7 @@ final class HistoryRawTextTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         let url = dir.appendingPathComponent("history.jsonl")
-        let store = HistoryStore.test(storeURL: url)
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
         return (store, url)
     }
 
@@ -122,7 +122,9 @@ final class HistoryRawTextTests: XCTestCase {
         // Fresh HistoryStore instance pointed at the same file — proves the
         // round trip goes through the real JSONL encode/decode path, not
         // just the in-memory cache.
-        let store2 = HistoryStore.test(storeURL: url)
+        let store2 = HistoryStore.test(
+            storeURL: url, errorLogger: makeTestErrorLogger(in: url.deletingLastPathComponent())
+        )
         let loaded = store2.entries().first
         XCTAssertEqual(loaded?.rawText, "trimmed  ")
         XCTAssertEqual(loaded?.pipelineStamp, "n0:pabc123abc123")

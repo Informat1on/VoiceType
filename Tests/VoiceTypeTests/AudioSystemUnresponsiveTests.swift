@@ -121,6 +121,9 @@ final class AudioSystemUnresponsiveTests: XCTestCase {
 
         let service = AudioCaptureService()
         service.halGateway = gateway
+        // Hermetic default: a fired watchdog / stop-timeout must log through
+        // this seam, not the real ~/Library/Logs/VoiceType/errors.log. T3 follow-up.
+        service.errorLogWriterForTesting = { _ in }
         var runnerCalled = false
         service.startOperationRunner = { _, _, _ in runnerCalled = true }
 
@@ -153,6 +156,9 @@ final class AudioSystemUnresponsiveTests: XCTestCase {
         let runner = FakeStartRunner()
         let service = AudioCaptureService()
         service.halGateway = gateway
+        // Hermetic default: a fired watchdog / stop-timeout must log through
+        // this seam, not the real ~/Library/Logs/VoiceType/errors.log. T3 follow-up.
+        service.errorLogWriterForTesting = { _ in }
         service.watchdogScheduler = NeverFiringWatchdogScheduler()
         service.startOperationRunner = runner.runner
 
@@ -193,6 +199,9 @@ final class AudioSystemUnresponsiveTests: XCTestCase {
 
         let service = AudioCaptureService()
         service.halGateway = gateway
+        // Hermetic default: a fired watchdog / stop-timeout must log through
+        // this seam, not the real ~/Library/Logs/VoiceType/errors.log. T3 follow-up.
+        service.errorLogWriterForTesting = { _ in }
         service.watchdogScheduler = NeverFiringWatchdogScheduler()
         // startOperationRunner НЕ подменяется — реальный performStartOperation
         // уходит на sessionQueue и вызывает настоящий beginSessionAttempt.
@@ -217,6 +226,9 @@ final class AudioSystemUnresponsiveTests: XCTestCase {
         let runner = FakeStartRunner()
         let service = AudioCaptureService()
         service.halGateway = gateway
+        // Hermetic default: a fired watchdog / stop-timeout must log through
+        // this seam, not the real ~/Library/Logs/VoiceType/errors.log. T3 follow-up.
+        service.errorLogWriterForTesting = { _ in }
         service.watchdogScheduler = scheduler
         service.startOperationRunner = runner.runner
 
@@ -243,6 +255,9 @@ final class AudioSystemUnresponsiveTests: XCTestCase {
         let runner = FakeStartRunner()
         let service = AudioCaptureService()
         service.halGateway = gateway
+        // Hermetic default: a fired watchdog / stop-timeout must log through
+        // this seam, not the real ~/Library/Logs/VoiceType/errors.log. T3 follow-up.
+        service.errorLogWriterForTesting = { _ in }
         service.watchdogScheduler = NeverFiringWatchdogScheduler()
         service.startOperationRunner = runner.runner
         service.stopTimeout = 0.2
@@ -308,6 +323,10 @@ final class AudioSystemUnresponsiveTests: XCTestCase {
             let runner = FakeStartRunner()
             let service = AudioCaptureService()
             service.halGateway = gateway
+            // Hermetic default: the boundary race sometimes trips the
+            // stop-timeout log path — must not reach the real errors.log.
+            // T3 follow-up.
+            service.errorLogWriterForTesting = { _ in }
             service.watchdogScheduler = NeverFiringWatchdogScheduler()
             service.startOperationRunner = runner.runner
             service.stopTimeout = 0.1

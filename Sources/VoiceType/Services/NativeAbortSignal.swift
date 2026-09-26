@@ -264,12 +264,23 @@ extension TranscriptionService {
     }
 
     /// Races `operation` against a `timeout`-second timer. Whichever finishes
-    /// first wins; the loser is NOT cancelled or awaited — `operation` keeps
-    /// running in the background if the timer wins (that is what makes a
-    /// timeout here safe against a native call that will never itself return
-    /// promptly — see `runNative`/`abandonRun`). Timeout invokes `onTimeout()`
-    /// exactly once, before throwing `TranscriptionError.transcriptionTimeout`;
-    /// an `operation` error/result is passed through unchanged.
+    /// first wins. If the TIMER wins, `operation` is NOT cancelled or awaited —
+    /// it keeps running in the background (that is what makes a timeout here
+    /// safe against a native call that will never itself return promptly —
+    /// see `runNative`/`abandonRun`). Timeout invokes `onTimeout()` exactly
+    /// once, before throwing `TranscriptionError.transcriptionTimeout`; an
+    /// `operation` error/result is passed through unchanged.
+    ///
+    /// If OPERATION wins instead, the timer task IS cancelled immediately
+    /// (T2, docs/plans/pre-release-wave.md §3): `onTimeout`'s closure
+    /// (built by `runNative`) captures `whisper` strongly, and leaving the
+    /// timer to sleep out its full duration kept that reference — and the
+    /// native context behind it — alive for up to `timeout` seconds after
+    /// the transcription had already finished. `Task.sleep` reacts to
+    /// cancellation by throwing right away, so `onTimeout` is never invoked
+    /// on this path (its closure's captures, including `whisper`, are
+    /// released as soon as the cancelled timer task retires) and the timing
+    /// behavior for a genuine timeout (the branch above) is unchanged.
     nonisolated static func race<T: Sendable>(
         timeout: TimeInterval,
         operation: @escaping @Sendable () async throws -> T,
@@ -278,21 +289,27 @@ extension TranscriptionService {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
             let box = RaceOutcomeBox(continuation)
 
-            Task {
-                do {
-                    let result = try await operation()
-                    if box.claim() { box.resume(.success(result)) }
-                } catch {
-                    if box.claim() { box.resume(.failure(error)) }
-                }
-            }
-
-            Task {
+            let timeoutTask = Task {
                 let nanoseconds = UInt64((max(0, timeout) * 1_000_000_000).rounded())
                 try? await Task.sleep(nanoseconds: nanoseconds)
                 if box.claim() {
                     onTimeout()
                     box.resume(.failure(TranscriptionError.transcriptionTimeout))
+                }
+            }
+
+            Task {
+                do {
+                    let result = try await operation()
+                    if box.claim() {
+                        timeoutTask.cancel()
+                        box.resume(.success(result))
+                    }
+                } catch {
+                    if box.claim() {
+                        timeoutTask.cancel()
+                        box.resume(.failure(error))
+                    }
                 }
             }
         }

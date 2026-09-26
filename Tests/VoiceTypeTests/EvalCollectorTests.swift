@@ -23,7 +23,11 @@ final class EvalCollectorTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         let url = dir.appendingPathComponent("history.jsonl")
-        let store = HistoryStore.test(storeURL: url, audioDirectory: audioDir ?? dir.appendingPathComponent("audio"))
+        let store = HistoryStore.test(
+            storeURL: url,
+            audioDirectory: audioDir ?? dir.appendingPathComponent("audio"),
+            errorLogger: makeTestErrorLogger(in: dir)
+        )
         return (store, url)
     }
 
@@ -66,7 +70,7 @@ final class EvalCollectorTests: XCTestCase {
             + "\"language\":\"en\"}"
         try (oldLine + "\n").write(to: url, atomically: true, encoding: .utf8)
 
-        let store = HistoryStore.test(storeURL: url)
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
         let entries = store.entries()
 
         XCTAssertEqual(entries.count, 1)
@@ -98,7 +102,9 @@ final class EvalCollectorTests: XCTestCase {
         store1.update(updated)
 
         // Re-read from disk.
-        let store2 = HistoryStore.test(storeURL: url)
+        let store2 = HistoryStore.test(
+            storeURL: url, errorLogger: makeTestErrorLogger(in: url.deletingLastPathComponent())
+        )
         let loaded = store2.entries()
 
         XCTAssertEqual(loaded.count, 1)
@@ -280,7 +286,9 @@ final class EvalCollectorTests: XCTestCase {
         XCTAssertNil(entries[2].userCorrection)
 
         // Verify persistence.
-        let store2 = HistoryStore.test(storeURL: url)
+        let store2 = HistoryStore.test(
+            storeURL: url, errorLogger: makeTestErrorLogger(in: url.deletingLastPathComponent())
+        )
         let reloaded = store2.entries()
         XCTAssertEqual(reloaded[1].userCorrection, "beta corrected")
     }

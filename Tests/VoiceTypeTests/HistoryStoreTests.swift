@@ -19,7 +19,7 @@ final class HistoryStoreTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         let url = dir.appendingPathComponent("history.jsonl")
-        let store = HistoryStore.test(storeURL: url)
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
         return (store, url)
     }
 
@@ -86,7 +86,9 @@ final class HistoryStoreTests: XCTestCase {
         store1.append(entry)
 
         // Create a second HistoryStore pointing to the same file.
-        let store2 = HistoryStore.test(storeURL: url)
+        let store2 = HistoryStore.test(
+            storeURL: url, errorLogger: makeTestErrorLogger(in: url.deletingLastPathComponent())
+        )
         let loaded = store2.entries()
         XCTAssertEqual(loaded.count, 1)
         XCTAssertEqual(loaded.first?.text, "persisted text")
@@ -168,7 +170,9 @@ final class HistoryStoreTests: XCTestCase {
     func testNilBundleIDRoundtrips() throws {
         let (store, url) = try makeStore()
         store.append(sampleEntry(text: "no bundle", bundleID: nil))
-        let store2 = HistoryStore.test(storeURL: url)
+        let store2 = HistoryStore.test(
+            storeURL: url, errorLogger: makeTestErrorLogger(in: url.deletingLastPathComponent())
+        )
         XCTAssertNil(
             store2.entries().first?.targetAppBundleID,
             "nil bundleID must round-trip through JSON correctly"
@@ -218,7 +222,7 @@ final class HistoryStoreTests: XCTestCase {
         let content = [valid1, corrupt, valid2].joined(separator: "\n") + "\n"
         try content.write(to: url, atomically: true, encoding: .utf8)
 
-        let store = HistoryStore.test(storeURL: url)
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
         let loaded = store.entries()
 
         // If this fails with count == 0, HistoryStore's load() is throwing on the first
@@ -254,7 +258,9 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(inMemory.first?.charCount, text.count, "charCount must equal Swift grapheme-cluster count")
 
         // Persistence round-trip: re-open same file.
-        let store2 = HistoryStore.test(storeURL: url)
+        let store2 = HistoryStore.test(
+            storeURL: url, errorLogger: makeTestErrorLogger(in: url.deletingLastPathComponent())
+        )
         XCTAssertEqual(store2.entries().first?.text, text, "Text must survive JSONL encode/decode without grapheme cluster damage")
         XCTAssertEqual(store2.entries().first?.charCount, text.count, "charCount must be preserved across persistence round-trip")
     }
@@ -278,7 +284,9 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertFalse(all.contains { $0.text == "e0" }, "Evicted entries (e0–e49) must not appear in results")
 
         // Persistence layer must also cap to 100 on reload.
-        let store2 = HistoryStore.test(storeURL: url)
+        let store2 = HistoryStore.test(
+            storeURL: url, errorLogger: makeTestErrorLogger(in: url.deletingLastPathComponent())
+        )
         XCTAssertEqual(store2.entries().count, 100, "Reloaded store must also have exactly 100 entries (cap enforced at flush)")
         XCTAssertEqual(store2.entries().first?.text, "e149")
         XCTAssertEqual(store2.entries().last?.text, "e50")
@@ -296,7 +304,7 @@ final class HistoryStoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("history.jsonl")
-        let store = HistoryStore.test(storeURL: url, audioDirectory: audioDir)
+        let store = HistoryStore.test(storeURL: url, audioDirectory: audioDir, errorLogger: makeTestErrorLogger(in: dir))
 
         // Append a saved eval pair FIRST (oldest entry in the store) with real audio.
         let evalAudioPath = "eval-oldest.caf"
@@ -390,7 +398,7 @@ final class HistoryStoreTests: XCTestCase {
 
         // Load — must apply the cap immediately, evicting the 2 oldest regular
         // entries (r0, r1) and deleting their audio, with NO append() call at all.
-        let store = HistoryStore.test(storeURL: url, audioDirectory: audioDir)
+        let store = HistoryStore.test(storeURL: url, audioDirectory: audioDir, errorLogger: makeTestErrorLogger(in: dir))
         let loaded = store.entries()
 
         XCTAssertEqual(loaded.filter { $0.isSavedEval != true }.count, 100, "Regular entries must be capped on load")
@@ -409,7 +417,7 @@ final class HistoryStoreTests: XCTestCase {
         // The eviction must have been persisted (flush), not just applied in-memory —
         // otherwise a second restart before any append() would re-load the same
         // 104-line file and the eviction would not be idempotently stable.
-        let store2 = HistoryStore.test(storeURL: url, audioDirectory: audioDir)
+        let store2 = HistoryStore.test(storeURL: url, audioDirectory: audioDir, errorLogger: makeTestErrorLogger(in: dir))
         XCTAssertEqual(
             store2.entries().count,
             102,
@@ -438,7 +446,8 @@ final class HistoryStoreTests: XCTestCase {
 
         let store = HistoryStore.test(
             storeURL: storeDir.appendingPathComponent("history.jsonl"),
-            audioDirectory: audioDir
+            audioDirectory: audioDir,
+            errorLogger: makeTestErrorLogger(in: root)
         )
 
         func makeAudioFile(_ name: String) throws {
@@ -519,7 +528,8 @@ final class HistoryStoreTests: XCTestCase {
 
         let store = HistoryStore.test(
             storeURL: storeDir.appendingPathComponent("history.jsonl"),
-            audioDirectory: audioDir
+            audioDirectory: audioDir,
+            errorLogger: makeTestErrorLogger(in: root)
         )
 
         func makeAudioFile(_ name: String) throws {
@@ -569,7 +579,8 @@ final class HistoryStoreTests: XCTestCase {
 
         let store = HistoryStore.test(
             storeURL: root.appendingPathComponent("history.jsonl"),
-            audioDirectory: audioDir
+            audioDirectory: audioDir,
+            errorLogger: makeTestErrorLogger(in: root)
         )
 
         for i in 0..<100 {

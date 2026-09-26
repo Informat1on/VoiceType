@@ -27,6 +27,9 @@ final class ErrorToastWindowStackingTests: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
         toast = ErrorToastWindow()
+        // Hermetic default: show(...) logs through this seam, not the real
+        // ~/Library/Logs/VoiceType/errors.log. T3 follow-up.
+        toast.logger = { _, _ in }
     }
 
     override func tearDown() async throws {

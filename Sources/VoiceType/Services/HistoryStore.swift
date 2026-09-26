@@ -43,7 +43,7 @@ final class HistoryStore {
 
     // MARK: - Shared
 
-    static let shared = HistoryStore()
+    static let shared = HistoryStore(errorLogger: .shared)
 
     // MARK: - Entry
 
@@ -210,6 +210,11 @@ final class HistoryStore {
     /// Directory where audio recordings are stored. Defaults to
     /// ~/Library/Application Support/VoiceType/audio/
     let audioDirectory: URL
+    /// Error sink for this store's own failures (disk-full, corrupt file,
+    /// dropped audio deletions). Production uses `.shared`; tests inject
+    /// `ErrorLogger.test(logsDirectory:)` via `HistoryStore.test(...)` so
+    /// their errors never reach the real errors.log (T3, plan §3).
+    private let errorLogger: ErrorLogger
     /// Cap on REGULAR (non-eval, non-failed) entries only — see
     /// evictExcessRegularEntries().
     private let maxEntries: Int = 100
@@ -239,7 +244,8 @@ final class HistoryStore {
 
     // MARK: - Init
 
-    private init(storeURL: URL? = nil, audioDirectory: URL? = nil) {
+    private init(storeURL: URL? = nil, audioDirectory: URL? = nil, errorLogger: ErrorLogger) {
+        self.errorLogger = errorLogger
         if let custom = storeURL {
             self.storeURL = custom
             self.audioDirectory = audioDirectory
@@ -266,9 +272,13 @@ final class HistoryStore {
         try? fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
     }
 
-    /// Test seam — pass a temp-dir URL so tests are hermetic.
-    static func test(storeURL: URL, audioDirectory: URL? = nil) -> HistoryStore {
-        HistoryStore(storeURL: storeURL, audioDirectory: audioDirectory)
+    /// Test seam — pass a temp-dir URL and a temp-dir `ErrorLogger` so tests
+    /// are fully hermetic (neither touches the real ~/Library paths).
+    /// `errorLogger` has no default on purpose — every call site in Tests/
+    /// must pass its own `ErrorLogger.test(logsDirectory:)` rather than
+    /// silently falling back to `.shared` (T3, plan §3).
+    static func test(storeURL: URL, audioDirectory: URL? = nil, errorLogger: ErrorLogger) -> HistoryStore {
+        HistoryStore(storeURL: storeURL, audioDirectory: audioDirectory, errorLogger: errorLogger)
     }
 
     // MARK: - Public API
@@ -317,7 +327,7 @@ final class HistoryStore {
     private func capped(_ queue: [String]) -> [String] {
         guard queue.count > maxPendingAudioDeletions else { return queue }
         let overflow = queue.count - maxPendingAudioDeletions
-        ErrorLogger.shared.log(
+        errorLogger.log(
             message: "HistoryStore: dropped \(overflow) queued audio deletions — the deferred-deletion queue hit its cap",
             category: "history"
         )
@@ -450,9 +460,25 @@ final class HistoryStore {
     /// Removes audio files whose owning entries no longer reference them.
     /// Always called after a successful flush(), never before.
     /// Returns the ones that could not be removed, so they stay queued.
+    ///
+    /// `audioPath` normally holds only `<UUID>.caf` names the app itself
+    /// wrote, but `history.jsonl` can be hand-edited or corrupted, and
+    /// `appendingPathComponent` would happily follow a value like
+    /// "../../something" outside `audioDirectory`. Anything that is not a
+    /// plain base filename is rejected before it ever reaches the
+    /// filesystem call: never deleted, and dropped from the queue rather
+    /// than retried — the name itself is invalid, so there is nothing a
+    /// retry could fix. Review finding r1, plan T3.
     private func deleteAudioFiles(_ filenames: [String]) -> [String] {
         var failed: [String] = []
         for filename in filenames {
+            guard Self.isSafeAudioFilename(filename) else {
+                errorLogger.log(
+                    message: "HistoryStore: refused to delete a queued audio filename — not a plain base name",
+                    category: "history"
+                )
+                continue
+            }
             let url = audioDirectory.appendingPathComponent(filename)
             do {
                 try fileManager.removeItem(at: url)
@@ -463,6 +489,15 @@ final class HistoryStore {
             }
         }
         return failed
+    }
+
+    /// True for a plain base filename: non-empty, no path separator, and
+    /// not "." / ".." / hidden (the `hasPrefix(".")` check subsumes both
+    /// dot-names). `internal` (not `private`) so a test could call it
+    /// directly if needed; exercised via the black-box eviction test in
+    /// HistoryStoreEdgeCasesTests (testDeleteAudioFilesRejectsPathTraversalNames).
+    static func isSafeAudioFilename(_ filename: String) -> Bool {
+        !filename.isEmpty && !filename.contains("/") && !filename.hasPrefix(".")
     }
 
     // MARK: - Private helpers
@@ -476,7 +511,7 @@ final class HistoryStore {
               let raw = String(data: data, encoding: .utf8) else {
             if fileManager.fileExists(atPath: storeURL.path) {
                 loadFailed = true
-                ErrorLogger.shared.log(
+                errorLogger.log(
                     message: "HistoryStore: history file exists but could not be read — writes disabled to protect data",
                     category: "history"
                 )
@@ -522,7 +557,7 @@ final class HistoryStore {
         }
         let result = Result { try bytes.write(to: storeURL, options: .atomic) }
         if case .failure(let error) = result {
-            ErrorLogger.shared.log(error, category: "history", context: ["path": storeURL.path])
+            errorLogger.log(error, category: "history", context: ["path": storeURL.path])
             return false
         }
         return true
