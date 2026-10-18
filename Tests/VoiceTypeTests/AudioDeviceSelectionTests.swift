@@ -96,32 +96,28 @@ final class AudioDeviceSelectionTests: XCTestCase {
 
     @MainActor
     func testPreferredDeviceRoundTripsThroughDefaults() throws {
-        let suiteName = "voicetype.tests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try withHermeticUserDefaults { defaults in
+            let settings = AppSettings(defaults: defaults)
+            XCTAssertNil(settings.preferredInputDeviceUID, "по умолчанию — системное устройство")
 
-        let settings = AppSettings(defaults: defaults)
-        XCTAssertNil(settings.preferredInputDeviceUID, "по умолчанию — системное устройство")
-
-        settings.preferredInputDeviceUID = "USB-Mic"
-        XCTAssertEqual(defaults.string(forKey: "preferredInputDeviceUID"), "USB-Mic")
-        XCTAssertEqual(AppSettings(defaults: defaults).preferredInputDeviceUID, "USB-Mic")
+            settings.preferredInputDeviceUID = "USB-Mic"
+            XCTAssertEqual(defaults.string(forKey: "preferredInputDeviceUID"), "USB-Mic")
+            XCTAssertEqual(AppSettings(defaults: defaults).preferredInputDeviceUID, "USB-Mic")
+        }
     }
 
     /// nil обязан удалять ключ, а не писать пустую строку: иначе «не выбрано» и
     /// «выбрано пустое» разойдутся при следующем чтении.
     @MainActor
     func testClearingPreferredDeviceRemovesTheKey() throws {
-        let suiteName = "voicetype.tests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try withHermeticUserDefaults { defaults in
+            let settings = AppSettings(defaults: defaults)
+            settings.preferredInputDeviceUID = "USB-Mic"
+            settings.preferredInputDeviceUID = nil
 
-        let settings = AppSettings(defaults: defaults)
-        settings.preferredInputDeviceUID = "USB-Mic"
-        settings.preferredInputDeviceUID = nil
-
-        XCTAssertNil(defaults.object(forKey: "preferredInputDeviceUID"))
-        XCTAssertNil(AppSettings(defaults: defaults).preferredInputDeviceUID)
+            XCTAssertNil(defaults.object(forKey: "preferredInputDeviceUID"))
+            XCTAssertNil(AppSettings(defaults: defaults).preferredInputDeviceUID)
+        }
     }
 
     // MARK: - Перечисление устройств

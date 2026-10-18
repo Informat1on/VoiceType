@@ -65,8 +65,8 @@ final class EvalEditorWindow: NSWindow {
     private func buildContent() {
         let view = EvalEditorView(
             entryID: entryID,
-            onSave: { [weak self] correction in
-                self?.handleSave(correction: correction)
+            onSave: { [weak self] correction, issue in
+                self?.handleSave(correction: correction, issue: issue)
             },
             onCancel: { [weak self] in
                 self?.close()
@@ -78,7 +78,7 @@ final class EvalEditorWindow: NSWindow {
 
     // MARK: - Save
 
-    private func handleSave(correction: String) {
+    private func handleSave(correction: String, issue: String?) {
         guard let entry = HistoryStore.shared.entry(byID: entryID) else {
             // VT-REV-003: entry was evicted by history rotation while the window was
             // open. Do NOT close — the rotation warning banner in EvalEditorView already
@@ -87,7 +87,7 @@ final class EvalEditorWindow: NSWindow {
             print("[EvalEditor] Save blocked: entry \(entryID) no longer in history (evicted by rotation). Window stays open so user can copy their correction.")
             return
         }
-        let updated = entry.withEvalSaved(correction: correction)
+        let updated = entry.withEvalSaved(correction: correction, issue: issue)
         HistoryStore.shared.update(updated)
         let evalCount = HistoryStore.shared.savedEvalCount()
         print("[EvalEditor] Saved eval pair. Total saved: \(evalCount)")

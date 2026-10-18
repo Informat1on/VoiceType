@@ -127,6 +127,11 @@ final class AudioStartTimeoutTests: XCTestCase {
         let service = AudioCaptureService()
         service.startOperationRunner = runner.runner
         service.watchdogScheduler = scheduler
+        // Hermetic default: a fired watchdog logs through this seam instead
+        // of the real ~/Library/Logs/VoiceType/errors.log. Tests that assert
+        // on the log content (e.g. testTimeoutWritesDeviceNameAndActualElapsedToErrorLog)
+        // override this right after calling makeService(). T3 follow-up.
+        service.errorLogWriterForTesting = { _ in }
         return service
     }
 

@@ -111,4 +111,88 @@ final class HistoryRecorder {
         guard let entry = store.entry(byID: id) else { return }
         store.update(entry.withInsertOutcome(insertSuccess))
     }
+
+    // MARK: - D4: failed transcriptions
+
+    /// Everything recordTranscriptionFailure() needs to build a failed history
+    /// entry. Unlike PendingTranscription, `audioPath` is required — a failed
+    /// entry with no audio can never be retried, so the caller must already
+    /// have a saved recording before calling this.
+    struct FailedTranscription {
+        let targetAppName: String
+        let targetAppBundleID: String?
+        let language: String
+        let audioPath: String
+        let model: String?
+        let audioDurationSeconds: Double?
+        /// "timeout" | "error" | "empty" — see HistoryStore.Entry.failureReason.
+        let reason: String
+    }
+
+    /// Appends a new FAILED entry (empty text, status == .failed, audio kept)
+    /// when ASR itself errors or times out — see D4 (reliable-dictation plan,
+    /// §3). This is a fresh append, not a pending/outcome pair like
+    /// recordPending/recordOutcome: there is no successful injection to record
+    /// an outcome for, since there is no text to inject yet.
+    ///
+    /// Returns the stored entry's id, to be passed to recordRetryResult(id:...)
+    /// or recordRetryFailure(id:reason:) once a retry from History runs.
+    @discardableResult
+    func recordTranscriptionFailure(_ failure: FailedTranscription) -> UUID {
+        let entry = HistoryStore.Entry(
+            text: "",
+            targetAppName: failure.targetAppName,
+            targetAppBundleID: failure.targetAppBundleID,
+            language: failure.language,
+            audioPath: failure.audioPath,
+            model: failure.model,
+            audioDurationSeconds: failure.audioDurationSeconds,
+            status: .failed,
+            failureReason: failure.reason
+        )
+        store.append(entry)
+        return entry.id
+    }
+
+    /// Fills in a successful retry: the entry stops being failed, gains the
+    /// retried text, and moves to the front of History (HistoryStore.
+    /// promoteRetried(_:) — see its doc comment for why: the entry's
+    /// `timestamp` does NOT change on retry, only its position).
+    ///
+    /// Returns false if the entry is no longer present — e.g. it was evicted
+    /// by the failed-entry cap before the retry completed — so the caller
+    /// knows the retry result has nowhere to go.
+    @discardableResult
+    func recordRetryResult(
+        id: UUID,
+        text: String,
+        rawText: String?,
+        pipelineStamp: String?,
+        model: String?
+    ) -> Bool {
+        guard let entry = store.entry(byID: id) else { return false }
+        store.promoteRetried(entry.withTranscriptionResult(
+            text: text,
+            rawText: rawText,
+            pipelineStamp: pipelineStamp,
+            model: model
+        ))
+        return true
+    }
+
+    /// Records D6 per-stage latency (stopToSamples/asr/insert/total, in ms)
+    /// for the dictation that produced this entry. No-op if the entry is no
+    /// longer present.
+    func recordLatency(id: UUID, latencyMs: [String: Int]) {
+        guard let entry = store.entry(byID: id) else { return }
+        store.update(entry.withLatency(latencyMs))
+    }
+
+    /// Records that a retry from History failed again, updating just the
+    /// failure reason ("timeout" | "error" | "empty") — the entry stays
+    /// failed. No-op if the entry is no longer present.
+    func recordRetryFailure(id: UUID, reason: String) {
+        guard let entry = store.entry(byID: id) else { return }
+        store.update(entry.withFailureReason(reason))
+    }
 }

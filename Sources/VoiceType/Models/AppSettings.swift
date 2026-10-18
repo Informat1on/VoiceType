@@ -30,8 +30,8 @@ enum TextInjectionMode: String, Codable, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .paste: return "Paste (Instant)"
-        case .type: return "Type (Simulated)"
+        case .paste: return "Paste (keeps clipboard)"
+        case .type: return "Type (clipboard untouched)"
         }
     }
 }

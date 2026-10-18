@@ -188,7 +188,8 @@ struct SettingsView: View {
                         .labelsHidden()
                 }
                 RowDivider()
-                PrefsRow("Paste method") {
+                PrefsRow("Paste method",
+                         subtitle: "Paste puts back everything that was in the clipboard. Type never touches it.") {
                     Picker("Paste method", selection: $settings.textInjectionMode) {
                         ForEach(TextInjectionMode.allCases, id: \.self) { mode in
                             Text(mode.displayName).tag(mode)

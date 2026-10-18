@@ -83,27 +83,25 @@ final class ModelPresetTests: XCTestCase {
     /// ensuring no state fragmentation.
     @MainActor
     func testSelectingBalancedPresetWritesLargeV3TurboQ5ToPersistenceKey() throws {
-        let suiteName = "ModelPresetTests_Balanced_\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try withHermeticUserDefaults(suiteName: "ModelPresetTests_Balanced_\(UUID().uuidString)") { defaults in
+            let balancedModel = ModelPresetRow.balanced.model
+            defaults.set(balancedModel.rawValue, forKey: "selectedModel")
 
-        let balancedModel = ModelPresetRow.balanced.model
-        defaults.set(balancedModel.rawValue, forKey: "selectedModel")
+            let stored = defaults.string(forKey: "selectedModel")
+            XCTAssertEqual(
+                stored,
+                "large-v3-turbo-q5_0",
+                "Selecting Balanced must persist rawValue 'large-v3-turbo-q5_0' under 'selectedModel'"
+            )
 
-        let stored = defaults.string(forKey: "selectedModel")
-        XCTAssertEqual(
-            stored,
-            "large-v3-turbo-q5_0",
-            "Selecting Balanced must persist rawValue 'large-v3-turbo-q5_0' under 'selectedModel'"
-        )
-
-        // Round-trip: stored raw value must decode back to .largeV3TurboQ5.
-        let resolved = TranscriptionModel(rawValue: stored ?? "")
-        XCTAssertEqual(
-            resolved,
-            .largeV3TurboQ5,
-            "Stored raw value must decode back to .largeV3TurboQ5"
-        )
+            // Round-trip: stored raw value must decode back to .largeV3TurboQ5.
+            let resolved = TranscriptionModel(rawValue: stored ?? "")
+            XCTAssertEqual(
+                resolved,
+                .largeV3TurboQ5,
+                "Stored raw value must decode back to .largeV3TurboQ5"
+            )
+        }
     }
 
     // MARK: - Custom state: non-preset model → no preset is active

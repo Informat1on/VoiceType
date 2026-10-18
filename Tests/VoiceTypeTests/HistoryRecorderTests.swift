@@ -24,7 +24,7 @@ final class HistoryRecorderTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         let url = dir.appendingPathComponent("history.jsonl")
-        let store = HistoryStore.test(storeURL: url)
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
         return (store, url)
     }
 

@@ -56,7 +56,11 @@ final class HistoryStoreEdgeCasesTests: XCTestCase {
         // NOTE: do NOT create missingDir; that's the point.
         addTeardownBlock { try? FileManager.default.removeItem(at: missingDir) }
         let url = missingDir.appendingPathComponent("history.jsonl")
-        let store = HistoryStore.test(storeURL: url)
+        // The error logger's own directory must NOT live under missingDir —
+        // ErrorLogger.test(logsDirectory:) creates it eagerly in init, which
+        // would defeat the "parent dir never created" precondition below.
+        let logsDir = try makeDir()
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: logsDir))
 
         // Both appends should silently swallow the write failure.
         store.append(sampleEntry(text: "first"))
@@ -87,7 +91,10 @@ final class HistoryStoreEdgeCasesTests: XCTestCase {
         // Do NOT create the dir yet — first appends will fail to flush.
         addTeardownBlock { try? FileManager.default.removeItem(at: recoveryDir) }
         let url = recoveryDir.appendingPathComponent("history.jsonl")
-        let store = HistoryStore.test(storeURL: url)
+        // Same reasoning as testDiskFullInMemoryStillUpdates: keep the logger
+        // directory out of recoveryDir so creating it doesn't "heal the disk" early.
+        let logsDir = try makeDir()
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: logsDir))
 
         store.append(sampleEntry(text: "offline-1"))
         store.append(sampleEntry(text: "offline-2"))
@@ -141,7 +148,7 @@ final class HistoryStoreEdgeCasesTests: XCTestCase {
         let partialLine = "{\"text\":\"hello"   // No closing brace, no newline.
         try (validLine + partialLine).write(to: url, atomically: false, encoding: .utf8)
 
-        let store = HistoryStore.test(storeURL: url)
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
 
         // Load: valid line survives, partial line is silently dropped.
         let loaded = store.entries()
@@ -186,7 +193,7 @@ final class HistoryStoreEdgeCasesTests: XCTestCase {
         let line2 = "{\"id\":\"\(id2)\",\"timestamp\":\"2024-04-01T09:00:00Z\",\"text\":\"beta\"\(tail)\n"
         try (line1 + line2).write(to: url, atomically: true, encoding: .utf8)
 
-        let store = HistoryStore.test(storeURL: url)
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
 
         // First call triggers load.
         let first = store.entries()
@@ -226,7 +233,7 @@ final class HistoryStoreEdgeCasesTests: XCTestCase {
     func testFileDeletedUnderUsNextAppendRecreatesFile() throws {
         let dir = try makeDir()
         let url = dir.appendingPathComponent("history.jsonl")
-        let store = HistoryStore.test(storeURL: url)
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
 
         store.append(sampleEntry(text: "before-delete"))
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "File must exist after first append")
@@ -285,7 +292,7 @@ final class HistoryStoreEdgeCasesTests: XCTestCase {
         XCTAssertNil(String(data: corruptBytes, encoding: .utf8),
                      "Precondition: test bytes must not be valid UTF-8")
 
-        let store = HistoryStore.test(storeURL: url)
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
 
         // Load must silently return empty — no crash.
         let loaded = store.entries()
@@ -307,19 +314,213 @@ final class HistoryStoreEdgeCasesTests: XCTestCase {
     func testDeletedFileReloadedByNewStoreInstanceReflectsCurrentState() throws {
         let dir = try makeDir()
         let url = dir.appendingPathComponent("history.jsonl")
-        let store = HistoryStore.test(storeURL: url)
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
 
         store.append(sampleEntry(text: "original"))
         try FileManager.default.removeItem(at: url)
         store.append(sampleEntry(text: "recreated"))
 
         // New instance reads the recreated file.
-        let store2 = HistoryStore.test(storeURL: url)
+        let store2 = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
         let reloaded = store2.entries()
         XCTAssertEqual(reloaded.count, 2, "New store instance must read back both entries from recreated file")
         // entries() returns newest-first (load reverses the chronological-on-disk order),
         // so "recreated" (last appended) must be at index 0 and "original" at the tail.
         XCTAssertEqual(reloaded.first?.text, "recreated")
         XCTAssertEqual(reloaded.last?.text, "original")
+    }
+
+    // MARK: - testUnreadableHistoryFileLogsThroughInjectedErrorLogger
+
+    /// T3 (plan §3): the corrupt-file branch of loadIfNeeded() — same trigger
+    /// as testCorruptFileBlocksFlushProtectsExistingData above — must log
+    /// through the injected `errorLogger`, not the real shared singleton.
+    /// This is the point of the errorLogger seam: the entry must land in
+    /// this test's own temp log file, never in the real
+    /// ~/Library/Logs/VoiceType/errors.log.
+    func testUnreadableHistoryFileLogsThroughInjectedErrorLogger() throws {
+        let dir = try makeDir()
+        let url = dir.appendingPathComponent("history.jsonl")
+
+        // Non-UTF-8 bytes: fileExists + Data(contentsOf:) both succeed, but
+        // String(data:encoding:.utf8) fails — the branch that logs.
+        let corruptBytes = Data([0xFF, 0xFE, 0xC0, 0x80, 0xED, 0xA0, 0x80])
+        try corruptBytes.write(to: url, options: .atomic)
+
+        let logsDir = try makeDir()
+        let logger = ErrorLogger.test(logsDirectory: logsDir)
+        let store = HistoryStore.test(storeURL: url, errorLogger: logger)
+
+        // Triggers loadIfNeeded()'s corrupt-file branch.
+        XCTAssertEqual(store.entries().count, 0, "Corrupt file must load as empty, not crash")
+
+        let logContents = try String(contentsOf: logger.currentLogFileURL, encoding: .utf8)
+        XCTAssertTrue(
+            logContents.contains("history file exists but could not be read"),
+            "The corrupt-file branch must log through the injected errorLogger, not the shared singleton"
+        )
+    }
+
+    // MARK: - testDeleteAudioFilesRejectsPathTraversalNames
+
+    /// T3 (plan §3, review finding r1): a hand-edited/corrupted history.jsonl
+    /// could smuggle an audioPath like "../escaped.caf" — appendingPathComponent
+    /// would happily walk outside audioDirectory. deleteAudioFiles() must
+    /// refuse anything that isn't a plain base filename, so eviction can
+    /// never delete (or even touch) a file outside the audio directory.
+    func testDeleteAudioFilesRejectsPathTraversalNames() throws {
+        let dir = try makeDir()
+        let audioDir = dir.appendingPathComponent("audio")
+        try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("history.jsonl")
+
+        // A real file OUTSIDE audioDir, at the location "../escaped.caf"
+        // (relative to audioDir) would resolve to.
+        let escapedFile = dir.appendingPathComponent("escaped.caf")
+        try Data("outside".utf8).write(to: escapedFile)
+
+        let store = HistoryStore.test(storeURL: url, audioDirectory: audioDir, errorLogger: makeTestErrorLogger(in: dir))
+
+        // The oldest entry carries the traversal payload — there is no write
+        // path in the app that produces this itself, only a hand-edited or
+        // corrupted JSONL. 100 more regular appends push the regular-entry
+        // count past the cap, evicting this oldest entry and queuing its
+        // audioPath for deletion.
+        store.append(HistoryStore.Entry(
+            text: "malicious",
+            targetAppName: "T",
+            targetAppBundleID: "t",
+            language: "en",
+            audioPath: "../escaped.caf"
+        ))
+        for i in 0..<100 {
+            store.append(HistoryStore.Entry(text: "r\(i)", targetAppName: "T", targetAppBundleID: "t", language: "en"))
+        }
+
+        XCTAssertFalse(
+            store.entries().contains { $0.text == "malicious" },
+            "Precondition: the malicious entry must have been evicted by the 100-cap"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: escapedFile.path),
+            "deleteAudioFiles must never delete a name outside audioDirectory"
+        )
+        XCTAssertTrue(
+            store.pendingAudioDeletions.isEmpty,
+            "A rejected traversal name must be dropped, not retried forever"
+        )
+    }
+
+    // MARK: - C3: discardUnreferencedAudio
+
+    private func makeStoreWithAudioDir() throws -> (store: HistoryStore, audioDir: URL) {
+        let dir = try makeDir()
+        let audioDir = dir.appendingPathComponent("audio")
+        try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("history.jsonl")
+        let store = HistoryStore.test(storeURL: url, audioDirectory: audioDir, errorLogger: makeTestErrorLogger(in: dir))
+        return (store, audioDir)
+    }
+
+    /// A plain, unreferenced audio file must be deleted.
+    func testDiscardUnreferencedAudioDeletesOwnerlessFile() throws {
+        let (store, audioDir) = try makeStoreWithAudioDir()
+        let file = audioDir.appendingPathComponent("orphan.caf")
+        try Data("audio".utf8).write(to: file)
+
+        store.discardUnreferencedAudio(named: "orphan.caf")
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "Ownerless audio file must be deleted")
+    }
+
+    /// A safe filename that a History entry still references must survive,
+    /// and the log entry (present) must not name the file.
+    func testDiscardUnreferencedAudioKeepsFileStillReferencedByEntry() throws {
+        let dir = try makeDir()
+        let audioDir = dir.appendingPathComponent("audio")
+        try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        let file = audioDir.appendingPathComponent("owned.caf")
+        try Data("audio".utf8).write(to: file)
+
+        let logsDir = try makeDir()
+        let logger = ErrorLogger.test(logsDirectory: logsDir)
+        let store = HistoryStore.test(
+            storeURL: dir.appendingPathComponent("history.jsonl"),
+            audioDirectory: audioDir,
+            errorLogger: logger
+        )
+        store.append(HistoryStore.Entry(
+            text: "owner-with-audio",
+            targetAppName: "T",
+            targetAppBundleID: "t",
+            language: "en",
+            audioPath: "owned.caf"
+        ))
+
+        store.discardUnreferencedAudio(named: "owned.caf")
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "Referenced audio must not be deleted")
+        let logContents = try String(contentsOf: logger.currentLogFileURL, encoding: .utf8)
+        XCTAssertTrue(
+            logContents.contains("still referenced by a History entry"),
+            "A log entry must be written for the refused deletion"
+        )
+        XCTAssertFalse(logContents.contains("owned.caf"), "The log must not contain the filename itself")
+    }
+
+    /// Unsafe names must never reach the filesystem call — files at those
+    /// locations (real or simulated) must remain, and none is named in the log.
+    func testDiscardUnreferencedAudioRejectsUnsafeNames() throws {
+        let dir = try makeDir()
+        let audioDir = dir.appendingPathComponent("audio")
+        try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        let escapedFile = dir.appendingPathComponent("escaped.caf")
+        try Data("outside".utf8).write(to: escapedFile)
+        let hiddenFile = audioDir.appendingPathComponent(".hidden")
+        try Data("hidden".utf8).write(to: hiddenFile)
+
+        let logsDir = try makeDir()
+        let logger = ErrorLogger.test(logsDirectory: logsDir)
+        let store = HistoryStore.test(
+            storeURL: dir.appendingPathComponent("history.jsonl"),
+            audioDirectory: audioDir,
+            errorLogger: logger
+        )
+
+        let unsafeNames = ["../escaped.caf", ".", "..", ".hidden", "a/b", ""]
+        for name in unsafeNames {
+            store.discardUnreferencedAudio(named: name)
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: escapedFile.path), "../escaped.caf must not be deleted")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: hiddenFile.path), ".hidden must not be deleted")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioDir.path), "audioDir itself (\".\"/\"..\") must not be deleted")
+
+        let logContents = try String(contentsOf: logger.currentLogFileURL, encoding: .utf8)
+        for name in unsafeNames where !name.isEmpty {
+            XCTAssertFalse(logContents.contains(name), "Log must not contain the rejected filename \"\(name)\"")
+        }
+    }
+
+    /// A missing file must not produce any log entry — it was only ever a
+    /// best-effort cleanup.
+    func testDiscardUnreferencedAudioMissingFileLogsNothing() throws {
+        let dir = try makeDir()
+        let audioDir = dir.appendingPathComponent("audio")
+        try FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        let logsDir = try makeDir()
+        let logger = ErrorLogger.test(logsDirectory: logsDir)
+        let store = HistoryStore.test(
+            storeURL: dir.appendingPathComponent("history.jsonl"),
+            audioDirectory: audioDir,
+            errorLogger: logger
+        )
+
+        store.discardUnreferencedAudio(named: "does-not-exist.caf")
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: logger.currentLogFileURL.path),
+            "No log file should even be created for a missing file"
+        )
     }
 }

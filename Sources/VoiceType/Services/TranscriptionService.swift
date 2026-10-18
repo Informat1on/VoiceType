@@ -44,6 +44,10 @@ enum TranscriptionError: LocalizedError {
     case invalidAudioData
     case unsupportedFormat
     case transcriptionTimeout
+    /// D3: a transcription was requested while another was already in flight.
+    /// `isTranscribing` is claimed synchronously before any `await`, so
+    /// overlapping calls fail fast instead of racing the same instance.
+    case busy
 
     var errorDescription: String? {
         switch self {
@@ -62,11 +66,21 @@ enum TranscriptionError: LocalizedError {
             return "Unsupported audio format. Expected 16kHz mono PCM float samples."
         case .transcriptionTimeout:
             return "Transcription timed out. The model may be too large for your device."
+        case .busy:
+            return "A transcription is already in progress."
         }
     }
 }
 
 // MARK: - TranscriptionOutcome
+
+/// One raw whisper segment, before the hallucination filter. Times in ms from
+/// the start of the audio (SwiftWhisper.Segment already converts from 10 ms units).
+struct TimedSegment: Equatable {
+    let text: String
+    let startMs: Int
+    let endMs: Int
+}
 
 /// Result of `transcribe(audio:language:)`, added ahead of the text normalizer
 /// (task t-raw-text, 2026-07-27): once a normalizer sits between whisper and
@@ -90,6 +104,9 @@ struct TranscriptionOutcome {
     /// itself stays side-effect free, but a dropped segment is exactly the
     /// signal T16 exists to measure, and it must not vanish silently.
     let removedTemplates: [String]
+    /// Raw whisper segments with timings, in decode order. Consumed by the replay
+    /// harness only; the dictation path ignores it.
+    let segments: [TimedSegment]
 }
 
 /// Result of the pure post-processing chain. Separate from
@@ -113,30 +130,44 @@ final class TranscriptionService: ObservableObject {
     @Published var isTranscribing: Bool = false
     @Published var progress: Double = 0.0
     @Published var lastResult: String?
-    /// Load + warm-up lifecycle. Observed by MenuBarView to render the model status dot.
-    @Published private(set) var modelStatus: ModelStatus = .notLoaded
+    /// Load + warm-up lifecycle. Observed by MenuBarView. Not `private(set)`
+    /// (D3): `abandonRun` in NativeAbortSignal.swift sets `.notLoaded`.
+    @Published var modelStatus: ModelStatus = .notLoaded
 
-    /// H3: Maximum seconds a native transcription may run before it is forcibly
-    /// cancelled.  Previously declared only as an error case but never enforced;
-    /// now races against the real whisper.transcribe call via withThrowingTaskGroup.
+    /// H3: max seconds a native transcription may run before it is forcibly
+    /// cancelled (D3: via `runNative`/`race`). Effective ceiling is
+    /// `Self.effectiveTimeout(base:audioSeconds:)`, never less than the audio.
     var transcriptionTimeout: TimeInterval = 30
 
-    private var whisper: Whisper?
-    private var modelURL: URL?
+    /// D3: how long `transcribe`/`shutdown` wait for warm-up to retire before
+    /// abandoning its native run.
+    static let warmUpWaitLimit: TimeInterval = 10
+
+    // D3: internal, not private — runNative/onNativeRunReturned/abandonRun
+    // live in NativeAbortSignal.swift (file_length budget) and need these.
+    var whisper: Whisper?
+    var modelURL: URL?
     private var currentLanguage: String?
     private var currentModelName: String?
-    private var _initialPrompt: UnsafeMutablePointer<CChar>?
+    var _initialPrompt: NativeCString?
     var currentInitialPromptText: String?
+    /// D3: native runs abandoned but not yet actually returned. Incremented in
+    /// `abandonRun`, decremented in `onNativeRunReturned` on genuine retirement
+    /// — NOT gated on `self.whisper` matching. `shutdown()` needs this at zero.
+    var abandonedRunCount: Int = 0
+    /// D3: (token, whisper) of whichever native call `runNative` has in
+    /// flight, so an external bounded wait can trigger THIS run's abort signal.
+    var activeRun: (token: NativeRunToken, whisper: Whisper)?
 
     // H1: monotonically-increasing generation counter for loadModel.
     // Each call captures a local copy before the async work begins.
     // The result is committed only when the captured generation matches the
     // current value — stale (out-of-order) loads are silently discarded.
-    private var modelLoadGeneration: Int = 0
+    var modelLoadGeneration: Int = 0
 
     /// Cancellable handle for background warm-up. Cancelled (and awaited) by transcribe()
     /// so a real transcription always pre-empts an ongoing warm-up pass.
-    private var warmUpTask: Task<Void, Never>?
+    var warmUpTask: Task<Void, Never>?
 
     /// True while performWarmUp() is executing — defers setInitialPrompt() the same way
     /// isTranscribing does (VT-WARM-002: prevents prompt restore from overwriting user intent).
@@ -192,22 +223,20 @@ final class TranscriptionService: ObservableObject {
     }
 
     /// Unconditionally installs a new prompt buffer. Must only be called when NOT transcribing.
+    ///
+    /// D3: `_initialPrompt` is now a `NativeCString` (ARC-owned), so replacing it
+    /// only drops this service's own reference — a native run in flight that
+    /// captured the previous box (see `runNative`) keeps its own strong
+    /// reference, so the buffer is freed only once that run actually returns.
     private func _applyPromptNow(_ text: String?) {
-        if let existing = _initialPrompt {
-            free(existing)
-            _initialPrompt = nil
-            // Clear the C-level pointer immediately so whisper params never reference freed memory
-            // if strdup fails below and we return early.
-            whisper?.params.initial_prompt = nil
-        }
         currentInitialPromptText = text.flatMap { $0.isEmpty ? nil : $0 }
-        guard let text, !text.isEmpty else {
+        guard let text, !text.isEmpty, let box = NativeCString(text) else {
+            _initialPrompt = nil
             whisper?.params.initial_prompt = nil
             return
         }
-        guard let ptr = strdup(text) else { return }
-        _initialPrompt = ptr
-        whisper?.params.initial_prompt = UnsafePointer(ptr)
+        _initialPrompt = box
+        whisper?.params.initial_prompt = UnsafePointer(box.pointer)
     }
 
     /// Called after transcription completes to flush any prompt change that was deferred.
@@ -236,6 +265,15 @@ final class TranscriptionService: ObservableObject {
 
     /// VT-WARM-004: plant a modelStatus value without going through loadModel.
     func _testSetModelStatus(_ status: ModelStatus) { modelStatus = status }
+
+    /// D3: drive isTranscribing without a real transcription (mirrors _testIsWarmingUp).
+    var _testIsTranscribing: Bool {
+        get { isTranscribing }
+        set { isTranscribing = newValue }
+    }
+
+    /// D3: observe abandoned-run bookkeeping directly.
+    var _testAbandonedRunCount: Int { abandonedRunCount }
     #endif
 
     /// Build and apply the initial prompt from the current language + custom vocabulary.
@@ -267,11 +305,9 @@ final class TranscriptionService: ObservableObject {
         )
     }
 
-    deinit {
-        if let existing = _initialPrompt {
-            free(existing)
-        }
-    }
+    // No deinit needed for `_initialPrompt` (D3): it is a `NativeCString`, which
+    // frees its own strdup buffer in its own `deinit` once nothing — including
+    // this service and any in-flight native run's closure — references it.
 
     /// Release the whisper context before the process exits.
     ///
@@ -299,21 +335,31 @@ final class TranscriptionService: ObservableObject {
         isShuttingDown = true
         modelLoadGeneration &+= 1
 
+        // D3: bound the warm-up drain — a wedged native call must not hang app
+        // quit. Times out → abandon its run; the while-loop below then waits
+        // (bounded) for abandonedRunCount to clear before declaring it safe.
         if let task = warmUpTask {
             task.cancel()
-            _ = await task.value   // drain so whisper_full returns on the C side
             warmUpTask = nil
+            let reason = "shutdown: warm-up wait exceeded \(Self.warmUpWaitLimit)s"
+            if await waitForWarmUpTask(task, reason: reason) == false {
+                AppLog.models.error("shutdown: timed out waiting for warm-up — its native run was abandoned")
+            }
         }
 
-        // Wait out an in-flight transcription rather than freeing under it, and any
-        // model load still inside Whisper(fromFileURL:) — that constructor builds a
-        // native context which must not land after we declare the exit safe.
+        // Wait out an in-flight transcription, a model load still inside
+        // Whisper(fromFileURL:), and (D3) any abandoned run not yet retired —
+        // abandoning only detaches it from user-facing state, it does not make
+        // whisper_full return instantly, so freeing `whisper` under it would
+        // still be a use-after-free.
         let deadline = Date().addingTimeInterval(Self.shutdownDrainTimeout)
-        while (isTranscribing || activeModelLoads > 0) && Date() < deadline {
+        while (isTranscribing || activeModelLoads > 0 || abandonedRunCount > 0) && Date() < deadline {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
-        guard !isTranscribing, activeModelLoads == 0 else {
-            AppLog.models.error("shutdown timed out (transcribing=\(self.isTranscribing), loads=\(self.activeModelLoads)) — context left alive, caller must _exit")
+        guard !isTranscribing, activeModelLoads == 0, abandonedRunCount == 0 else {
+            AppLog.models.error(
+                "shutdown timed out (transcribing=\(self.isTranscribing), loads=\(self.activeModelLoads), abandonedRuns=\(self.abandonedRunCount)) — context left alive, caller must _exit"
+            )
             return false
         }
 
@@ -634,6 +680,15 @@ final class TranscriptionService: ObservableObject {
         }
     }
 
+    // MARK: - D3: native run bookkeeping (timeout, abort, abandonment)
+    // `runNative`, `onNativeRunReturned` and `abandonRun` — the shared
+    // abort/timeout machinery used by both `transcribe` and `performWarmUp` —
+    // live in an `extension TranscriptionService` in NativeAbortSignal.swift,
+    // to stay under this file's file_length budget. `whisper`, `modelURL`,
+    // `modelStatus`, `modelLoadGeneration`, `warmUpTask`, `abandonedRunCount`,
+    // `activeRun` and `_initialPrompt` are `internal` (not `private`) so that
+    // extension can reach them.
+
     // MARK: - Warm-up
 
     /// Writes a marker to stderr once warm-up has actually run a compute graph,
@@ -691,23 +746,11 @@ final class TranscriptionService: ObservableObject {
         let silenceBuffer = [Float](repeating: 0, count: 8_000)   // 500 ms @ 16 kHz
 
         do {
-            _ = try await withThrowingTaskGroup(of: [Segment].self) { group in
-                group.addTask {
-                    try await whisper.transcribe(audioFrames: silenceBuffer)
-                }
-                // 30-second safety timeout — identical ceiling used for real transcriptions.
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 30_000_000_000)
-                    throw TranscriptionError.transcriptionTimeout
-                }
-                // Return first result (real transcription or timeout).
-                guard let result = try await group.next() else {
-                    group.cancelAll()
-                    return [Segment]()
-                }
-                group.cancelAll()
-                return result
-            }
+            // D3: 30-second safety timeout — identical ceiling used for real
+            // transcriptions — now genuinely enforced via runNative/race: if it
+            // elapses, the run is abandoned and this call throws
+            // TranscriptionError.transcriptionTimeout instead of hanging.
+            _ = try await runNative(on: whisper, audio: silenceBuffer, timeout: 30)
 
             // VT-WARM-002: Only restore the saved prompt when the generation is still
             // current AND no user-initiated setInitialPrompt arrived while we were busy
@@ -746,12 +789,92 @@ final class TranscriptionService: ObservableObject {
         }
     }
 
+    /// One-shot manual QA lever: with `VOICETYPE_DEBUG_FAIL_ASR=1` set, the
+    /// first `transcribe` call in the process's life fails before touching
+    /// whisper (exercises the History "failed"+Retry path); later calls work
+    /// normally. Not `#if DEBUG` — the manual checklist runs against the
+    /// installed app, which may be a Release build.
+    private static var debugFailASRConsumed = false
+
+    private static func consumeDebugFailASROnce() -> Bool {
+        guard ProcessInfo.processInfo.environment["VOICETYPE_DEBUG_FAIL_ASR"] == "1" else { return false }
+        guard !debugFailASRConsumed else { return false }
+        debugFailASRConsumed = true
+        return true
+    }
+
+    /// D3: waits up to `warmUpWaitLimit` for `task` (a `warmUpTask` already
+    /// cancelled and nilled by the caller) to retire, instead of forever. Past
+    /// the limit, abandons its native run (`abandonRun`, using `reason`) and
+    /// returns `false`; `true` means it retired in time. Shared by
+    /// `drainWarmUpBeforeTranscribe` and `shutdown`.
+    private func waitForWarmUpTask(_ task: Task<Void, Never>, reason: String) async -> Bool {
+        do {
+            _ = try await Self.race(
+                timeout: Self.warmUpWaitLimit,
+                operation: { await task.value },
+                onTimeout: { [weak self] in
+                    Task { @MainActor in
+                        guard let self, let active = self.activeRun else { return }
+                        self.abandonRun(token: active.token, whisper: active.whisper, reason: reason)
+                    }
+                }
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// VT-WARM-001, bounded (D3): pre-empts an in-flight warm-up via
+    /// `waitForWarmUpTask` before a real transcription runs; on timeout throws
+    /// `modelNotLoaded` instead of proceeding. Returns the generation captured
+    /// before the wait, for the caller to detect a drop/replace. Split out of
+    /// `transcribe` for its complexity.
+    private func drainWarmUpBeforeTranscribe() async throws -> Int {
+        let generationBeforeWait = modelLoadGeneration
+        guard let task = warmUpTask else { return generationBeforeWait }
+        task.cancel()
+        warmUpTask = nil
+        guard await waitForWarmUpTask(task, reason: "Warm-up wait exceeded \(Self.warmUpWaitLimit)s") else {
+            AppLog.transcription.error("Timed out waiting \(Self.warmUpWaitLimit)s for warm-up to finish — model dropped")
+            throw TranscriptionError.modelNotLoaded
+        }
+        return generationBeforeWait
+    }
+
     func transcribe(audio: [Float], language: Language = .auto) async throws -> TranscriptionOutcome {
         // A transcription started after the drain would keep whisper_full running
         // past the point where we report the app safe to quit.  See shutdown().
         guard !isShuttingDown else {
             AppLog.transcription.warning("transcribe called during shutdown — rejected")
             throw TranscriptionError.modelNotLoaded
+        }
+
+        // D3 exclusivity: claim isTranscribing synchronously, before any `await`,
+        // so an overlapping call gets `.busy` instead of racing the same
+        // Whisper instance (previously only `whisper.inProgress`, checked
+        // several `await`s below, guarded against this).
+        guard !isTranscribing else {
+            AppLog.transcription.warning("transcribe called while another transcription is already in progress")
+            throw TranscriptionError.busy
+        }
+        isTranscribing = true
+        defer {
+            isTranscribing = false
+            // Apply any prompt change that was deferred while whisper_full was running.
+            // isTranscribing is already false here, so _applyPromptNow will not re-defer.
+            _flushPendingPrompt()
+        }
+
+        if Self.consumeDebugFailASROnce() {
+            let debugError = NSError(
+                domain: "TranscriptionService.DebugFailASR",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Forced failure via VOICETYPE_DEBUG_FAIL_ASR=1 (manual QA only)."]
+            )
+            AppLog.transcription.notice("VOICETYPE_DEBUG_FAIL_ASR=1: failing this transcription before whisper runs")
+            throw TranscriptionError.transcriptionFailed(debugError)
         }
 
         guard let whisper else {
@@ -769,7 +892,9 @@ final class TranscriptionService: ObservableObject {
         print("[TranscriptionService] Starting transcription with model: \(currentModelName ?? "unknown")")
         print("[TranscriptionService] Audio samples: \(audio.count), duration: \(String(format: "%.2f", Double(audio.count) / 16000.0))s, language: \(language.rawValue)")
 
-        // Pre-flight check: Handle instanceBusy with retry for rapid sequential transcriptions
+        // Pre-flight check: Handle instanceBusy with retry for rapid sequential transcriptions.
+        // Defensive-in-depth only now: the isTranscribing guard above should make this
+        // unreachable (a wedged native run drops its Whisper instance, see abandonRun).
         if whisper.inProgress {
             print("[TranscriptionService] Whisper busy, waiting with backoff...")
             // Wait up to 1.5s total with linear backoff (100ms, 200ms, 300ms, 400ms, 500ms)
@@ -798,14 +923,10 @@ final class TranscriptionService: ObservableObject {
         // language/thread params while whisper_full runs on a background thread.
         applyRuntimeConfiguration(language: language)
 
-        // VT-WARM-001: Cancel + await warm-up so whisper_full is fully retired before we
-        // call whisper.transcribe() — prevents inProgress collision. Nil first so
-        // performWarmUp's defer skips its own nil assignment.
-        if let task = warmUpTask {
-            task.cancel()
-            warmUpTask = nil
-            _ = await task.value
-        }
+        // VT-WARM-001, bounded (D3): cancel + wait for warm-up to retire before
+        // calling whisper.transcribe(), but bounded by warmUpWaitLimit instead
+        // of awaiting task.value forever (see drainWarmUpBeforeTranscribe).
+        let generationBeforeWait = try await drainWarmUpBeforeTranscribe()
 
         // VT-WARM-004: Warm-up may have been cancelled mid-flight leaving status at .warming.
         // The model is already exercised enough; advance to .ready so the UI stays coherent.
@@ -813,16 +934,16 @@ final class TranscriptionService: ObservableObject {
             modelStatus = .ready
         }
 
-        isTranscribing = true
+        // D3: re-read the instance AFTER the wait above — a timeout there (or
+        // in warm-up's own 30s ceiling) may have dropped/replaced it. ASR must
+        // never run on the instance captured before this await.
+        guard modelLoadGeneration == generationBeforeWait, let currentWhisper = self.whisper else {
+            AppLog.transcription.warning("Model instance changed or was dropped while waiting for warm-up — aborting this transcription")
+            throw TranscriptionError.modelNotLoaded
+        }
+
         progress = 0.0
         lastResult = nil
-
-        defer {
-            isTranscribing = false
-            // Apply any prompt change that was deferred while whisper_full was running.
-            // isTranscribing is already false here, so _applyPromptNow will not re-defer.
-            _flushPendingPrompt()
-        }
 
         do {
             // Read the normalizer toggle once, here, and use the same value
@@ -843,38 +964,17 @@ final class TranscriptionService: ObservableObject {
 
             let transcribeStart = CFAbsoluteTimeGetCurrent()
 
-            // H3: Race the actual transcription against a timeout task.
-            // `transcriptionTimeout` was previously declared but never enforced —
-            // a stuck whisper_full would wedge `isTranscribing = true` forever.
-            // withThrowingTaskGroup cancels the winner's sibling automatically.
-            let timeoutSeconds = transcriptionTimeout
-            let segments: [Segment] = try await withThrowingTaskGroup(of: [Segment].self) { group in
-                group.addTask {
-                    try await whisper.transcribe(audioFrames: audio)
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-                    throw TranscriptionError.transcriptionTimeout
-                }
-                // Take whichever task finishes first; cancel the other.
-                guard let result = try await group.next() else {
-                    group.cancelAll()
-                    let noResultError = NSError(
-                        domain: "TranscriptionService",
-                        code: -3,
-                        userInfo: [NSLocalizedDescriptionKey: "Task group completed with no result"]
-                    )
-                    throw TranscriptionError.transcriptionFailed(noResultError)
-                }
-                group.cancelAll()
-                return result
-            }
+            // D3: honest timeout, never less than the audio's own duration —
+            // enforced via runNative/race, which actually abandons a wedged
+            // native call instead of just cancelling the loser's Swift Task.
+            let audioSeconds = Double(audio.count) / 16000.0
+            let timeoutSeconds = Self.effectiveTimeout(base: transcriptionTimeout, audioSeconds: audioSeconds)
+            let segments: [Segment] = try await runNative(on: currentWhisper, audio: audio, timeout: timeoutSeconds)
 
             let segmentTexts = segments.map { $0.text }
 
             let transcribeTime = CFAbsoluteTimeGetCurrent() - transcribeStart
-            let audioDuration = Double(audio.count) / 16000.0
-            let realtimeFactor = transcribeTime > 0 ? audioDuration / transcribeTime : 0
+            let realtimeFactor = transcribeTime > 0 ? audioSeconds / transcribeTime : 0
             print(
                 "[TranscriptionService] Transcription completed in \(String(format: "%.2f", transcribeTime))s (\(String(format: "%.2fx", realtimeFactor)) realtime)"
             )
@@ -914,7 +1014,8 @@ final class TranscriptionService: ObservableObject {
                 rawText: processed.raw,
                 text: processed.text,
                 pipelineStamp: stamp,
-                removedTemplates: processed.removedTemplates
+                removedTemplates: processed.removedTemplates,
+                segments: segments.map { TimedSegment(text: $0.text, startMs: $0.startTime, endMs: $0.endTime) }
             )
         } catch TranscriptionError.transcriptionTimeout {
             progress = 0.0
@@ -952,141 +1053,14 @@ final class TranscriptionService: ObservableObject {
         modelStatus = .notLoaded
     }
 
-    // MARK: - Post-processing chain
-
-    /// The whole post-processing chain as one pure function.
-    ///
-    /// Exposed (rather than inlined into `transcribe`) because unit tests of
-    /// `HallucinationFilter` and `LexiconNormalizer` in isolation cannot catch
-    /// the defects that actually matter here: a missing call, the two steps in
-    /// the wrong order, a mutated `raw`, or trim running before normalization.
-    /// Plan review flagged exactly this gap.
-    ///
-    /// Order is load-bearing:
-    ///   1. `raw` is captured from the untouched segments — it is the corpus
-    ///      artifact and must never reflect any filtering.
-    ///   2. The hallucination filter runs on whisper's own segment boundaries,
-    ///      which only exist before the join.
-    ///   3. Fillers are removed from the joined text.
-    ///   4. The lexicon normalizer runs after them, so a filler standing
-    ///      between the halves of a multi-word dictionary entry cannot hide it
-    ///      ("сонет ну агенты"). Measured on the owner's 1096-record corpus,
-    ///      that collision never actually occurs — but the guard is free and
-    ///      the failure would be silent, so the order is chosen to make it
-    ///      impossible rather than unlikely.
-    ///   5. `conditionallyTrim` runs last, so it also trims whitespace that
-    ///      earlier steps may have exposed.
-    ///
-    /// `trim`, `normalize` and `removeFillers` are passed in rather than read
-    /// from `AppSettings` so the chain stays pure and testable in every toggle
-    /// combination.
-    ///
-    /// The hallucination filter has no toggle by design (see
-    /// `AppSettings.normalizeTranscript`): it removes text the user never
-    /// spoke, which nobody wants inserted.
-    static func postProcess(
-        segments: [String],
-        trim: Bool,
-        normalize: Bool,
-        removeFillers: Bool
-    ) -> PostProcessResult {
-        let raw = segments.joined()
-
-        let (kept, removed) = HallucinationFilter.split(segments: segments)
-
-        var text = kept.joined()
-        var stages: [StageEdits] = []
-
-        if removeFillers {
-            let pass = FillerRemover.removeWithEdits(text)
-            text = pass.text
-            stages.append(StageEdits(stage: .fillers, edits: pass.edits))
-        }
-
-        if normalize {
-            let pass = LexiconNormalizer.normalizeWithEdits(text)
-            text = pass.text
-            stages.append(StageEdits(stage: .lexicon, edits: pass.edits))
-        }
-
-        if trim {
-            text = trimTrailingWhitespace(text)
-        }
-
-        return PostProcessResult(raw: raw, text: text, removedTemplates: removed, stages: stages)
-    }
-
-    // MARK: - Trim helper
-
-    /// Gate trim on the user-facing toggle in Settings > General > Insertion.
-    /// Called from `transcribe(audio:language:)` — single source of truth.
-    /// Exposed `internal` so `TranscriptionServiceTrimToggleTests` can test it
-    /// without invoking whisper.cpp.
-    ///
-    /// Trims TRAILING whitespace only, matching the prototype label
-    /// "Trim trailing whitespace · Removes one trailing space Whisper often
-    /// emits" (v1-cool-inksteel.html .prefs-row INSERTION group). Leading
-    /// whitespace is preserved when the toggle is on — e.g. transcripts that
-    /// intentionally start with an indent are not silently mangled.
-    /// Code Reviewer O P2.
-    static func conditionallyTrim(_ text: String) -> String {
-        guard AppSettings.shared.trimWhitespaceAfterInsert else { return text }
-        return trimTrailingWhitespace(text)
-    }
-
-    /// The trim itself, without the settings lookup. Split out so
-    /// `postProcess(segments:trim:)` can stay a pure function testable in both
-    /// toggle positions.
-    static func trimTrailingWhitespace(_ text: String) -> String {
-        var result = text
-        while result.last?.isWhitespace == true {
-            result.removeLast()
-        }
-        return result
-    }
-
-    // MARK: - Pipeline stamp
-
-    /// Post-processing pipeline version. Bump on every change to the filter
-    /// templates or the normalizer rules/dictionary, so history entries stay
-    /// attributable to the pipeline that produced them.
-    ///
-    /// `0` — no post-processing at all (whisper output + optional trim).
-    /// `1` — hallucination filter + lexicon normalizer (2026-07-27).
-    /// `2` — filler removal added ahead of the normalizer (2026-07-27).
-    private static let postProcessingVersion = 2
-
-    /// Snapshot of the pipeline that produced a transcription's final text,
-    /// built from the initial prompt active for that run. Must be called
-    /// BEFORE whisper.transcribe() runs, not after: transcribe(audio:language:)
-    /// defers any pending setInitialPrompt() call to a `defer` block that fires
-    /// on return, so reading currentInitialPromptText after the call would
-    /// describe the NEXT transcription's prompt, not the one just used.
-    ///
-    /// Format: "n<postProcessingVersion>[-nolex]:p<first 12 hex chars of
-    /// SHA-256(prompt)>". Hashing (rather than embedding the prompt itself)
-    /// keeps the stamp short and avoids leaking custom vocabulary into every
-    /// history line, while still letting two entries be compared for "same
-    /// prompt, different pipeline version". CryptoKit.SHA256, not
-    /// Swift.Hasher — Hasher is seeded randomly per process, so it is not
-    /// stable across app launches, which a persisted stamp requires.
-    ///
-    /// Suffixes mark stages that were switched OFF for that entry: `-nofill`
-    /// for filler removal, `-nolex` for the dictionary. Without them the stamp
-    /// would claim passes that never ran, and attributing an entry's text to
-    /// the pipeline that actually produced it is the stamp's only job. They are
-    /// suffixes on the version rather than separate version numbers: the rules
-    /// did not change, only whether a stage ran.
-    ///
-    /// Canonical order is pipeline order — `-nofill` before `-nolex` — so the
-    /// four combinations produce exactly four strings and never two spellings
-    /// of the same state.
-    static func pipelineStamp(forPrompt prompt: String?, normalizing: Bool, removingFillers: Bool) -> String {
-        let digest = SHA256.hash(data: Data((prompt ?? "").utf8))
-        let hex = digest.map { String(format: "%02x", $0) }.joined()
-        var version = "n\(postProcessingVersion)"
-        if !removingFillers { version += "-nofill" }
-        if !normalizing { version += "-nolex" }
-        return "\(version):p\(hex.prefix(12))"
-    }
+    // MARK: - Post-processing chain, trim helper, pipeline stamp
+    // Moved to TranscriptionService+PostProcess.swift (quality-tools plan,
+    // T1): this file was 1186 lines against the 1200-line file_length error
+    // threshold. See that file for postProcess/conditionallyTrim/
+    // trimTrailingWhitespace/pipelineStamp and postProcessingVersion.
 }
+
+// D3 timeout/race helpers (RaceOutcomeBox, TranscriptionService.effectiveTimeout,
+// TranscriptionService.race) live in NativeAbortSignal.swift — they need no
+// TranscriptionService-private state, only `TranscriptionError`, and keeping
+// them there keeps this file under the file_length budget.

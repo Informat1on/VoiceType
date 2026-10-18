@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-10-18
+
+Dictation you can rely on: the text lands where you started speaking, your
+clipboard survives, a failed or empty recognition is kept in History with a
+Retry button, and silence no longer turns into invented text.
+
+### Added
+
+- **Retry transcription from History.** A recognition that fails or times out
+  is saved to History with its audio and a "Retry transcription" action
+  (up to 20 failed entries, kept separately from the regular history). A
+  recording that produced no text but is at least 1 second long — or was
+  interrupted — is saved the same way, so nothing you said is silently lost.
+- **Eval editor: control examples and problem class.** "Save as correct"
+  stores an accurate transcription as a control example without edits; when
+  you correct a transcription you can mark what went wrong (ASR,
+  post-processing, insertion, capture). The raw whisper output is shown next
+  to the final text.
+
+### Changed
+
+- **Paste keeps your whole clipboard.** All items and types (images, files,
+  rich text) are restored after insertion, and only if nothing new was copied
+  meanwhile. The temporary text is marked transient, so clipboard managers
+  don't record it. If the clipboard can't be snapshotted completely, it is left
+  untouched and the text is typed instead.
+- **Text is inserted only into the app where you started dictating.** If you
+  switch apps while recognition runs, the text is not inserted (and Enter is
+  not sent); it stays in History.
+- **Digital silence is no longer sent to whisper.** A recording that is
+  essentially zero signal shows "Nothing heard" instead of a hallucinated
+  phrase, and its audio is deleted.
+- **The next dictation is available immediately** after insertion, without
+  waiting for the 400 ms capsule animation.
+
+### Fixed
+
+- **"|" and fragments of your custom vocabulary no longer appear in
+  dictations.** The bilingual seed and the custom vocabulary were joined into
+  whisper's prompt with " | ", and whisper occasionally echoed that separator
+  (and the start of the vocabulary) back into the text. They are now joined
+  with a plain space. Tip: Custom vocabulary works best as example sentences
+  in your own style; English instructions to the model ("This is a recording
+  where…") are read as text, not followed, and measurably hurt accuracy.
+- **Recognition timeouts really stop whisper.** A timed-out run is aborted
+  inside whisper, the abandoned model instance is reloaded, and the warm-up
+  and shutdown waits are bounded.
+- **A finished transcription no longer keeps the model instance alive for up
+  to 30 seconds.** The timeout timer is now cancelled as soon as recognition
+  completes.
+- **No more orphaned audio files.** Audio of an empty result is either kept
+  with a History entry or deleted; previously it stayed on disk with no owner
+  (1–6 files a day).
+
+### Developer tools
+
+- `scripts/replay.sh` runs the production transcription path over your
+  History (frozen copy of history and audio) or a folder of audio files and
+  writes JSONL outside the repo; `scripts/replay-compare.py` compares runs;
+  `scripts/shadow-analysis.py` measures VAD/repeat-detector candidates without
+  touching the production path. Per-stage latencies are recorded in History.
+- Tests no longer write to the real `errors.log` or leave
+  `voicetype.tests.*` preference files behind.
+
 ## [1.4.2] - 2026-09-18
 
 A bug-fix release: when the macOS audio service itself hangs, VoiceType now

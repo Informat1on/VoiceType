@@ -123,6 +123,20 @@ final class WhisperTokenizerTests: XCTestCase {
         XCTAssertEqual(service.currentInitialPromptText, expected)
     }
 
+    /// whisper echoed the former " | " separator back into dictations
+    /// (docs/decisions/2026-10-18-prompt-separator.md). Pins the plain-space
+    /// join and the absence of any "|" the app itself would put in the prompt.
+    @MainActor
+    func testFullPromptJoinsWithPlainSpace() {
+        XCTAssertEqual(PromptBudget.fullPrompt(seed: "Это работает.", vocabulary: "Codex, Fable"),
+                       "Это работает. Codex, Fable")
+        XCTAssertEqual(PromptBudget.fullPrompt(seed: "Это работает.", vocabulary: ""), "Это работает.")
+        XCTAssertEqual(PromptBudget.fullPrompt(seed: "", vocabulary: "Codex, Fable"), "Codex, Fable")
+        XCTAssertEqual(PromptBudget.fullPrompt(seed: "", vocabulary: ""), "")
+        XCTAssertFalse(
+            PromptBudget.fullPrompt(seed: TranscriptionService.bilingualSeed, vocabulary: "Codex").contains("|"))
+    }
+
     // MARK: - Широкая сверка (офлайн-харнесс)
 
     /// Сверка на произвольно большом наборе строк, снятом настоящим

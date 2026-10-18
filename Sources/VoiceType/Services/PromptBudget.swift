@@ -32,8 +32,14 @@ enum PromptBudget {
     /// Builds the exact string `TranscriptionService.applyInitialPrompt()`
     /// hands to whisper — the single source of truth both share, so the
     /// on-screen counter can never drift from what's actually sent.
+    ///
+    /// Joined with a plain space, not a visible separator. whisper reads the
+    /// prompt as preceding transcript, and it echoed the former " | " back
+    /// into dictations — the bare "|" or "| <start of vocabulary>" in the
+    /// middle of real speech. Replay over the owner's history: echo gone,
+    /// accuracy no worse (docs/decisions/2026-10-18-prompt-separator.md).
     static func fullPrompt(seed: String, vocabulary: String) -> String {
-        [seed, vocabulary].filter { !$0.isEmpty }.joined(separator: " | ")
+        [seed, vocabulary].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     /// Evaluates the Custom vocabulary field's state for the Settings UI.
@@ -51,7 +57,7 @@ enum PromptBudget {
 
 /// Token-budget snapshot for the Custom vocabulary field.
 struct Evaluation {
-    /// Whole prompt as whisper will see it: seed + separator + vocabulary.
+    /// Whole prompt as whisper will see it: seed + space + vocabulary.
     let totalTokens: Int
     /// How much of the budget the invisible bilingual seed eats on its own —
     /// shown so the user understands why their own text has less room than

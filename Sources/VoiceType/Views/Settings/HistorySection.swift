@@ -154,8 +154,15 @@ private struct HistorySheetView: View {
                 onDelete: {
                     delete(entry)
                     if selectedID == entry.id { selectedID = nil }
-                }
+                },
+                onRetry: { await retryTranscription(entry) }
             )
+            // Ties HistoryDetailView's identity to the selected entry, so its
+            // @State (retry-in-flight flag, last retry outcome) resets whenever
+            // the user picks a different row. A successful retry keeps the same
+            // id (the entry stops being failed but isn't reselected), so the
+            // in-flight state intentionally survives that transition.
+            .id(entry.id)
         } else {
             VStack {
                 Text("Select an entry to view details.")
@@ -177,36 +184,14 @@ private struct HistorySheetView: View {
             app.activate(options: [])
         }
 
-        let pb = NSPasteboard.general
-
-        // Snapshot the current clipboard contents before clobbering it.
-        let savedItems: [[NSPasteboard.PasteboardType: Data]] = pb.pasteboardItems?.compactMap { item in
-            var copy: [NSPasteboard.PasteboardType: Data] = [:]
-            for type in item.types {
-                if let data = item.data(forType: type) {
-                    copy[type] = data
-                }
-            }
-            return copy.isEmpty ? nil : copy
-        } ?? []
-
-        // Set history text on the pasteboard.
-        pb.clearContents()
-        pb.setString(entry.text, forType: .string)
-
-        // Wait for app activation, paste, then restore the original clipboard.
+        // Wait for app activation, then paste through the same full-clipboard
+        // preserving path as live dictation (docs/plans/reliable-dictation.md § D1).
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(150))
-            synthesizePaste()
-            // Give the paste event time to be consumed before restoring.
-            try? await Task.sleep(for: .milliseconds(100))
-            pb.clearContents()
-            for item in savedItems {
-                let pbItem = NSPasteboardItem()
-                for (type, data) in item {
-                    pbItem.setData(data, forType: type)
-                }
-                pb.writeObjects([pbItem])
+            do {
+                _ = try await TextInjectionService().insertText(entry.text, mode: .paste, pressEnterAfter: false)
+            } catch {
+                ErrorLogger.shared.log(error, category: "insertion")
             }
         }
 
@@ -224,6 +209,17 @@ private struct HistorySheetView: View {
         onReloadEntries()
     }
 
+    /// D4/E: reruns ASR on a failed entry's saved audio via AppDelegate, then
+    /// reloads entries the same way `delete(_:)` does. `selectedID` is left
+    /// untouched — since it's the entry's `id` (unchanged by a retry), the
+    /// detail panel keeps showing the same entry, now updated.
+    private func retryTranscription(_ entry: HistoryStore.Entry) async -> RetryTranscriptionOutcome {
+        let outcome = await (NSApp.delegate as? AppDelegate)?.retryTranscription(for: entry.id) ?? .failed
+        entries = HistoryStore.shared.entries()
+        onReloadEntries()
+        return outcome
+    }
+
     private func openEvalEditor(for entry: HistoryStore.Entry) {
         // VT-REV-001: route through AppDelegate so the window gets strong ownership
         // and duplicate windows are prevented. AppDelegate tracks all open editors
@@ -236,25 +232,6 @@ private struct HistorySheetView: View {
             EvalEditorWindow.open(entryID: entry.id)
         }
     }
-
-    /// Synthesize Cmd+V via CGEvent so re-insert works identically to normal injection.
-    private func synthesizePaste() {
-        let source = CGEventSource(stateID: .hidSystemState)
-        guard
-            let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: true),
-            let vDown   = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true),
-            let vUp     = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false),
-            let cmdUp   = CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: false)
-        else { return }
-
-        vDown.flags = .maskCommand
-        vUp.flags   = .maskCommand
-
-        cmdDown.post(tap: .cghidEventTap)
-        vDown.post(tap: .cghidEventTap)
-        vUp.post(tap: .cghidEventTap)
-        cmdUp.post(tap: .cghidEventTap)
-    }
 }
 
 // MARK: - HistoryListRow
@@ -265,11 +242,18 @@ private struct HistoryListRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(String(entry.text.prefix(80)))
-                .font(Typography.body)
-                .foregroundStyle(Palette.textPrimary)
-                .lineLimit(2)
-                .truncationMode(.tail)
+            if entry.isFailed {
+                Text("Transcription failed")
+                    .font(Typography.body)
+                    .foregroundStyle(Palette.error)
+                    .lineLimit(2)
+            } else {
+                Text(String(entry.text.prefix(80)))
+                    .font(Typography.body)
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+            }
             HStack(spacing: Spacing.xs) {
                 Text(entry.timestamp.formatted(.relative(presentation: .named)))
                     .font(Typography.caption)
@@ -303,6 +287,12 @@ private struct HistoryDetailView: View {
     let onCopy: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
+    /// D4/E: reruns ASR on this (failed) entry's saved audio. Never inserts
+    /// text — only fills in the entry, which the caller reloads.
+    let onRetry: () async -> RetryTranscriptionOutcome
+
+    @State private var isRetrying = false
+    @State private var retryOutcome: RetryTranscriptionOutcome?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -339,49 +329,130 @@ private struct HistoryDetailView: View {
 
             Divider()
 
-            // Full transcription text (scrollable)
+            // Full transcription text (scrollable), or the failure explanation.
             ScrollView {
-                Text(entry.text)
-                    .font(Typography.body)
-                    .foregroundStyle(Palette.textPrimary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(Spacing.lg)
+                if entry.isFailed {
+                    Text("Transcription failed (\(failureReasonText)). "
+                        + "The audio is saved — you can run recognition again.")
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(Spacing.lg)
+                } else {
+                    Text(entry.text)
+                        .font(Typography.body)
+                        .foregroundStyle(Palette.textPrimary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(Spacing.lg)
+                }
             }
 
             Divider()
 
             // Action bar
-            HStack(spacing: Spacing.sm) {
-                Button(action: onReinsert) {
-                    Label("Re-insert", systemImage: "arrow.uturn.left")
-                }
-                .buttonStyle(BorderedButtonStyle())
-                .help("Re-insert into \(entry.targetAppName)")
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                if entry.isFailed {
+                    HStack(spacing: Spacing.sm) {
+                        Button(action: retry) {
+                            HStack(spacing: Spacing.xs) {
+                                Label("Retry transcription", systemImage: "arrow.clockwise")
+                                if isRetrying {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                            }
+                        }
+                        .buttonStyle(BorderedButtonStyle())
+                        .disabled(entry.audioPath == nil || isRetrying)
+                        .help("Run recognition again on the saved audio")
 
-                Button(action: onCopy) {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                .buttonStyle(BorderedButtonStyle())
-                .help("Copy text to clipboard")
+                        Spacer()
 
-                Button(action: onEdit) {
-                    Label("Edit", systemImage: "square.and.pencil")
-                }
-                .buttonStyle(BorderedButtonStyle())
-                .help("Open in Eval Editor to review and correct")
+                        Button(role: .destructive, action: onDelete) {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        .buttonStyle(BorderedButtonStyle())
+                        .help("Delete this entry")
+                    }
 
-                Spacer()
+                    if let retryStatusText {
+                        Text(retryStatusText)
+                            .font(Typography.caption)
+                            .foregroundStyle(Palette.error)
+                    }
+                } else {
+                    HStack(spacing: Spacing.sm) {
+                        Button(action: onReinsert) {
+                            Label("Re-insert", systemImage: "arrow.uturn.left")
+                        }
+                        .buttonStyle(BorderedButtonStyle())
+                        .help("Re-insert into \(entry.targetAppName)")
 
-                Button(role: .destructive, action: onDelete) {
-                    Label("Delete", systemImage: "trash")
+                        Button(action: onCopy) {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                        .buttonStyle(BorderedButtonStyle())
+                        .help("Copy text to clipboard")
+
+                        Button(action: onEdit) {
+                            Label("Edit", systemImage: "square.and.pencil")
+                        }
+                        .buttonStyle(BorderedButtonStyle())
+                        .help("Open in Eval Editor to review and correct")
+
+                        Spacer()
+
+                        Button(role: .destructive, action: onDelete) {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        .buttonStyle(BorderedButtonStyle())
+                        .help("Delete this entry")
+                    }
                 }
-                .buttonStyle(BorderedButtonStyle())
-                .help("Delete this entry")
             }
             .padding(.horizontal, Spacing.lg)
             .padding(.vertical, Spacing.md)
         }
         .background(Palette.bgWindow)
+    }
+
+    // MARK: - Failed-entry helpers
+
+    private var failureReasonText: String {
+        switch entry.failureReason {
+        case "timeout": return "timed out"
+        case "empty": return "no speech recognized"
+        default: return "error"
+        }
+    }
+
+    private func retry() {
+        guard !isRetrying else { return }
+        isRetrying = true
+        retryOutcome = nil
+        Task {
+            let outcome = await onRetry()
+            isRetrying = false
+            retryOutcome = outcome
+        }
+    }
+
+    private var retryStatusText: String? {
+        guard let retryOutcome else { return nil }
+        switch retryOutcome {
+        case .transcribed, .notFailed:
+            return nil
+        case .busy:
+            return "VoiceType is busy — try again in a moment."
+        case .entryMissing:
+            return "This entry no longer exists."
+        case .audioMissing:
+            return "The audio file is missing."
+        case .emptyResult:
+            return "No speech recognized."
+        case .failed:
+            return "Recognition failed again — see Diagnostics → errors.log."
+        }
     }
 }

@@ -13,7 +13,7 @@ let package = Package(
         // Not `exact:` — SwiftPM rejects unsafeFlags in version-pinned dependencies,
         // and the fork needs them (-fno-objc-arc for ggml-metal, -fobjc-arc for CoreML).
         // This revision is tagged v1.9.1-vt.2 in the fork.
-        .package(url: "https://github.com/Informat1on/SwiftWhisper.git", revision: "198d330bad8afecd585a6efd9776c91c9085bba5")
+        .package(url: "https://github.com/Informat1on/SwiftWhisper.git", revision: "8ed83b7d3d44f46b62c3757b1b6aa3d3882254ea")
     ],
     targets: [
         .executableTarget(

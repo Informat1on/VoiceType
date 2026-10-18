@@ -78,11 +78,17 @@ def parse_date_bound(value, end_of_day=False):
 
 
 def load_entries(path, since, until):
-    """Читает jsonl, отбрасывая битые строки и записи вне окна дат."""
+    """Читает jsonl, отбрасывая битые строки и записи вне окна дат.
+
+    Записи со status == "failed" (D4, reliable-dictation) отделяются отдельным
+    списком: текста в них нет (ASR не отработал), поэтому во всех остальных
+    подсчётах — штампы конвейера, правки, задержки по обычным записям — они
+    не участвуют.
+    """
     if not path.exists():
         raise SystemExit(f"Файла истории нет: {path}")
 
-    entries, malformed, out_of_window = [], 0, 0
+    entries, failed, malformed, out_of_window = [], [], 0, 0
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -104,9 +110,12 @@ def load_entries(path, since, until):
             if until and (stamp is None or stamp > until):
                 out_of_window += 1
                 continue
+            if entry.get("status") == "failed":
+                failed.append(entry)
+                continue
             entries.append(entry)
 
-    return entries, malformed, out_of_window
+    return entries, failed, malformed, out_of_window
 
 
 def diff_edits(raw, out):
@@ -145,7 +154,41 @@ def snippet(text, fragment, width):
     return ("…" if start > 0 else "") + text[start:end].strip() + ("…" if end < len(text) else "")
 
 
-def build_report(entries, top, width):
+def percentile(sorted_values, pct):
+    """Ближайший ранг (round-to-nearest), без интерполяции — отчётного уровня
+    точности достаточно, а формула проще и детерминированнее."""
+    if not sorted_values:
+        return None
+    idx = max(0, min(len(sorted_values) - 1, round(pct / 100 * (len(sorted_values) - 1))))
+    return sorted_values[idx]
+
+
+def compute_latency_stats(all_entries):
+    """p50/p95/n по каждому ключу latencyMs, встреченному хоть в одной записи
+    окна (D6). Считается по ВСЕМ записям окна, включая failed — задержка
+    этапов дистанции релевантна независимо от того, вернул ли ASR текст.
+    """
+    samples_by_key = defaultdict(list)
+    for entry in all_entries:
+        latency = entry.get("latencyMs")
+        if not isinstance(latency, dict):
+            continue
+        for key, value in latency.items():
+            if isinstance(value, (int, float)):
+                samples_by_key[key].append(value)
+
+    stats = {}
+    for key, values in samples_by_key.items():
+        values.sort()
+        stats[key] = {
+            "p50": percentile(values, 50),
+            "p95": percentile(values, 95),
+            "n": len(values),
+        }
+    return stats
+
+
+def build_report(entries, failed, top, width):
     stamps = Counter()
     no_stamp = 0
     changed, unchanged = 0, 0
@@ -153,12 +196,16 @@ def build_report(entries, top, width):
     examples = {}
     span_start, span_end = None, None
 
-    for entry in entries:
-        stamp = entry.get("pipelineStamp")
+    def track_span(entry):
+        nonlocal span_start, span_end
         timestamp = parse_timestamp(entry.get("timestamp"))
         if timestamp:
             span_start = timestamp if span_start is None else min(span_start, timestamp)
             span_end = timestamp if span_end is None else max(span_end, timestamp)
+
+    for entry in entries:
+        track_span(entry)
+        stamp = entry.get("pipelineStamp")
 
         # Записи до конвейера не имеют поля pipelineStamp вовсе — не null,
         # а отсутствует; в статистику правок они не идут (handoff §14.2).
@@ -179,6 +226,11 @@ def build_report(entries, top, width):
             edits_by_kind[kind][key] += 1
             examples.setdefault((kind, key), snippet(raw, before or after, width))
 
+    failed_by_reason = Counter()
+    for entry in failed:
+        track_span(entry)
+        failed_by_reason[entry.get("failureReason") or "unknown"] += 1
+
     return {
         "total": len(entries),
         "no_stamp": no_stamp,
@@ -189,6 +241,9 @@ def build_report(entries, top, width):
         "examples": examples,
         "span": (span_start, span_end),
         "top": top,
+        "failed_count": len(failed),
+        "failed_by_reason": failed_by_reason,
+        "latency": compute_latency_stats(entries + failed),
     }
 
 
@@ -229,6 +284,23 @@ def format_report(report, source, malformed, out_of_window, include_text):
         add(f"- из них конвейер изменил текст в **{report['changed']}** ({share:.1f}%)")
         add(f"- оставил без изменений: {report['unchanged']}")
     add("")
+
+    if report["failed_count"]:
+        reasons = ", ".join(
+            f"{reason} — {count}" for reason, count in report["failed_by_reason"].most_common()
+        )
+        add(f"## Неуспешные распознавания: {report['failed_count']} (по причинам: {reasons})")
+        add("")
+
+    if report["latency"]:
+        add("## Задержки, мс (p50 / p95 / n)")
+        add("")
+        add("| этап | p50 | p95 | n |")
+        add("|---|---:|---:|---:|")
+        for key in sorted(report["latency"]):
+            stats = report["latency"][key]
+            add(f"| `{key}` | {stats['p50']} | {stats['p95']} | {stats['n']} |")
+        add("")
 
     if not report["changed"]:
         add("Правок в окне нет — сравнивать нечего.")
@@ -298,8 +370,8 @@ def main():
     if since and until and since > until:
         raise SystemExit("--since позже, чем --until")
 
-    entries, malformed, out_of_window = load_entries(args.path, since, until)
-    report = build_report(entries, top=args.top, width=args.context)
+    entries, failed, malformed, out_of_window = load_entries(args.path, since, until)
+    report = build_report(entries, failed, top=args.top, width=args.context)
     text = format_report(report, args.path, malformed, out_of_window,
                          include_text=args.include_private_text)
 

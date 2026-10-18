@@ -23,7 +23,11 @@ final class EvalCollectorTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
         }
         let url = dir.appendingPathComponent("history.jsonl")
-        let store = HistoryStore.test(storeURL: url, audioDirectory: audioDir ?? dir.appendingPathComponent("audio"))
+        let store = HistoryStore.test(
+            storeURL: url,
+            audioDirectory: audioDir ?? dir.appendingPathComponent("audio"),
+            errorLogger: makeTestErrorLogger(in: dir)
+        )
         return (store, url)
     }
 
@@ -66,7 +70,7 @@ final class EvalCollectorTests: XCTestCase {
             + "\"language\":\"en\"}"
         try (oldLine + "\n").write(to: url, atomically: true, encoding: .utf8)
 
-        let store = HistoryStore.test(storeURL: url)
+        let store = HistoryStore.test(storeURL: url, errorLogger: makeTestErrorLogger(in: dir))
         let entries = store.entries()
 
         XCTAssertEqual(entries.count, 1)
@@ -76,6 +80,7 @@ final class EvalCollectorTests: XCTestCase {
         XCTAssertNil(entries.first?.isSavedEval, "isSavedEval must be nil for old entries")
         XCTAssertNil(entries.first?.model, "model must be nil for old entries")
         XCTAssertNil(entries.first?.audioDurationSeconds, "audioDurationSeconds must be nil for old entries")
+        XCTAssertNil(entries.first?.evalIssue, "evalIssue must be nil for old entries (R3/K2)")
     }
 
     // MARK: - testHistoryEntryRoundTripWithEvalFields
@@ -92,12 +97,14 @@ final class EvalCollectorTests: XCTestCase {
         )
         store1.append(entry)
 
-        // Save correction.
-        let updated = entry.withEvalSaved(correction: "Привет мир (исправлено)")
+        // Save correction with an issue class (R3/K2).
+        let updated = entry.withEvalSaved(correction: "Привет мир (исправлено)", issue: "asr")
         store1.update(updated)
 
         // Re-read from disk.
-        let store2 = HistoryStore.test(storeURL: url)
+        let store2 = HistoryStore.test(
+            storeURL: url, errorLogger: makeTestErrorLogger(in: url.deletingLastPathComponent())
+        )
         let loaded = store2.entries()
 
         XCTAssertEqual(loaded.count, 1)
@@ -107,6 +114,7 @@ final class EvalCollectorTests: XCTestCase {
         XCTAssertEqual(dur, 4.5, accuracy: 0.001)
         XCTAssertEqual(loaded.first?.userCorrection, "Привет мир (исправлено)")
         XCTAssertEqual(loaded.first?.isSavedEval, true)
+        XCTAssertEqual(loaded.first?.evalIssue, "asr", "evalIssue must survive a JSONL round-trip")
     }
 
     // MARK: - testEntryCapKeeps100RegularAndAllSavedEval
@@ -145,7 +153,7 @@ final class EvalCollectorTests: XCTestCase {
         // Mark 5 of them as saved via update().
         let allEntries = store.entries()
         for i in 0..<5 {
-            let saved = allEntries[i].withEvalSaved(correction: "fixed \(i)")
+            let saved = allEntries[i].withEvalSaved(correction: "fixed \(i)", issue: nil)
             store.update(saved)
         }
 
@@ -203,7 +211,7 @@ final class EvalCollectorTests: XCTestCase {
 
         // One saved eval pair.
         let evalEntry = sampleEntry(text: "eval", audioPath: "eval.caf")
-        let saved = evalEntry.withEvalSaved(correction: "eval corrected")
+        let saved = evalEntry.withEvalSaved(correction: "eval corrected", issue: nil)
         store.append(saved)
 
         // 200 unsaved entries — enough to trigger multiple rotation passes and,
@@ -244,7 +252,7 @@ final class EvalCollectorTests: XCTestCase {
         XCTAssertNil(entry.isSavedEval, "isSavedEval must be nil before Save is clicked")
 
         // The UI pre-fills from entry.text. After user edits + Save:
-        let saved = entry.withEvalSaved(correction: "dictated text (fixed)")
+        let saved = entry.withEvalSaved(correction: "dictated text (fixed)", issue: nil)
         XCTAssertEqual(saved.userCorrection, "dictated text (fixed)")
         XCTAssertEqual(saved.isSavedEval, true)
         XCTAssertEqual(saved.text, "dictated text", "Original whisper text must be preserved unchanged")
@@ -265,7 +273,7 @@ final class EvalCollectorTests: XCTestCase {
         store.append(c)
 
         // Update the middle entry (b).
-        let updatedB = b.withEvalSaved(correction: "beta corrected")
+        let updatedB = b.withEvalSaved(correction: "beta corrected", issue: nil)
         store.update(updatedB)
 
         let entries = store.entries()
@@ -278,7 +286,9 @@ final class EvalCollectorTests: XCTestCase {
         XCTAssertNil(entries[2].userCorrection)
 
         // Verify persistence.
-        let store2 = HistoryStore.test(storeURL: url)
+        let store2 = HistoryStore.test(
+            storeURL: url, errorLogger: makeTestErrorLogger(in: url.deletingLastPathComponent())
+        )
         let reloaded = store2.entries()
         XCTAssertEqual(reloaded[1].userCorrection, "beta corrected")
     }
@@ -328,7 +338,7 @@ final class EvalCollectorTests: XCTestCase {
 
         // Saving a correction on an entry without audio must succeed cleanly.
         let foundEntry = try XCTUnwrap(found)
-        let saved = foundEntry.withEvalSaved(correction: "corrected no-audio entry")
+        let saved = foundEntry.withEvalSaved(correction: "corrected no-audio entry", issue: nil)
         store.update(saved)
 
         let reloaded = store.entry(byID: noAudio.id)
@@ -349,10 +359,122 @@ final class EvalCollectorTests: XCTestCase {
         XCTAssertEqual(store.savedEvalCount(), 0)
 
         let entries = store.entries()
-        store.update(entries[0].withEvalSaved(correction: "fixed three"))
+        store.update(entries[0].withEvalSaved(correction: "fixed three", issue: nil))
         XCTAssertEqual(store.savedEvalCount(), 1)
 
-        store.update(entries[1].withEvalSaved(correction: "fixed two"))
+        store.update(entries[1].withEvalSaved(correction: "fixed two", issue: nil))
         XCTAssertEqual(store.savedEvalCount(), 2)
+    }
+
+    // MARK: - evalIssue (R3/K2): every with…-helper must preserve it
+
+    private func failedEntry(reason: String = "timeout") -> HistoryStore.Entry {
+        HistoryStore.Entry(
+            text: "",
+            targetAppName: "TestApp",
+            targetAppBundleID: "com.test",
+            language: "en",
+            status: .failed,
+            failureReason: reason
+        )
+    }
+
+    /// withEvalSaved sets evalIssue to the given value (not merely preserving it —
+    /// this is the one helper that writes it).
+    func testWithEvalSavedSetsEvalIssue() {
+        let entry = sampleEntry(text: "hello")
+        let updated = entry.withEvalSaved(correction: "corrected", issue: "postprocess")
+        XCTAssertEqual(updated.evalIssue, "postprocess")
+    }
+
+    /// Saving without edits (control example) forces evalIssue to nil regardless
+    /// of what's passed as `issue` — mirrors EvalEditorView's footer rule, but
+    /// tested at the data layer via the exact call shape the UI makes.
+    func testWithEvalSavedControlExampleHasNilEvalIssue() {
+        let entry = sampleEntry(text: "all correct")
+        let saved = entry.withEvalSaved(correction: entry.text, issue: nil)
+        XCTAssertEqual(saved.userCorrection, entry.text)
+        XCTAssertEqual(saved.isSavedEval, true)
+        XCTAssertNil(saved.evalIssue)
+    }
+
+    func testWithAudioPathClearedPreservesEvalIssue() {
+        let entry = sampleEntry(text: "hello", audioPath: "a.caf")
+            .withEvalSaved(correction: "fixed", issue: "capture")
+        let updated = entry.withAudioPathCleared()
+        XCTAssertEqual(updated.evalIssue, "capture")
+    }
+
+    func testWithInsertOutcomePreservesEvalIssue() {
+        let entry = sampleEntry(text: "hello")
+            .withEvalSaved(correction: "fixed", issue: "insertion")
+        let updated = entry.withInsertOutcome(true)
+        XCTAssertEqual(updated.evalIssue, "insertion")
+    }
+
+    func testWithTranscriptionResultPreservesEvalIssue() {
+        let entry = sampleEntry(text: "hello")
+            .withEvalSaved(correction: "fixed", issue: "asr")
+        let updated = entry.withTranscriptionResult(
+            text: "retried",
+            rawText: "retried",
+            pipelineStamp: "n2:pabc123abc123",
+            model: nil
+        )
+        XCTAssertEqual(updated.evalIssue, "asr")
+    }
+
+    func testWithLatencyPreservesEvalIssue() {
+        let entry = sampleEntry(text: "hello")
+            .withEvalSaved(correction: "fixed", issue: "postprocess")
+        let updated = entry.withLatency(["asr": 500])
+        XCTAssertEqual(updated.evalIssue, "postprocess")
+    }
+
+    func testWithFailureReasonPreservesEvalIssue() {
+        let entry = failedEntry().withEvalSaved(correction: "fixed", issue: "asr")
+        let updated = entry.withFailureReason("error")
+        XCTAssertEqual(updated.evalIssue, "asr")
+    }
+
+    // MARK: - EvalEditorView.saveButtonState (R3)
+
+    func testSaveButtonStateDisabledWhenEntryIsNil() {
+        XCTAssertEqual(
+            EvalEditorView.saveButtonState(entry: nil, correction: "anything"),
+            .disabled
+        )
+    }
+
+    func testSaveButtonStateDisabledForFailedEntry() {
+        let entry = failedEntry()
+        XCTAssertEqual(
+            EvalEditorView.saveButtonState(entry: entry, correction: "some text"),
+            .disabled
+        )
+    }
+
+    func testSaveButtonStateDisabledWhenCorrectionEmptyAfterTrim() {
+        let entry = sampleEntry(text: "hello")
+        XCTAssertEqual(
+            EvalEditorView.saveButtonState(entry: entry, correction: "   \n\t  "),
+            .disabled
+        )
+    }
+
+    func testSaveButtonStateSaveAsCorrectWhenUnedited() {
+        let entry = sampleEntry(text: "hello world")
+        XCTAssertEqual(
+            EvalEditorView.saveButtonState(entry: entry, correction: "hello world"),
+            .saveAsCorrect
+        )
+    }
+
+    func testSaveButtonStateSaveEvalPairWhenEdited() {
+        let entry = sampleEntry(text: "hello world")
+        XCTAssertEqual(
+            EvalEditorView.saveButtonState(entry: entry, correction: "hello world!"),
+            .saveEvalPair
+        )
     }
 }
