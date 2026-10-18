@@ -92,7 +92,7 @@ final class BilingualPromptTests: XCTestCase {
 
         let prompt = service.currentInitialPromptText
         XCTAssertNotNil(prompt)
-        // Seed must come before user vocabulary, separated by " | "
+        // Seed must come before user vocabulary, separated by a plain space
         XCTAssertTrue(
             prompt?.contains(TranscriptionService.bilingualSeed) == true,
             "Seed must be present in combined prompt"
@@ -101,7 +101,7 @@ final class BilingualPromptTests: XCTestCase {
             prompt?.contains("SwiftUI, Combine") == true,
             "Custom vocabulary must be present in combined prompt"
         )
-        // Order: seed | user vocab
+        // Order: seed, then user vocab
         if let p = prompt,
            let seedRange = p.range(of: TranscriptionService.bilingualSeed),
            let userRange = p.range(of: "SwiftUI, Combine") {
