@@ -93,6 +93,17 @@ extension AppDelegate {
 
     // MARK: - D3 retry helper shared by live dictation and History retry
 
+    /// `runASR`'s outcome: either the digital-silence gate fired (ASR never
+    /// ran), or ASR actually ran and produced a `TranscriptionOutcome` (whose
+    /// `text` may itself be empty). docs/plans/empty-result-audio.md §3 C2 —
+    /// callers need to tell these two "empty result" causes apart so the
+    /// digital-silence one always discards its audio while a genuine
+    /// whisper-empty one can still become a retryable failed History entry.
+    enum ASRResult {
+        case digitalSilence
+        case transcribed(TranscriptionOutcome)
+    }
+
     /// `ensureModelLoaded()` + `transcribe(...)`, with exactly one retry when
     /// the model instance was dropped between the load and the transcribe call
     /// (`TranscriptionError.modelNotLoaded` — see
@@ -100,7 +111,7 @@ extension AppDelegate {
     /// its internal warm-up wait, docs/plans/reliable-dictation.md § D3
     /// "повторная проверка экземпляра"). Shared by `transcribeAndInject` and
     /// `retryTranscription(for:)` so both get the same one-shot recovery.
-    private func runASR(samples: [Float]) async throws -> TranscriptionOutcome {
+    private func runASR(samples: [Float]) async throws -> ASRResult {
         // docs/plans/silence-gate.md: a recording that is entirely digital
         // silence must not reach whisper — on this corpus it hallucinates
         // instead of returning "". The gate lives here, not inside
@@ -110,35 +121,29 @@ extension AppDelegate {
         // here leaves that warm-up path untouched. Placing the gate in
         // runASR (rather than TranscriptionService.transcribe) covers both
         // production callers at once and leaves TranscriptionService itself
-        // unchanged. Both callers of runASR (transcribeAndInject,
-        // retryTranscription) already treat an empty outcome.text as
-        // .emptyResult, so returning one here needs no changes on their side.
+        // unchanged.
         let decision = DigitalSilenceGate.evaluate(samples)
         if decision.isDigitalSilence {
             AppLog.transcription.notice(
                 "Digital silence — ASR skipped rms=\(decision.rms, privacy: .public) sampleCount=\(samples.count, privacy: .public) durationSeconds=\(Double(samples.count) / 16000.0, privacy: .public)"
             )
-            return TranscriptionOutcome(
-                rawText: "",
-                text: "",
-                pipelineStamp: "",
-                removedTemplates: [],
-                segments: []
-            )
+            return .digitalSilence
         }
 
         do {
             try await ensureModelLoaded()
-            return try await transcriptionService.transcribe(
+            let outcome = try await transcriptionService.transcribe(
                 audio: samples,
                 language: AppSettings.shared.language
             )
+            return .transcribed(outcome)
         } catch TranscriptionError.modelNotLoaded {
             try await ensureModelLoaded()
-            return try await transcriptionService.transcribe(
+            let outcome = try await transcriptionService.transcribe(
                 audio: samples,
                 language: AppSettings.shared.language
             )
+            return .transcribed(outcome)
         }
     }
 
@@ -167,6 +172,12 @@ extension AppDelegate {
     // MARK: - Transcription pipeline
 
     /// - Parameters:
+    ///   - wasInterrupted: docs/plans/empty-result-audio.md §3 C4 — whether
+    ///     `handleRecordingStopped` detected a capture interruption
+    ///     (`captureFailure != nil`, the same value that decides whether
+    ///     "Recording interrupted" is shown). No default: every call site
+    ///     must decide explicitly. Only consulted on the empty-result path —
+    ///     an interrupted-but-non-empty result is unaffected.
     ///   - stopStartedAt: D6 — the instant `handleRecordingStopped` began running.
     ///   - samplesReady: D6 — the instant the raw audio samples were available
     ///     (right after `stopRecordingRetaining` returned).
@@ -174,18 +185,39 @@ extension AppDelegate {
         samples: [Float],
         audioPath: String? = nil,
         audioDuration: Double? = nil,
+        wasInterrupted: Bool,
         stopStartedAt: ContinuousClock.Instant,
         samplesReady: ContinuousClock.Instant
     ) async {
         print("[AppDelegate] transcribeAndInject: \(samples.count) samples")
 
-        let outcome: TranscriptionOutcome
+        // docs/plans/empty-result-audio.md §3 C4: runASR's ASRResult is
+        // unpacked here into (text, rawText, pipelineStamp, emptyReason) so
+        // the rest of this function can treat "digital silence" and "whisper
+        // returned an empty string" uniformly as an empty result, while still
+        // remembering WHICH one it was for EmptyResultAudioHandler below.
+        let text: String
+        let rawText: String?
+        let pipelineStamp: String?
+        let emptyReason: EmptyResultAudioHandler.EmptyReason?
         let asrDone: ContinuousClock.Instant
         do {
-            outcome = try await runASR(samples: samples)
+            let asrResult = try await runASR(samples: samples)
             asrDone = ContinuousClock.now
             print("[AppDelegate] Transcription finished successfully")
             AppLog.transcription.notice("Transcription completed")
+            switch asrResult {
+            case .digitalSilence:
+                text = ""
+                rawText = nil
+                pipelineStamp = nil
+                emptyReason = .digitalSilence
+            case .transcribed(let outcome):
+                text = outcome.text
+                rawText = outcome.rawText
+                pipelineStamp = outcome.pipelineStamp
+                emptyReason = outcome.text.isEmpty ? .whisperEmpty : nil
+            }
         } catch {
             print("[AppDelegate] Transcription error: \(error)")
             AppLog.transcription.error("Transcription failed")
@@ -230,11 +262,36 @@ extension AppDelegate {
 
         // Trim is handled upstream by TranscriptionService.conditionallyTrim(_:),
         // gated on AppSettings.shared.trimWhitespaceAfterInsert. No secondary trim here.
-        let text = outcome.text
-        guard !text.isEmpty else {
+        guard emptyReason == nil else {
             print("[AppDelegate] Transcription produced empty string — flashing emptyResult")
             AppLog.transcription.notice("Transcription produced empty text")
+            // docs/plans/empty-result-audio.md §3 C4: fixed ordering — show
+            // the capsule, THEN run the audio/History decision synchronously
+            // (still on MainActor) BEFORE appState flips back to .idle, so a
+            // new dictation cannot start mid-decision. The deferred hide()
+            // below is unaffected — it's guarded by capsuleSessionID exactly
+            // as before.
             voiceTypeWindow?.show(state: .emptyResult)
+            if let emptyReason {
+                EmptyResultAudioHandler(store: .shared, recorder: historyRecorder).handle(
+                    reason: emptyReason,
+                    wasInterrupted: wasInterrupted,
+                    audioPath: audioPath,
+                    audioDurationSeconds: audioDuration
+                ) { path in
+                    HistoryRecorder.FailedTranscription(
+                        targetAppName: sessionTargetApp?.localizedName
+                            ?? NSWorkspace.shared.frontmostApplication?.localizedName ?? "app",
+                        targetAppBundleID: sessionTargetApp?.bundleIdentifier
+                            ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                        language: AppSettings.shared.language.rawValue,
+                        audioPath: path,
+                        model: AppSettings.shared.selectedModel.rawValue,
+                        audioDurationSeconds: audioDuration,
+                        reason: "empty"
+                    )
+                }
+            }
             // D5: return to .idle immediately so the next hotkey press is never
             // blocked by this purely cosmetic flash. capsuleSessionID guards the
             // delayed hide() below so it cannot hide a capsule already showing
@@ -283,8 +340,8 @@ extension AppDelegate {
             audioPath: audioPath,
             model: AppSettings.shared.selectedModel.rawValue,
             audioDurationSeconds: audioDuration,
-            rawText: outcome.rawText,
-            pipelineStamp: outcome.pipelineStamp
+            rawText: rawText,
+            pipelineStamp: pipelineStamp
         ))
 
         if targetDecision == .blockTargetChanged {
@@ -473,9 +530,9 @@ extension AppDelegate {
             return .audioMissing
         }
 
-        let outcome: TranscriptionOutcome
+        let asrResult: ASRResult
         do {
-            outcome = try await runASR(samples: samples)
+            asrResult = try await runASR(samples: samples)
         } catch TranscriptionError.transcriptionTimeout {
             historyRecorder.recordRetryFailure(id: entryID, reason: "timeout")
             ErrorLogger.shared.log(message: "Retry transcription timed out", category: "transcription")
@@ -484,6 +541,19 @@ extension AppDelegate {
             historyRecorder.recordRetryFailure(id: entryID, reason: "error")
             ErrorLogger.shared.log(error, category: "transcription", context: ["stage": "retry"])
             return .failed
+        }
+
+        // docs/plans/empty-result-audio.md §3 C2: digital silence on a retry
+        // is treated exactly like an empty transcription — the entry's audio
+        // is never touched by a retry (it's already owned by this failed
+        // entry), only its failureReason updates.
+        let outcome: TranscriptionOutcome
+        switch asrResult {
+        case .digitalSilence:
+            historyRecorder.recordRetryFailure(id: entryID, reason: "empty")
+            return .emptyResult
+        case .transcribed(let transcribed):
+            outcome = transcribed
         }
 
         guard !outcome.text.isEmpty else {

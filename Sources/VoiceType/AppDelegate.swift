@@ -973,6 +973,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     samples: samples,
                     audioPath: audioPathCapture,
                     audioDuration: audioDurationCapture,
+                    wasInterrupted: captureFailure != nil,
                     stopStartedAt: stopStartedAt,
                     samplesReady: samplesReady
                 )

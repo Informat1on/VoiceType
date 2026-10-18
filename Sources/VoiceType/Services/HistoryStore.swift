@@ -500,6 +500,35 @@ final class HistoryStore {
         !filename.isEmpty && !filename.contains("/") && !filename.hasPrefix(".")
     }
 
+    /// Deletes an audio file no History entry owns (empty-result path, docs/
+    /// plans/empty-result-audio.md §3 C3) — immediate, not queued like
+    /// `deleteAudioFiles`, since the file was never referenced. Safety, in
+    /// order, each refusal logged WITHOUT the filename: (1) must pass
+    /// `isSafeAudioFilename`; (2) must not be referenced by `audioPath` on any
+    /// cached entry (after `loadIfNeeded()`); (3) otherwise `removeItem` — a
+    /// missing file is silently ignored, any other error logged.
+    func discardUnreferencedAudio(named filename: String) {
+        guard Self.isSafeAudioFilename(filename) else {
+            errorLogger.log(message: "HistoryStore: refused to discard audio — not a plain base filename", category: "history")
+            return
+        }
+
+        loadIfNeeded()
+        guard !cachedEntries.contains(where: { $0.audioPath == filename }) else {
+            errorLogger.log(message: "HistoryStore: refused to discard audio still referenced by a History entry", category: "history")
+            return
+        }
+
+        let url = audioDirectory.appendingPathComponent(filename)
+        do {
+            try fileManager.removeItem(at: url)
+        } catch CocoaError.fileNoSuchFile {
+            // Already gone — nothing to do.
+        } catch {
+            errorLogger.log(error, category: "history")
+        }
+    }
+
     // MARK: - Private helpers
 
     /// `internal` (not `private`) for HistoryStore+FailedTranscriptions.swift.
