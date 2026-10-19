@@ -272,49 +272,12 @@ TEST_EXIT=0
 # Swift's line-buffered stderr interleave out of chronological order in the
 # combined stream — confirmed live (2026-09-24): the crash trace appeared
 # BEFORE "Test Suite ... passed" in a merged capture despite happening after
-# it. Kept separate so the ordering check below is trustworthy.
+# it. Kept separate so each stream's tail below is in its own true order
+# (order BETWEEN the two streams is not recoverable either way).
 
-# Known, investigated, harmless-to-replay atexit crash (2026-09-24): the
-# vendored SwiftWhisper fork's Whisper.prepareCallbacks() leaves an
-# Unmanaged.passRetained(self) outstanding after transcribe() (confirmed via
-# a weak-reference probe: the Whisper instance is still alive after
-# TranscriptionService.shutdown() returns true and drops its own strong
-# reference), so its C context/Metal resource set is never freed by
-# Whisper.deinit. ggml's own atexit teardown then aborts on
-# `GGML_ASSERT([rsets->data count] == 0)` in ggml-metal-device.m — same
-# assert TranscriptionService.shutdown()'s doc comment names, but this
-# instance is NOT something shutdown() can prevent: it isn't the harness (or
-# TranscriptionService) holding the reference, and the leak lives in a
-# pinned third-party dependency this project does not own or modify. The app
-# itself never hits this because AppDelegate always calls `_exit(0)` on quit
-# (see AppDelegate.swift's applicationShouldTerminate), bypassing atexit
-# entirely — xctest's own process teardown calls the ordinary exit(), which
-# the harness cannot intercept.
-#
-# swift test's exit code for this crash is plain 1 (verified empirically —
-# NOT the raw abort/signal code); nothing distinguishes it at the exit-code
-# level from a genuine test failure. So exit 1 is only ever accepted here
-# when the log PROVES it's this exact, already-investigated crash: the
-# XCTest summary line for ReplayHarnessTests must show a clean pass, and
-# that line must appear BEFORE the known assert text in the stdout log
-# (order checked by line number, in the un-merged stdout capture).
-KNOWN_ATEXIT_CRASH=0
+# swift test's exit code is the verdict: any nonzero exit is a failure,
+# diagnosed by the stdout/stderr tails below.
 if [ "$TEST_EXIT" -ne 0 ]; then
-    # `|| true` on each: under `set -eo pipefail`, a bare assignment whose
-    # command substitution ends in a no-match `grep` (exit 1) silently kills
-    # the whole script right here — exactly the case a genuine (non-crash)
-    # failure hits, since no "passed" line exists to find. Confirmed live:
-    # without `|| true` this branch aborted with no diagnostic output at all.
-    PASSED_LINE="$( (grep -n "^Test Suite 'ReplayHarnessTests' passed" "$TEST_LOG" || true) | head -n 1 | cut -d: -f1)"
-    CRASH_LINE="$( (grep -n 'GGML_ASSERT(\[rsets->data count\] == 0) failed' "$TEST_LOG" || true) | head -n 1 | cut -d: -f1)"
-    if [ -n "$PASSED_LINE" ] && [ -n "$CRASH_LINE" ] && [ "$PASSED_LINE" -lt "$CRASH_LINE" ]; then
-        KNOWN_ATEXIT_CRASH=1
-        echo "swift test exited $TEST_EXIT, but the log shows a clean ReplayHarnessTests pass " \
-            "followed by the known SwiftWhisper atexit crash (GGML_ASSERT rsets) — treating as success." >&2
-    fi
-fi
-
-if [ "$TEST_EXIT" -ne 0 ] && [ "$KNOWN_ATEXIT_CRASH" -ne 1 ]; then
     echo "swift test failed (exit $TEST_EXIT) — last 60 lines of stdout, then stderr:" >&2
     tail -n 60 "$TEST_LOG" >&2
     tail -n 60 "$TEST_STDERR_LOG" >&2
