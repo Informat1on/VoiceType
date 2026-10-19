@@ -349,6 +349,9 @@ final class AudioSystemUnresponsiveTests: XCTestCase {
             // блок шага 3 закроет "свой" застой чуть позже — но НИКОГДА не
             // остаётся открытым (требование плана: никогда не .abandoning навсегда).
             let healthyExp = expectation(description: "healthy eventually \(trial)")
+            // Уведомление о здоровье может прийти несколько раз уже в .healthy —
+            // повторный fulfill не ошибка, а гонка самого теста.
+            healthyExp.assertForOverFulfill = false
             var observer: NSObjectProtocol?
             if case .healthy = gateway.health {
                 healthyExp.fulfill()
