@@ -234,6 +234,11 @@ final class TextInjectionService {
             return InsertionReport(method: .type, clipboard: .untouched)
         }
 
+        if !snapshot.droppedRedundantTypes.isEmpty {
+            let list = snapshot.droppedRedundantTypes.joined(separator: ", ")
+            AppLog.insertion.notice("Clipboard snapshot dropped redundant lazy types: \(list, privacy: .public)")
+        }
+
         pasteboard.clearContents()
         let transientItem = NSPasteboardItem()
         transientItem.setString(text, forType: .string)

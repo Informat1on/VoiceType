@@ -28,18 +28,45 @@ enum PasteboardSnapshotResult: Equatable {
     /// copy, so it is refused rather than presented as complete. Restoring it
     /// later would silently drop that type's data. `unreadableTypes` holds the
     /// affected types' raw values (deduplicated, in first-seen order) for
-    /// logging — never the pasteboard's actual content.
+    /// logging — never the pasteboard's actual content. Unreadable types that
+    /// are `redundantLazyTypes` alongside a readable text type in the same
+    /// item do not count (they are dropped, see `droppedRedundantTypes`), but
+    /// are still listed here when some other type blocks the snapshot.
     case incomplete(unreadableTypes: [String])
 }
 
 /// A full-fidelity copy of a pasteboard's contents at a point in time,
 /// tagged with the `changeCount` it was taken at so callers can detect
 /// whether the pasteboard moved on before they restore this snapshot.
+///
+/// Invariant: a captured snapshot holds every type the pasteboard advertised,
+/// EXCEPT those listed in `droppedRedundantTypes` — lazy web-archive types
+/// that the source never fulfils and whose content is already represented by
+/// a readable text type of the same item (docs/plans/lazy-pasteboard-types.md).
 struct PasteboardSnapshot: Equatable {
     /// One dictionary per NSPasteboardItem, order preserved.
     let items: [[NSPasteboard.PasteboardType: Data]]
     /// `pasteboard.changeCount` at the moment this snapshot was taken.
     let changeCount: Int
+    /// Raw values of unreadable types that were deliberately left out of
+    /// `items` (see `redundantLazyTypes`); deduplicated, first-seen order.
+    /// Empty for an ordinary pasteboard.
+    var droppedRedundantTypes: [String] = []
+
+    /// Unreadable types that may be dropped when the same item has a readable
+    /// non-empty type from `textFallbackTypes`. Raw values, matched exactly
+    /// (case-sensitive); variants not listed here deliberately stay
+    /// `.incomplete`. Closed list — extend only on evidence from logs.
+    static let redundantLazyTypes: Set<String> = [
+        "Apple Web Archive pasteboard type",
+        "com.apple.webarchive",
+        "iOS rich content paste pasteboard type"
+    ]
+    /// At least one of these must be read with non-empty data in the SAME item
+    /// for its `redundantLazyTypes` to be dropped.
+    static let textFallbackTypes: Set<String> = [
+        "public.html", "public.rtf", "public.utf8-plain-text"
+    ]
 
     static let maxTotalBytes = 64 * 1024 * 1024
 
@@ -47,6 +74,28 @@ struct PasteboardSnapshot: Equatable {
         items.reduce(0) { sum, item in
             sum + item.values.reduce(0) { $0 + $1.count }
         }
+    }
+
+    /// Per-item decision for unreadable types (raw values, input order kept).
+    /// `dropped`: types in `redundantLazyTypes` while `capturedTypes` holds a
+    /// non-empty type from `textFallbackTypes`; `blocking`: all the others.
+    static func classifyUnreadable(
+        _ unreadable: [String],
+        capturedTypes: [String: Data]
+    ) -> (dropped: [String], blocking: [String]) {
+        let hasTextFallback = capturedTypes.contains {
+            textFallbackTypes.contains($0.key) && !$0.value.isEmpty
+        }
+        var dropped: [String] = []
+        var blocking: [String] = []
+        for type in unreadable {
+            if hasTextFallback && redundantLazyTypes.contains(type) {
+                dropped.append(type)
+            } else {
+                blocking.append(type)
+            }
+        }
+        return (dropped, blocking)
     }
 
     /// Synchronous capture. Reads every type of every item on `pasteboard`.
@@ -59,6 +108,11 @@ struct PasteboardSnapshot: Equatable {
     /// `.incomplete` naming those types instead of silently presenting a
     /// partial snapshot as complete (an item that ends up with no readable
     /// type at all is simply left out of `items`, same as before).
+    /// Exception, decided per item: an unreadable type in
+    /// `redundantLazyTypes` is dropped (not an error) when the same item read
+    /// a non-empty type from `textFallbackTypes`; dropped types are reported in
+    /// `droppedRedundantTypes` of the captured snapshot. When the result is
+    /// `.incomplete`, nothing is reported as dropped.
     static func materialize(
         from pasteboard: NSPasteboard,
         maxTotalBytes: Int = maxTotalBytes
@@ -68,14 +122,19 @@ struct PasteboardSnapshot: Equatable {
         var totalBytes = 0
         var unreadableTypes: [String] = []
         var seenUnreadableTypes: Set<String> = []
+        var droppedTypes: [String] = []
+        var seenDroppedTypes: Set<String> = []
+        var hasBlockingUnreadable = false
 
         for pasteboardItem in pasteboard.pasteboardItems ?? [] {
             var captured: [NSPasteboard.PasteboardType: Data] = [:]
+            var itemUnreadable: [String] = []
             for type in pasteboardItem.types {
                 guard let data = pasteboardItem.data(forType: type) else {
                     if seenUnreadableTypes.insert(type.rawValue).inserted {
                         unreadableTypes.append(type.rawValue)
                     }
+                    itemUnreadable.append(type.rawValue)
                     continue
                 }
                 captured[type] = data
@@ -83,6 +142,14 @@ struct PasteboardSnapshot: Equatable {
                 if totalBytes > maxTotalBytes {
                     return .tooLarge(bytes: totalBytes)
                 }
+            }
+            let capturedRaw = Dictionary(uniqueKeysWithValues: captured.map { ($0.key.rawValue, $0.value) })
+            let verdict = classifyUnreadable(itemUnreadable, capturedTypes: capturedRaw)
+            for rawType in verdict.dropped where seenDroppedTypes.insert(rawType).inserted {
+                droppedTypes.append(rawType)
+            }
+            if !verdict.blocking.isEmpty {
+                hasBlockingUnreadable = true
             }
             if !captured.isEmpty {
                 items.append(captured)
@@ -93,11 +160,15 @@ struct PasteboardSnapshot: Equatable {
             return .changedDuringCapture
         }
 
-        guard unreadableTypes.isEmpty else {
+        guard !hasBlockingUnreadable else {
             return .incomplete(unreadableTypes: unreadableTypes)
         }
 
-        return .captured(PasteboardSnapshot(items: items, changeCount: startChangeCount))
+        return .captured(PasteboardSnapshot(
+            items: items,
+            changeCount: startChangeCount,
+            droppedRedundantTypes: droppedTypes
+        ))
     }
 
     /// Asynchronous capture off the main thread, through a separate
