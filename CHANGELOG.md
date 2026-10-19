@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] - 2026-10-19
+
+### Fixed
+
+- **Paste mode no longer falls back to typing after copying from Safari/WebKit.**
+  Lazy web-archive types are dropped from the clipboard snapshot when
+  text/HTML/RTF of the same item was captured.
+
 ## [1.5.0] - 2026-10-18
 
 Dictation you can rely on: the text lands where you started speaking, your
