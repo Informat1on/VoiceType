@@ -18,6 +18,14 @@
 import AppKit
 import ApplicationServices
 
+// MARK: - FocusSnapshot
+
+/// Value snapshot of the frontmost (non-VoiceType) app and its focused AX window.
+struct FocusSnapshot {
+    let app: NSRunningApplication
+    let window: AXUIElement?
+}
+
 // MARK: - AX type-safe helper
 
 /// Type-safe wrappers around the AX C API. Returns nil on type mismatch
@@ -135,17 +143,7 @@ final class FocusCaptureService {
             clear()
             return
         }
-        // activate(options:) is the non-deprecated path on macOS 14+.
-        // Empty options: bring app to front without hiding other apps.
-        app.activate(options: [])
-        // If we captured the specific window, raise and focus it via AX.
-        // AX calls can fail silently on sandboxed targets — that is acceptable;
-        // app activation still works as a fallback.
-        if let window = capturedWindow {
-            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-            AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
-            AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        }
+        raise(app: app, window: capturedWindow)
         // Don't clear capturedApp/capturedWindowScreen/capturedWindow here — a second
         // restore() call (defensive) should still succeed. capture() on next press will
         // overwrite state.
@@ -166,6 +164,21 @@ final class FocusCaptureService {
     }
 
     // MARK: - Private Helpers
+
+    /// Activate `app` and, when a specific window was captured, raise and focus it via AX.
+    /// Shared by `restore()` and `restore(_:)`.
+    private func raise(app: NSRunningApplication, window: AXUIElement?) {
+        // activate(options:) is the non-deprecated path on macOS 14+.
+        // Empty options: bring app to front without hiding other apps.
+        app.activate(options: [])
+        // AX calls can fail silently on sandboxed targets — that is acceptable;
+        // app activation still works as a fallback.
+        if let window {
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+            AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        }
+    }
 
     private func isVoiceTypeApp(_ app: NSRunningApplication) -> Bool {
         guard let bundleID = app.bundleIdentifier else { return false }
@@ -222,5 +235,43 @@ final class FocusCaptureService {
     private func screenContainingMouse() -> NSScreen? {
         let mouseLocation = NSEvent.mouseLocation
         return NSScreen.screens.first { $0.frame.contains(mouseLocation) }
+    }
+}
+
+// MARK: - Value snapshots (Save & Insert)
+
+extension FocusCaptureService {
+    /// Same frontmost/self-capture rules as `capture()`, but returns a value and does
+    /// NOT touch capturedApp/capturedWindow/suppression. nil when VoiceType is frontmost
+    /// or there is no frontmost app.
+    func snapshot() -> FocusSnapshot? {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication,
+              !isVoiceTypeApp(frontmost) else { return nil }
+        let (_, window) = focusedWindowInfo(for: frontmost)
+        return FocusSnapshot(app: frontmost, window: window)
+    }
+
+    /// Same activation + AX raise/main/focused sequence as `restore()`, applied to
+    /// `snapshot`. Returns false (and does nothing) when `snapshot.app` is terminated.
+    @discardableResult
+    func restore(_ snapshot: FocusSnapshot) -> Bool {
+        guard !snapshot.app.isTerminated else { return false }
+        raise(app: snapshot.app, window: snapshot.window)
+        return true
+    }
+
+    /// `snapshot.app` is frontmost (pid) and, when `snapshot.window != nil`, the app's
+    /// kAXFocusedWindowAttribute is CFEqual to it.
+    func isFocused(_ snapshot: FocusSnapshot) -> Bool {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication,
+              frontmost.processIdentifier == snapshot.app.processIdentifier else { return false }
+        guard let window = snapshot.window else { return true }
+        let appElement = AXUIElementCreateApplication(snapshot.app.processIdentifier)
+        guard let focused = AXAttr.value(
+            appElement,
+            kAXFocusedWindowAttribute as String,
+            as: AXUIElement.self
+        ) else { return false }
+        return CFEqual(focused, window)
     }
 }
