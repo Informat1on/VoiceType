@@ -75,7 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Block-based NotificationCenter observers tied to eval editor windows.
     /// Stored so we can `removeObserver` when the window closes — otherwise each
     /// opened editor leaks a registration until process exit (Codex re-review).
-    private var evalEditorObservers: [UUID: NSObjectProtocol] = [:]
+    /// Keyed by the window, not the entry: a reopened entry's new window must not
+    /// overwrite (and leak) the closing window's observer token.
+    private var evalEditorObservers: [ObjectIdentifier: NSObjectProtocol] = [:]
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Eval hotkey (Cmd+Opt+E, separate from the recording hotkey)
@@ -289,28 +291,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Open an eval editor for a specific history entry.
     /// If a window for this entry is already open, brings it to front instead of creating a duplicate.
     /// VT-REV-001: strong ownership via dictionary; each window cleans itself up on close.
-    func openEvalEditorForEntry(_ entryID: UUID) {
+    /// `focus` is the Save & Insert target snapshot (hotkey path only); the latest open wins,
+    /// including nil for an already-open window.
+    func openEvalEditorForEntry(_ entryID: UUID, focus: FocusSnapshot? = nil) {
         print("[AppDelegate] openEvalEditorForEntry(\(entryID)) called")
         if let existing = evalEditorWindows[entryID] {
+            existing.updateFocus(focus)
             existing.orderFrontRegardless()
             return
         }
-        let win = EvalEditorWindow.open(entryID: entryID)
+        let win = EvalEditorWindow.open(entryID: entryID, focus: focus)
         evalEditorWindows[entryID] = win
+        let winID = ObjectIdentifier(win)
         let token = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: win,
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
+        ) { [weak self, weak win] _ in
+            Task { @MainActor [weak self, weak win] in
                 guard let self else { return }
-                self.evalEditorWindows.removeValue(forKey: entryID)
-                if let observer = self.evalEditorObservers.removeValue(forKey: entryID) {
+                if let observer = self.evalEditorObservers.removeValue(forKey: winID) {
                     NotificationCenter.default.removeObserver(observer)
+                }
+                // A reopened entry may already own a NEW window: only remove our own.
+                if let win, self.evalEditorWindows[entryID] === win {
+                    self.evalEditorWindows.removeValue(forKey: entryID)
                 }
             }
         }
-        evalEditorObservers[entryID] = token
+        evalEditorObservers[winID] = token
     }
 
     /// Open the eval editor for the last transcription (Cmd+Opt+E hotkey path).
@@ -321,7 +330,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             showErrorToast(title: "No transcription yet", body: "Make a transcription first, then press Cmd+Opt+E to edit it.")
             return
         }
-        openEvalEditorForEntry(last.id)
+        // Snapshot BEFORE the editor window takes focus.
+        openEvalEditorForEntry(last.id, focus: FocusCaptureService.shared.snapshot())
     }
 
     // MARK: - Font Registration

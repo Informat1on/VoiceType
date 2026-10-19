@@ -10,7 +10,7 @@
 // 2026-09-24 — Eval Collector: "Save as correct" control examples, issue
 // class, raw/final split. See DESIGN.md Decisions Log.
 
-import Foundation
+import SwiftUI
 
 // MARK: - EvalIssueOption
 
@@ -81,3 +81,52 @@ extension EvalEditorView {
         return .saveEvalPair
     }
 }
+
+// MARK: - SaveAndInsertButton
+
+/// Footer button left of the primary save button; present only when the editor
+/// was opened with a focus snapshot (docs/plans/fix-and-reinsert.md C5).
+struct SaveAndInsertButton: View {
+    let appName: String
+    let isEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button("Save & Insert", action: action)
+            .buttonStyle(VoiceTypeSecondaryButtonStyle())
+            .keyboardShortcut(.return, modifiers: [.command, .shift])
+            .disabled(!isEnabled)
+            .help("Saves the pair, returns to \(appName) and inserts the corrected text. "
+                + "Select the wrong text before ⌘⌥E to replace it.")
+            .accessibilityLabel("Save and insert corrected text")
+            .accessibilityHint("Returns to the app you dictated into and inserts this text")
+    }
+}
+
+// MARK: - Button Styles
+// swiftlint:disable no_grouping_extension
+//
+// Primary (filled-accent) style lives in Views/DesignSystem/ButtonStyles.swift
+// as `ChecklistPrimaryButtonStyle` — this file used to keep its own copy
+// (`VoiceTypePrimaryButtonStyle`) that regressed the WCAG AA fix already
+// applied there (white-on-accent text, ~1.9:1 contrast). Removed 2026-07-27;
+// see DESIGN.md Decisions Log. `VoiceTypeSecondaryButtonStyle` below has no
+// shared equivalent (bordered outline, not filled) and stays local.
+
+struct VoiceTypeSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Typography.buttonLabel)
+            .foregroundStyle(Palette.textSecondary)
+            .padding(.horizontal, ButtonPadding.horizontal)
+            .padding(.vertical, ButtonPadding.vertical)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.control)
+                    .stroke(Palette.strokeSubtle, lineWidth: 1)
+            )
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .animation(.easeInOut(duration: Motion.micro), value: configuration.isPressed)
+    }
+}
+
+// swiftlint:enable no_grouping_extension

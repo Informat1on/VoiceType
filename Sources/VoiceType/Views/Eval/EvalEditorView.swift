@@ -38,6 +38,9 @@ struct EvalEditorView: View {
     let entryID: UUID
     let onSave: (_ correction: String, _ issue: String?) -> Void
     let onCancel: () -> Void
+    /// Save & Insert: nil closure or empty model → no button (docs/plans/fix-and-reinsert.md C5).
+    var onSaveAndInsert: ((_ correction: String, _ issue: String?) -> Void)?
+    @ObservedObject var focusModel: EvalEditorFocusModel
 
     /// Resolved entry — loaded from HistoryStore on appear.
     /// Nil means the entry was deleted from history while the window was open.
@@ -65,14 +68,19 @@ struct EvalEditorView: View {
     @State private var rotationPollTimer: Timer?
 
     /// Primary init: takes an explicit entry ID — works for any history entry.
+    @MainActor
     init(
         entryID: UUID,
         onSave: @escaping (_ correction: String, _ issue: String?) -> Void,
-        onCancel: @escaping () -> Void
+        onCancel: @escaping () -> Void,
+        onSaveAndInsert: ((_ correction: String, _ issue: String?) -> Void)? = nil,
+        focusModel: EvalEditorFocusModel? = nil
     ) {
         self.entryID = entryID
         self.onSave = onSave
         self.onCancel = onCancel
+        self.onSaveAndInsert = onSaveAndInsert
+        self.focusModel = focusModel ?? EvalEditorFocusModel()
     }
 
     // MARK: - Factory
@@ -452,6 +460,13 @@ struct EvalEditorView: View {
 
             Spacer()
 
+            if focusModel.canInsert, let onSaveAndInsert {
+                SaveAndInsertButton(
+                    appName: focusModel.snapshot?.app.localizedName ?? "the app",
+                    isEnabled: saveState == .saveEvalPair
+                ) { onSaveAndInsert(correctionText, selectedIssue.rawIssue) }
+            }
+
             Button(saveButtonTitle) {
                 // Saving without edits is a control example — evalIssue is
                 // forced to nil regardless of any stale picker selection
@@ -569,31 +584,3 @@ struct EvalEditorView: View {
         playbackProgress = fraction
     }
 }
-
-// MARK: - Button Styles
-// swiftlint:disable no_grouping_extension
-//
-// Primary (filled-accent) style lives in Views/DesignSystem/ButtonStyles.swift
-// as `ChecklistPrimaryButtonStyle` — this file used to keep its own copy
-// (`VoiceTypePrimaryButtonStyle`) that regressed the WCAG AA fix already
-// applied there (white-on-accent text, ~1.9:1 contrast). Removed 2026-07-27;
-// see DESIGN.md Decisions Log. `VoiceTypeSecondaryButtonStyle` below has no
-// shared equivalent (bordered outline, not filled) and stays local.
-
-private struct VoiceTypeSecondaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Typography.buttonLabel)
-            .foregroundStyle(Palette.textSecondary)
-            .padding(.horizontal, ButtonPadding.horizontal)
-            .padding(.vertical, ButtonPadding.vertical)
-            .background(
-                RoundedRectangle(cornerRadius: Radius.control)
-                    .stroke(Palette.strokeSubtle, lineWidth: 1)
-            )
-            .opacity(configuration.isPressed ? 0.7 : 1)
-            .animation(.easeInOut(duration: Motion.micro), value: configuration.isPressed)
-    }
-}
-
-// swiftlint:enable no_grouping_extension

@@ -12,6 +12,24 @@
 import AppKit
 import SwiftUI
 
+// MARK: - EvalEditorFocusModel
+
+/// Holds the focus snapshot taken at Cmd+Opt+E. nil → editor was opened without a
+/// target (History, or VoiceType frontmost) and "Save & Insert" is absent.
+@MainActor
+final class EvalEditorFocusModel: ObservableObject {
+    @Published private(set) var snapshot: FocusSnapshot?
+    var canInsert: Bool { snapshot != nil }
+
+    init(snapshot: FocusSnapshot? = nil) {
+        self.snapshot = snapshot
+    }
+
+    func update(_ snapshot: FocusSnapshot?) {
+        self.snapshot = snapshot
+    }
+}
+
 // MARK: - EvalEditorWindow
 
 @MainActor
@@ -31,8 +49,8 @@ final class EvalEditorWindow: NSWindow {
 
     /// Open an eval editor for the given entry ID.
     @discardableResult
-    static func open(entryID: UUID) -> EvalEditorWindow {
-        let win = EvalEditorWindow(entryID: entryID)
+    static func open(entryID: UUID, focus: FocusSnapshot? = nil) -> EvalEditorWindow {
+        let win = EvalEditorWindow(entryID: entryID, focus: focus)
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         return win
@@ -41,11 +59,20 @@ final class EvalEditorWindow: NSWindow {
     // MARK: - Properties
 
     private var entryID: UUID
+    private let focusModel: EvalEditorFocusModel
+    /// Guards against a second Save & Insert while the first is being processed.
+    private var isSubmitting = false
+
+    /// Replace the insertion target — the latest open always wins (nil included).
+    func updateFocus(_ snapshot: FocusSnapshot?) {
+        focusModel.update(snapshot)
+    }
 
     // MARK: - Init
 
-    private init(entryID: UUID) {
+    private init(entryID: UUID, focus: FocusSnapshot?) {
         self.entryID = entryID
+        self.focusModel = EvalEditorFocusModel(snapshot: focus)
 
         super.init(
             contentRect: NSRect(origin: .zero, size: NSSize(width: 580, height: 520)),
@@ -70,7 +97,11 @@ final class EvalEditorWindow: NSWindow {
             },
             onCancel: { [weak self] in
                 self?.close()
-            }
+            },
+            onSaveAndInsert: { [weak self] correction, issue in
+                self?.handleSaveAndInsert(correction: correction, issue: issue)
+            },
+            focusModel: focusModel
         )
 
         contentView = NSHostingView(rootView: view)
@@ -95,5 +126,51 @@ final class EvalEditorWindow: NSWindow {
         // Close immediately — the eval pair is saved in history.jsonl with
         // isSavedEval=true. Users can verify via Settings → Advanced → Open history.
         close()
+    }
+
+    // MARK: - Save & Insert
+
+    /// Saves the pair like `handleSave`, closes, then returns focus to the snapshot and
+    /// pastes the correction (docs/plans/fix-and-reinsert.md C3/C6).
+    private func handleSaveAndInsert(correction: String, issue: String?) {
+        guard !isSubmitting else { return }
+        isSubmitting = true
+        guard let entry = HistoryStore.shared.entry(byID: entryID) else {
+            // Evicted by rotation: window stays open (see handleSave), allow retry.
+            isSubmitting = false
+            return
+        }
+        guard let snapshot = focusModel.snapshot else {
+            isSubmitting = false
+            return
+        }
+        let appName = snapshot.app.localizedName ?? "the app"
+        HistoryStore.shared.update(entry.withEvalSaved(correction: correction, issue: issue))
+        close()
+        Task { @MainActor in
+            let outcome = await ReinsertService.shared.reinsert(correction, into: snapshot)
+            Self.announce(outcome, appName: appName)
+        }
+    }
+
+    private static func announce(_ outcome: ReinsertOutcome, appName: String) {
+        let delegate = NSApp.delegate as? AppDelegate
+        switch outcome {
+        case .inserted:
+            NSAccessibility.post(
+                element: NSApp as AnyObject,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: "Corrected text inserted",
+                    .priority: NSAccessibilityPriorityLevel.high.rawValue
+                ]
+            )
+        case .copied:
+            delegate?.showErrorToast(title: "Couldn't insert into \(appName)", body: "Copied to clipboard")
+        case .failed(let message):
+            delegate?.showErrorToast(title: "Couldn't insert", body: message)
+        case .busy:
+            break
+        }
     }
 }
